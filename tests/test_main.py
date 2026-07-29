@@ -5,36 +5,11 @@ import threading
 import time
 
 import numpy as np
-import pytest
 
-import yrobot.main as main_module
-from yrobot.audio import EchoMatch
 from yrobot.config import Settings
-from yrobot.main import FRAME_MAX_DIM, Conversation, LatestCamera, UplinkPacket, shrink_jpeg
+from yrobot.main import Conversation, UplinkPacket
 from yrobot.realtime import Delta
-from yrobot.turn import QUIET_S
-
-
-def test_shrink_jpeg_downscales_to_model_vision_size():
-    cv2 = pytest.importorskip("cv2")
-    frame = np.random.default_rng(0).integers(0, 255, (720, 1280, 3), dtype=np.uint8)
-    jpeg = shrink_jpeg(frame)
-    assert jpeg is not None
-    decoded = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
-    assert max(decoded.shape[:2]) == FRAME_MAX_DIM
-    full = cv2.imencode(".jpg", frame)[1].tobytes()
-    assert len(jpeg) < len(full) / 3  # meaningfully lighter on the uplink
-
-
-def test_shrink_jpeg_keeps_small_frames():
-    cv2 = pytest.importorskip("cv2")
-    frame = np.zeros((240, 320, 3), dtype=np.uint8)
-    decoded = cv2.imdecode(np.frombuffer(shrink_jpeg(frame), np.uint8), cv2.IMREAD_COLOR)
-    assert decoded.shape[:2] == (240, 320)
-
-
-def test_shrink_jpeg_none_frame():
-    assert shrink_jpeg(None) is None
+from yrobot.turn import QUIET_S, TurnGate
 
 
 def test_urgent_uplink_discards_stale_backlog():
@@ -60,37 +35,6 @@ def test_urgent_uplink_discards_stale_backlog():
     assert packets.get_nowait() is urgent
 
 
-def test_latest_camera_keeps_only_newest_frame(monkeypatch):
-    monkeypatch.setattr(main_module, "cv2", None)
-
-    class FakeCameraMedia:
-        def __init__(self):
-            self.count = 0
-
-        def get_frame_jpeg(self):
-            self.count += 1
-            return f"frame-{self.count}".encode()
-
-    camera = LatestCamera(
-        FakeCameraMedia(),
-        active=lambda now: True,
-        robot_audible=lambda now: False,
-        active_period_s=0.02,
-        idle_period_s=0.02,
-    )
-    camera.start()
-    try:
-        time.sleep(0.09)
-        latest = camera.take_latest()
-        assert latest is not None
-        assert camera.take_latest() is None
-        time.sleep(0.05)
-        assert camera.take_latest() != latest
-    finally:
-        camera.close()
-        camera.join(timeout=2)
-
-
 def test_slow_websocket_sender_does_not_block_packet_producer():
     entered = threading.Event()
     release = threading.Event()
@@ -104,7 +48,7 @@ def test_slow_websocket_sender_does_not_block_packet_producer():
     conversation._session_dead = threading.Event()
     conversation._video_kv_est = 0.0
     conversation._turn_lock = threading.Lock()
-    conversation._gate = main_module.TurnGate()
+    conversation._gate = TurnGate()
     packets: queue.Queue[UplinkPacket] = queue.Queue(maxsize=4)
     halt = threading.Event()
     packets.put(
@@ -167,177 +111,6 @@ def test_barge_candidate_hard_stops_and_latches_force():
         assert conversation._gate.chunk_force_listen(started + 0.01)
 
 
-def _install_barge_fakes(
-    conversation: Conversation,
-    match: EchoMatch | list[EchoMatch],
-    vad_pattern: list[bool] | None = None,
-) -> object:
-    matches = list(match) if isinstance(match, list) else [match]
-    frame_count = (
-        main_module.BARGE_MATCH_FRAMES + (len(matches) - 1) * main_module.BARGE_RECHECK_FRAMES
-    )
-    if vad_pattern is not None:
-        frame_count = len(vad_pattern)
-    frames = [np.full(320, 0.01, np.float32) for _ in range(frame_count)]
-
-    class FakeMic:
-        def read_frames(self):
-            return frames
-
-    class FakeDetector:
-        streak = 0
-        last_db = -40.0
-        frame_index = 0
-
-        def process(self, frame, now, floor_frozen=False):
-            raw = True if vad_pattern is None else vad_pattern[self.frame_index]
-            self.frame_index += 1
-            self.streak = self.streak + 1 if raw else 0
-            return self.streak >= 3
-
-    class FakeSpeaker:
-        epoch = 0
-        interrupted = 0
-        match_index = 0
-
-        def sounding(self, now):
-            return True
-
-        def audible(self, now):
-            return True
-
-        def playing(self, now):
-            return self.interrupted == 0
-
-        def echo_match(self, candidate, now):
-            result = matches[min(self.match_index, len(matches) - 1)]
-            self.match_index += 1
-            return result
-
-        def interrupt(self):
-            self.interrupted += 1
-            self.epoch += 1
-            return self.epoch
-
-    class FakeChoreo:
-        def set_mode(self, mode):
-            self.mode = mode
-
-    speaker = FakeSpeaker()
-    conversation._mic = FakeMic()
-    conversation._detector = FakeDetector()
-    conversation._speaker = speaker
-    conversation._choreo = FakeChoreo()
-    return speaker
-
-
-def _sustained(match: EchoMatch) -> list[EchoMatch]:
-    # First decision covers 200 ms; three 100 ms rechecks reach 500 ms.
-    return [match] * 4
-
-
-def test_short_unexplained_sound_does_not_interrupt_playback():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        EchoMatch(similarity=0.2, unexplained_db=-40.0, lag_ms=400.0),
-    )
-
-    conversation._process_mic()
-
-    assert speaker.interrupted == 0
-    assert not conversation._gate.latched
-
-
-def test_sustained_unexplained_local_voice_interrupts_playback():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        _sustained(EchoMatch(similarity=0.2, unexplained_db=-40.0, lag_ms=400.0)),
-    )
-
-    conversation._process_mic()
-
-    assert speaker.interrupted == 1
-    assert conversation._gate.latched
-    assert conversation._gate.force_pending
-
-
-def test_playback_echo_does_not_interrupt_or_clear_player():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        EchoMatch(similarity=0.94, unexplained_db=-49.0, lag_ms=520.0),
-    )
-
-    conversation._process_mic()
-
-    assert speaker.interrupted == 0
-    assert not conversation._gate.latched
-
-
-def test_weak_double_talk_interrupts_despite_far_end_similarity():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        _sustained(EchoMatch(similarity=0.88, unexplained_db=-40.0, lag_ms=520.0)),
-    )
-
-    conversation._process_mic()
-
-    assert speaker.interrupted == 1
-    assert conversation._gate.latched
-
-
-def test_user_entering_continuous_echo_is_detected_on_recheck():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        [
-            EchoMatch(similarity=0.95, unexplained_db=-50.0, lag_ms=520.0),
-            *_sustained(EchoMatch(similarity=0.82, unexplained_db=-39.0, lag_ms=500.0)),
-        ],
-    )
-
-    conversation._process_mic()
-
-    assert speaker.match_index == 5
-    assert speaker.interrupted == 1
-    assert conversation._gate.latched
-
-
-def test_head_bump_is_cancelled_when_next_window_returns_to_echo():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        [
-            EchoMatch(similarity=0.20, unexplained_db=-26.5, lag_ms=141.0),
-            EchoMatch(similarity=0.94, unexplained_db=-49.0, lag_ms=241.0),
-        ],
-    )
-
-    conversation._process_mic()
-
-    assert speaker.match_index == 2
-    assert speaker.interrupted == 0
-    assert not conversation._gate.latched
-    assert conversation._near_end_started_at is None
-
-
-def test_short_xvf_suppression_gap_does_not_lose_real_barge():
-    conversation = _conversation_without_hardware()
-    speaker = _install_barge_fakes(
-        conversation,
-        _sustained(EchoMatch(similarity=0.3, unexplained_db=-39.0, lag_ms=480.0)),
-        vad_pattern=[True] * 5 + [False] + [True] * 24,
-    )
-
-    conversation._process_mic()
-
-    assert speaker.interrupted == 1
-    assert conversation._gate.latched
-
-
 def test_interrupted_multi_branch_output_waits_for_force_listen_boundary():
     conversation = _conversation_without_hardware()
     pcm = np.ones(2400, np.float32)
@@ -373,3 +146,15 @@ def test_interrupted_multi_branch_output_waits_for_force_listen_boundary():
     epoch, queued = conversation._speaker._q.get_nowait()
     assert epoch == conversation._speaker.epoch
     assert queued is pcm
+
+
+def test_late_callbacks_from_rotated_session_cannot_poison_current_session():
+    conversation = _conversation_without_hardware()
+    conversation._session_sequence = 2
+    pcm = np.ones(2400, np.float32)
+
+    conversation._on_delta(Delta(kind="audio", audio=pcm), session_sequence=1)
+    conversation._on_closed("late-close", session_sequence=1)
+
+    assert conversation._speaker._q.empty()
+    assert not conversation._session_dead.is_set()

@@ -72,12 +72,20 @@ class TurnGate:
         return self._model_output(now)
 
     def model_listen(self, now: float, input_id: str = "") -> bool:
-        """Accept only the listen caused by the latest actually-sent force."""
+        """Accept a causally valid listen after the latest sent force.
+
+        Gateways that echo ``input_id`` get strict matching. Public-compatible
+        gateways may omit it on listen deltas; an unidentified listen is then
+        accepted only after a real forced send and only if no newer voice has
+        invalidated that send.
+        """
+        input_matches = (
+            input_id == self._last_forced_input_id if input_id else bool(self._last_forced_input_id)
+        )
         if not self._latched:
             return False
         if (
-            not input_id
-            or input_id != self._last_forced_input_id
+            not input_matches
             or self._last_force_at < self._latched_at
             or now < self._last_force_at
             or self._last_voice_at > self._last_force_at

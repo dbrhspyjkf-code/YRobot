@@ -12,26 +12,39 @@ import os
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
-# The duplex template was trained with this exact first line; a free-form
-# persona in its place drifts the model out of its full-duplex distribution
-# and leaks <think> blocks into speech. Keep the persona to one short line.
+# The duplex template was trained with this exact first line; keep persona and
+# proactive policy short so the model remains in its realtime distribution.
 TRAINED_SYSTEM_LINE = "You are a helpful assistant."
 DEFAULT_PERSONA = "你是 Reachy，一个友好的桌面机器人，用对方的语言简短口语化地回复。"
+PROACTIVE_POLICY = (
+    "持续观察和倾听；只在出现明确、重要的新变化时主动简短提醒，不解说静态场景，"
+    "不抢用户的话，非紧急主动发言保持克制。"
+)
+
+
+def build_system_prompt(persona: str, proactive: bool) -> str:
+    parts = [TRAINED_SYSTEM_LINE]
+    if persona.strip():
+        parts.append(persona.strip())
+    if proactive:
+        parts.append(PROACTIVE_POLICY)
+    return "\n".join(parts)
 
 
 def normalize_url(raw: str, mode: str | None = None) -> str:
     """Normalize a bare host, host:port or ws(s) URL to the realtime endpoint.
 
     An explicit mode in ``raw`` is preserved unless ``mode`` is supplied.
-    Audio is the latency-first default; camera frames are valid only in video
-    mode according to the public gateway contract.
+    Video is the product default; camera frames are valid only in video mode
+    according to the public gateway contract. Audio remains an explicit
+    low-bandwidth fallback.
     """
     if "://" not in raw:
         raw = f"wss://{raw}"
     parts = urlsplit(raw)
     path = parts.path if parts.path not in ("", "/") else "/v1/realtime"
     query = {k: v[0] for k, v in parse_qs(parts.query).items()}
-    selected_mode = mode or query.get("mode", "audio")
+    selected_mode = mode or query.get("mode", "video")
     if selected_mode not in {"audio", "video"}:
         raise ValueError("YRobot realtime mode must be 'audio' or 'video'")
     query["mode"] = selected_mode
@@ -53,9 +66,9 @@ def _num(name: str, default: float) -> float:
 class Settings:
     """Immutable application settings."""
 
-    url: str = normalize_url("minicpmo45.modelbest.cn")
+    url: str = normalize_url("minicpmo45.modelbest.cn", "video")
     tls_verify: bool = True
-    system_prompt: str = f"{TRAINED_SYSTEM_LINE}\n{DEFAULT_PERSONA}"
+    system_prompt: str = build_system_prompt(DEFAULT_PERSONA, proactive=False)
     length_penalty: float = 1.1
 
     # MiniCPM-o 4.5 advances its duplex timeline in fixed one-second audio
@@ -63,16 +76,16 @@ class Settings:
     # without applying force_listen because no inference logits were produced.
     chunk_ms: int = 1000
 
-    # Audio mode is the latency-first default. Enabling video switches a bare
-    # URL to mode=video; an explicitly contradictory URL is rejected.
-    send_video: bool = False
+    # Omni video is the product default. An explicit mode=audio URL disables
+    # frames unless SEND_VIDEO is explicitly (and incorrectly) forced on.
+    send_video: bool = True
     frame_period_active_s: float = 1.0
-    frame_period_idle_s: float = 5.0
+    frame_period_idle_s: float = 3.0
+    scene_change_threshold: float = 0.04
 
-    # Session rotation: rotate before the 600 s server cap or before the
-    # ~8192-token kv budget degrades replies, whichever comes first — and
-    # only at a quiet listen boundary.
-    session_budget_s: float = 550.0
+    # Session rotation: video defaults below its 300 s public cap; audio mode
+    # selects 550 s below its 600 s cap. KV pressure can rotate either sooner.
+    session_budget_s: float = 280.0
     kv_budget_tokens: float = 7200.0
     reconnect_delay_s: float = 2.5
 
@@ -84,7 +97,13 @@ class Settings:
     # Head bumps are loud but brief. Do not destroy playback until unexplained
     # near-end evidence spans this long (including the initial 200 ms window).
     barge_confirm_ms: int = 500
+    barge_fast_confirm_ms: int = 140
+    barge_fast_echo_similarity: float = 0.45
+    barge_fast_unexplained_db: float = -36.0
     head_tracking_weight: float = 0.4
+    ref_audio_path: str | None = None
+    tts_ref_audio_path: str | None = None
+    proactive_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -97,41 +116,61 @@ class Settings:
             raise ValueError("YROBOT_BARGE_UNEXPLAINED_DB must be between -120 and 0")
         if not 200 <= self.barge_confirm_ms <= 2000:
             raise ValueError("YROBOT_BARGE_CONFIRM_MS must be between 200 and 2000")
+        if not 60 <= self.barge_fast_confirm_ms <= self.barge_confirm_ms:
+            raise ValueError("YROBOT_BARGE_FAST_CONFIRM_MS must be between 60 and BARGE_CONFIRM_MS")
+        if not 0.0 <= self.barge_fast_echo_similarity <= 1.0:
+            raise ValueError("YROBOT_BARGE_FAST_ECHO_SIMILARITY must be between 0 and 1")
+        if not -120.0 <= self.barge_fast_unexplained_db <= 0.0:
+            raise ValueError("YROBOT_BARGE_FAST_UNEXPLAINED_DB must be between -120 and 0")
+        if self.frame_period_active_s <= 0 or self.frame_period_idle_s <= 0:
+            raise ValueError("YRobot camera periods must be positive")
+        if not 0.0 <= self.scene_change_threshold <= 1.0:
+            raise ValueError("YROBOT_SCENE_CHANGE_THRESHOLD must be between 0 and 1")
 
     @property
     def realtime_mode(self) -> str:
         """Public gateway mode selected in ``url``."""
-        return parse_qs(urlsplit(self.url).query).get("mode", ["audio"])[0]
+        return parse_qs(urlsplit(self.url).query).get("mode", ["video"])[0]
+
+    @property
+    def effective_system_prompt(self) -> str:
+        """Prompt sent to the model after applying the proactive policy."""
+        if not self.proactive_enabled or PROACTIVE_POLICY in self.system_prompt:
+            return self.system_prompt
+        return f"{self.system_prompt}\n{PROACTIVE_POLICY}"
 
     @classmethod
     def from_env(cls) -> Settings:
         """Build settings from ``YROBOT_*`` environment variables."""
         persona = os.environ.get("YROBOT_PERSONA", DEFAULT_PERSONA).strip()
         raw_url = os.environ.get("YROBOT_REALTIME_URL", "minicpmo45.modelbest.cn")
-        send_video = _flag("YROBOT_SEND_VIDEO", False)
+        raw_query = parse_qs(urlsplit(raw_url if "://" in raw_url else f"wss://{raw_url}").query)
+        explicit_mode = raw_query.get("mode", [None])[0]
+        send_video = _flag("YROBOT_SEND_VIDEO", explicit_mode != "audio")
+        proactive = _flag("YROBOT_PROACTIVE", send_video)
         requested_mode = os.environ.get("YROBOT_REALTIME_MODE")
         if requested_mode is not None:
             requested_mode = requested_mode.strip().lower()
         else:
-            raw_query = parse_qs(
-                urlsplit(raw_url if "://" in raw_url else f"wss://{raw_url}").query
-            )
             # Keep an explicit URL mode authoritative. For legacy deployments
             # that only set SEND_VIDEO, select the protocol mode that can
             # actually carry frames.
             requested_mode = None if "mode" in raw_query else ("video" if send_video else "audio")
         url = normalize_url(raw_url, requested_mode)
-        actual_mode = parse_qs(urlsplit(url).query).get("mode", ["audio"])[0]
+        actual_mode = parse_qs(urlsplit(url).query).get("mode", ["video"])[0]
         if send_video and actual_mode != "video":
             raise ValueError("YROBOT_SEND_VIDEO requires realtime mode=video")
         default_session_budget = 280.0 if actual_mode == "video" else 550.0
         return cls(
             url=url,
             tls_verify=_flag("YROBOT_TLS_VERIFY", True),
-            system_prompt=f"{TRAINED_SYSTEM_LINE}\n{persona}" if persona else TRAINED_SYSTEM_LINE,
+            system_prompt=build_system_prompt(persona, proactive=False),
             length_penalty=_num("YROBOT_LENGTH_PENALTY", 1.1),
             chunk_ms=int(_num("YROBOT_CHUNK_MS", 1000)),
             send_video=send_video,
+            frame_period_active_s=_num("YROBOT_FRAME_CAPTURE_PERIOD_S", 1.0),
+            frame_period_idle_s=_num("YROBOT_FRAME_IDLE_HEARTBEAT_S", 3.0),
+            scene_change_threshold=_num("YROBOT_SCENE_CHANGE_THRESHOLD", 0.04),
             session_budget_s=_num("YROBOT_SESSION_BUDGET_S", default_session_budget),
             kv_budget_tokens=_num("YROBOT_KV_BUDGET", 7200.0),
             reconnect_delay_s=_num("YROBOT_RECONNECT_DELAY_S", 2.5),
@@ -139,5 +178,11 @@ class Settings:
             barge_echo_similarity=_num("YROBOT_BARGE_ECHO_SIMILARITY", 0.75),
             barge_unexplained_db=_num("YROBOT_BARGE_UNEXPLAINED_DB", -42.0),
             barge_confirm_ms=int(_num("YROBOT_BARGE_CONFIRM_MS", 500)),
+            barge_fast_confirm_ms=int(_num("YROBOT_BARGE_FAST_CONFIRM_MS", 140)),
+            barge_fast_echo_similarity=_num("YROBOT_BARGE_FAST_ECHO_SIMILARITY", 0.45),
+            barge_fast_unexplained_db=_num("YROBOT_BARGE_FAST_UNEXPLAINED_DB", -36.0),
             head_tracking_weight=_num("YROBOT_HEAD_TRACKING_WEIGHT", 0.4),
+            ref_audio_path=os.environ.get("YROBOT_REF_AUDIO_PATH") or None,
+            tts_ref_audio_path=os.environ.get("YROBOT_TTS_REF_AUDIO_PATH") or None,
+            proactive_enabled=proactive,
         )

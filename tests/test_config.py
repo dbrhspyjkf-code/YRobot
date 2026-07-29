@@ -7,11 +7,13 @@ from yrobot.config import TRAINED_SYSTEM_LINE, Settings
 
 def test_defaults_target_official_gateway():
     s = Settings()
-    assert s.url == "wss://minicpmo45.modelbest.cn/v1/realtime?mode=audio"
+    assert s.url == "wss://minicpmo45.modelbest.cn/v1/realtime?mode=video"
     assert s.chunk_ms == 1000
-    assert s.send_video is False
-    assert s.realtime_mode == "audio"
+    assert s.send_video is True
+    assert s.realtime_mode == "video"
+    assert s.proactive_enabled is True
     assert s.system_prompt.startswith(TRAINED_SYSTEM_LINE + "\n")
+    assert len(s.effective_system_prompt) > len(s.system_prompt)
 
 
 def test_from_env_overrides(monkeypatch):
@@ -35,6 +37,7 @@ def test_from_env_overrides(monkeypatch):
 
 def test_empty_persona_keeps_trained_line_only(monkeypatch):
     monkeypatch.setenv("YROBOT_PERSONA", "  ")
+    monkeypatch.setenv("YROBOT_PROACTIVE", "false")
     assert Settings.from_env().system_prompt == TRAINED_SYSTEM_LINE
 
 
@@ -54,6 +57,17 @@ def test_explicit_audio_mode_rejects_video_frames(monkeypatch):
     monkeypatch.setenv("YROBOT_SEND_VIDEO", "true")
     with pytest.raises(ValueError, match="mode=video"):
         Settings.from_env()
+
+
+def test_explicit_audio_mode_is_a_clean_fallback(monkeypatch):
+    monkeypatch.setenv(
+        "YROBOT_REALTIME_URL",
+        "wss://10.0.16.184:8006/v1/realtime?mode=audio",
+    )
+    settings = Settings.from_env()
+    assert settings.realtime_mode == "audio"
+    assert settings.send_video is False
+    assert settings.proactive_enabled is False
 
 
 @pytest.mark.parametrize("chunk_ms", [20, 500, 2000])
@@ -78,3 +92,9 @@ def test_unexplained_energy_threshold_must_be_decibels(unexplained_db):
 def test_barge_confirmation_window_is_bounded(confirm_ms):
     with pytest.raises(ValueError, match="between 200 and 2000"):
         Settings(barge_confirm_ms=confirm_ms)
+
+
+@pytest.mark.parametrize("confirm_ms", [59, 501])
+def test_fast_barge_confirmation_must_precede_safe_path(confirm_ms):
+    with pytest.raises(ValueError, match="FAST_CONFIRM"):
+        Settings(barge_fast_confirm_ms=confirm_ms, barge_confirm_ms=500)

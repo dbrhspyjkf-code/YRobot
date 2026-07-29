@@ -111,6 +111,14 @@ def test_wrong_input_id_cannot_ack_latest_force():
     assert gate.latched
 
 
+def test_missing_input_id_uses_causal_fallback_after_real_force():
+    gate = TurnGate()
+    barge(gate, 1.0)
+    send_force(gate, "forced-latest", 1.05)
+    assert gate.model_listen(1.10, "") is True
+    assert gate.chunk_force_listen(1.20) is False
+
+
 def test_latch_timeout_never_auto_releases_stale_output():
     gate = TurnGate()
     barge(gate, 1.0)

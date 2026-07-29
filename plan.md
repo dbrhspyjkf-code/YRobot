@@ -1,45 +1,49 @@
-# YRobot v3 — 全双工 MiniCPM-o 4.5 × Reachy Mini Wireless
+# YRobot v3.1 — 全双工全模态实施与验收
 
-从零重写。目标：把官方 Realtime API（https://minicpmo45.modelbest.cn/docs/en/realtime-api/overview/）
-的全双工能力完整发挥到 Reachy Mini Wireless 上，四个痛点各有明确对策。
+目标不是“支持音频和图片”，而是在同一条 MiniCPM-o 4.5 时间线上持续听、持续看、
+边说边感知，并且允许用户自然抢话。默认产品路径必须是 `mode=video`；`mode=audio`
+只作为显式的低带宽降级。
 
-## 1. 四个痛点 → 对策
+## 已完成的工程改造
 
-| 痛点 | 根因 | 对策 |
+| 能力 | 实现 | 验证 |
 |---|---|---|
-| 端到端延迟高 | 摄像头编码或 WebSocket 发送阻塞采音；播放缓冲过大 | 采音/VAD 与发送解耦、视频 latest-only；严格使用 MiniCPM-o 的完整 1 s 推理单元；自适应 0.25–0.8 s preroll |
-| 打断不及时 / 旧音频复播 | 本地先 duck 再验证会延迟 0.6 s，失败时还会恢复旧尾音；`force_listen` 在入队时就被当作已发送 | 连续 100 ms 人声 → 立即推进 playback epoch + `clear_player()`，旧音频不可恢复；完整 1 s 单元持续携带 `force_listen`，发送线程记录 `input_id`，只有同一输入返回的 `listen` 才解除旧输出屏蔽 |
-| 被自己的回声/动作声误打断 | 板载 XVF3800 默认参数不适合远场 double-talk；单靠音量包络也会把真实弱人声挡掉 | 启动时应用 Pollen 会话应用的 XVF3800 AGC/AEC/NS 参数；WebRTC VAD + 连续 100 ms 确认；非对称噪声底吸收稳定电机噪声 |
-| 动作不拟人 | 动作源互相打架、无统一节奏 | 单一 50 Hz 动作 owner（呼吸/扫视/姿态全部临界阻尼合成）；说话嘴动用 SDK 官方 `enable_wobbling()`（daemon 侧与扬声器 PTS 同步）；body yaw 交给 `set_automatic_body_yaw(True)` 跟随头部 |
-| DoA 不灵敏 | 用固件 speech 标志做门控（它在 AEC 之前，机器人自己说话也触发） | 12 Hz 独立线程轮询 `DOA_VALUE_RADIANS`，只在**本地 VAD 判定用户在说话**时采样，1 s 窗口圆均值 + 死区，头相对角换算成世界 yaw 后交给动作 owner 平滑转过去；可叠加 daemon 人脸跟踪细修 |
+| 真正的视频全双工默认值 | URL 归一化默认 `mode=video`，默认发送视频；显式 audio URL 自动关闭视频和主动视觉策略 | 配置单测 |
+| 持续视觉 | 独立相机线程在机器人说话及 Gateway 轮换时也持续采集；对话期 1 fps，空闲时场景变化优先并保留 3 s 心跳；队列永远只有最新帧 | 视觉单测 + 运行指标 |
+| 低延迟打断 | 140 ms 高置信路径与 500 ms 安全路径并行；匹配真实扬声器 PCM，结合残差能量和语音形态过滤回声、马达与碰撞 | 声学单测 + 路径日志 |
+| 无旧音频复播 | 打断提交后推进 playback epoch 并清播放器；旧 epoch 永久失效 | 状态机/扬声器单测 |
+| `force_listen` 因果性 | 发送线程记录“实际发出”的强制输入；有 `input_id` 时严格匹配，无回传 ID 时只允许受保护的因果 fallback | 协议状态机单测 |
+| 会话轮换 | 视频会话默认 280 s；超时间或 KV 预算后优先在安静边界轮换，超过宽限期强制轮换；新会话携带受限的助手侧文本连续性提示 | 轮换/记忆单测 + handoff 日志 |
+| 参考音色 | 可选 LLM/TTS 参考 WAV 转换为 16 kHz mono float32，通过官方 `session.init.voice` 字段发送 | 协议 payload 单测 |
+| 克制的视觉主动性 | 视频模式默认追加短主动观察策略；audio 降级自动关闭，也可用环境变量显式关闭 | 配置/payload 单测 |
+| 音频质量 | 24→16 kHz 改为带低通的流式 windowed-sinc 重采样，避免线性重采样混叠 | 频带与连续性单测 |
+| 可观测性 | 日志记录捕获/发布/发送帧数、打断路径与 onset 延迟、force packet、WS 往返、会话 handoff gap | 代码审查 |
 
-## 2. 协议要点（来自官方文档 + 实测）
+## 刻意没有伪装成“已解决”的边界
 
-- `wss://…/v1/realtime?mode=audio`：上行 base64 float32 16 kHz mono，下行 24 kHz；
-  `session.queue_done` → `session.init` → `session.created`（~14 s，服务端固定成本）。
-- delta `kind ∈ {listen, text, audio}`；**只有 listen 是语义轮边界**；text/audio 不一一对应。
-- `mode=audio` 仍接受 `video_frames`（base64 JPEG），且会话上限 600 s（video 只有 300 s）。
-- system_prompt 首行必须是训练句 `You are a helpful assistant.`，第二行放简短人设
-  （自由人设会让 Qwen3 底座漂出双工分布、`<think>` 泄漏）。
-- kv 预算 ~8192：视觉 64 tok/帧 是大头 → 机器人独自说话时不发帧；活跃 1 fps、空闲 0.2 fps；
-  时间/kv 双预算到点后，只在安静的 listen 边界轮换会话。
+- 公共 Gateway 的会话初始化约 14 秒，且不保证同一账号可并行占用第二个 worker，
+  因而未加入不可靠的双会话预热。YRobot 在安全边界轮换、携带有限连续性提示并记录
+  handoff gap，但不能承诺服务端切换无缝。
+- 全双工接口不提供用户转写，跨会话记忆只能保留近期助手文本，不能冒充完整对话历史。
+- 参考音色、AEC、扬声器清空和物理静音延迟最终依赖实际 Gateway、CM4 与 Reachy 固件；
+  单元测试不能替代实机验收。
 
-## 3. 模块（6 文件，单一职责）
+## 发布前实机门槛
 
+1. 正面、侧面、远场各打断 10 次：高置信语音从声学 onset 到 `clear_player()` 的
+   P95 ≤ 180 ms，30 次旧音频复播为 0；弱声可走安全路径。
+2. 机器人独白、头部运动、天线运动各 10 次：无自我打断；敲击机身不得进入 fast path。
+3. 连续 10 分钟视频会话：机器人说话时 `captured` 和 `sent` 都持续增长；场景变化后
+   下一完整输入单元携带最新 JPEG；音频队列无随视频累积。
+4. 侧后方说话：本地确认用户语音后 1 秒内开始平滑转向，无姿态阶跃。
+5. 连续运行 30 分钟并经历至少 3 次会话轮换：无线程泄漏、无重复回答；记录每次
+   `handoff_gap_s`，据实建立部署基线。
+6. 分别用默认音色与参考音色启动：确认两类 reference 字段被 Gateway 接受，且主观音色
+   稳定；不支持自定义音色的部署应留空，而不是阻塞启动。
+
+本地发布检查：
+
+```bash
+pytest
+ruff check .
 ```
-config.py    环境变量 → 冻结配置（URL 归一化、所有可调参数）
-realtime.py  网关协议客户端（排队/init/收发/关闭）+ ThinkFilter
-turn.py      打断状态机（纯逻辑、单测覆盖）
-audio.py     VoiceDetector(VAD+噪声底) / MicChunker / LinearResampler / Speaker(epoch 播放)
-motion.py    SoundCompass(DoA) + Choreographer(50 Hz 唯一动作 owner)
-main.py      ReachyMiniApp 接线、会话生命周期、CLI
-```
-
-线程：mic 上行（主循环）、ws 收、扬声器、动作 50 Hz、DoA 12 Hz。跨线程只传不可变数据。
-
-## 4. 验收（实机）
-
-1. 打断 30 次：物理静音 ≤100 ms，旧音频零复播。
-2. 机器人独白 + 头/身体大幅运动 30 次：零自我打断。
-3. 侧后方说话：1 s 内头转向说话人，无阶跃。
-4. 连续 30 min，≥3 次会话轮换，轮换期间保持 idle 姿态。

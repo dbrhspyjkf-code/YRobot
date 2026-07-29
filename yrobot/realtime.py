@@ -26,8 +26,10 @@ import logging
 import ssl
 import threading
 import time
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from websockets.sync.client import connect
@@ -39,6 +41,66 @@ logger = logging.getLogger(__name__)
 DOWNLINK_RATE = 24_000
 UPLINK_RATE = 16_000
 UPLINK_UNIT_SAMPLES = UPLINK_RATE
+
+
+def encode_reference_wav(path: str) -> str:
+    """Return a WAV file as base64 float32 16 kHz mono PCM.
+
+    Reference clips are startup configuration, so a small in-memory conversion
+    is preferable to adding a heavyweight audio dependency to the robot.
+    """
+    source = Path(path).expanduser()
+    try:
+        with wave.open(str(source), "rb") as wav:
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            rate = wav.getframerate()
+            frames = wav.readframes(wav.getnframes())
+    except (OSError, wave.Error) as exc:
+        raise ValueError(f"cannot read reference audio {source}: {exc}") from exc
+    if channels < 1 or rate <= 0 or sample_width not in (1, 2, 4):
+        raise ValueError("reference WAV must be PCM with 8, 16, or 32-bit samples")
+
+    if sample_width == 1:
+        pcm = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif sample_width == 2:
+        pcm = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    else:
+        pcm = np.frombuffer(frames, dtype="<i4").astype(np.float32) / 2_147_483_648.0
+    usable = len(pcm) // channels * channels
+    if usable == 0:
+        raise ValueError("reference WAV is empty")
+    pcm = pcm[:usable].reshape(-1, channels).mean(axis=1)
+    if rate != UPLINK_RATE:
+        count = max(1, round(len(pcm) * UPLINK_RATE / rate))
+        positions = np.arange(count, dtype=np.float64) * rate / UPLINK_RATE
+        pcm = np.interp(positions, np.arange(len(pcm)), pcm).astype(np.float32)
+    return base64.b64encode(pcm.astype("<f4", copy=False).tobytes()).decode()
+
+
+def _voice_payload(settings: Settings) -> dict[str, str]:
+    voice: dict[str, str] = {}
+    if settings.ref_audio_path:
+        voice["ref_audio_base64"] = encode_reference_wav(settings.ref_audio_path)
+    if settings.tts_ref_audio_path:
+        voice["tts_ref_audio_base64"] = encode_reference_wav(settings.tts_ref_audio_path)
+    return voice
+
+
+def build_session_payload(settings: Settings, system_prompt: str | None = None) -> dict:
+    """Build the documented ``session.init.payload`` object.
+
+    Keeping protocol construction outside the socket lifecycle makes the
+    video/voice contract directly testable without a gateway connection.
+    """
+    payload: dict = {
+        "system_prompt": system_prompt or settings.effective_system_prompt,
+        "config": {"length_penalty": settings.length_penalty},
+    }
+    voice = _voice_payload(settings)
+    if voice:
+        payload["voice"] = voice
+    return payload
 
 
 @dataclass(frozen=True)
@@ -104,6 +166,8 @@ class RealtimeClient:
         settings: Settings,
         on_delta: Callable[[Delta], None],
         on_closed: Callable[[str], None],
+        *,
+        system_prompt: str | None = None,
     ) -> None:
         self._settings = settings
         self._on_delta = on_delta
@@ -113,6 +177,7 @@ class RealtimeClient:
         self._queue_done = threading.Event()
         self._created = threading.Event()
         self._closed_once = threading.Event()
+        self._system_prompt = system_prompt or settings.effective_system_prompt
         self.session_id = ""
 
     def open(self, timeout: float = 120.0) -> None:
@@ -130,15 +195,8 @@ class RealtimeClient:
 
         if not self._wait_queue(timeout):
             raise TimeoutError("gateway queue timeout")
-        self._send(
-            {
-                "type": "session.init",
-                "payload": {
-                    "system_prompt": s.system_prompt,
-                    "config": {"length_penalty": s.length_penalty},
-                },
-            }
-        )
+        payload = build_session_payload(s, self._system_prompt)
+        self._send({"type": "session.init", "payload": payload})
         if not self._created.wait(timeout):
             raise TimeoutError("session.created timeout")
         logger.info("session %s ready in %.1f s", self.session_id, time.monotonic() - t0)

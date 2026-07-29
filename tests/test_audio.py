@@ -189,7 +189,16 @@ def test_resampler_ratio_and_continuity():
     ramp = np.linspace(0.0, 1.0, 24_000, dtype=np.float32)
     out = np.concatenate([rs.process(chunk) for chunk in np.array_split(ramp, 13)])
     assert abs(len(out) - 16_000) <= 2
-    assert np.all(np.diff(out) >= 0)  # no seams between chunks
+    assert np.all(np.diff(out[32:]) >= -1e-6)  # startup FIR ringing only; no seams
+
+
+def test_resampler_filters_content_above_output_nyquist():
+    t = np.arange(24_000) / 24_000
+    passband = np.sin(2 * np.pi * 1000 * t).astype(np.float32)
+    stopband = np.sin(2 * np.pi * 10_000 * t).astype(np.float32)
+    low = StreamResampler().process(passband)[100:]
+    high = StreamResampler().process(stopband)[100:]
+    assert float(np.sqrt(np.mean(np.square(high)))) < 0.1 * float(np.sqrt(np.mean(np.square(low))))
 
 
 def test_speaker_plays_after_boundary_and_flushes_on_interrupt():

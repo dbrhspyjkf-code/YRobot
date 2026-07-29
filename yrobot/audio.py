@@ -317,24 +317,40 @@ class UplinkGain:
 
 
 class StreamResampler:
-    """Stateful linear resampler (24 kHz → 16 kHz) with phase continuity.
+    """Streaming resampler with a small anti-alias filter and phase continuity.
 
-    Linear interpolation is transparent for 24→16 k speech and adds zero
-    latency and zero dependencies — deliberately chosen over polyphase.
+    The Reachy playback path is 16 kHz while model audio is 24 kHz. A 31-tap
+    windowed-sinc low-pass removes content above the new Nyquist frequency
+    before interpolation, adding less than one millisecond of fixed delay and
+    no extra dependency.
     """
 
+    FILTER_TAPS = 31
+
     def __init__(self, rate_in: int = 24_000, rate_out: int = 16_000) -> None:
+        self._rate_in = rate_in
+        self._rate_out = rate_out
         self._step = rate_in / rate_out
+        cutoff = 0.47 * min(1.0, rate_out / rate_in)
+        positions = np.arange(self.FILTER_TAPS) - (self.FILTER_TAPS - 1) / 2
+        kernel = 2 * cutoff * np.sinc(2 * cutoff * positions)
+        kernel *= np.hamming(self.FILTER_TAPS)
+        self._kernel = (kernel / np.sum(kernel)).astype(np.float32)
         self.reset()
 
     def reset(self) -> None:
         self._tail = np.empty(0, np.float32)
         self._phase = 0.0
+        self._filter_state = np.zeros(self.FILTER_TAPS - 1, np.float32)
 
     def process(self, pcm: np.ndarray) -> np.ndarray:
         if len(pcm) == 0:
             return pcm.astype(np.float32)
-        buf = np.concatenate([self._tail, pcm.astype(np.float32)])
+        source = pcm.astype(np.float32, copy=False)
+        extended = np.concatenate([self._filter_state, source])
+        filtered = np.convolve(extended, self._kernel, mode="valid").astype(np.float32)
+        self._filter_state = extended[-(self.FILTER_TAPS - 1) :]
+        buf = np.concatenate([self._tail, filtered])
         positions = np.arange(self._phase, len(buf) - 1, self._step)
         out = np.interp(positions, np.arange(len(buf)), buf).astype(np.float32)
         consumed = positions[-1] + self._step if len(positions) else self._phase

@@ -22,7 +22,7 @@ is speaking, and it breathes, glances and dances its antennas while it talks.
 
 ```
 you ─── voice ─► tuned XVF3800 AEC ─► 20 ms VAD/control ─► 1 s model units ──┐
-      camera ─► independent latest-only JPEG worker ──────────────────────────┤
+      camera ─► continuous scene-aware latest-only JPEG worker ───────────────┤
                                                                               ▼
                                 wss://…/v1/realtime?mode={audio|video}
                                                                               │
@@ -37,11 +37,12 @@ Everything below is encoded in the source with the reasoning attached; this is t
 | Problem | Mechanism | Where |
 |---|---|---|
 | Reply latency | Mic/VAD never waits for camera encoding or WebSocket sends. Audio enters a bounded realtime queue; video is latest-only. The MiniCPM-o stream uses its native complete one-second inference units, while adaptive 0.25–0.8 s playback preroll absorbs server jitter | `main.py`, `audio.py` |
-| Barge-in | Client-owned and destructive: 200 ms windows classify playout echo, while unexplained near-end voice must persist for 500 ms before the playback epoch advances and the SDK `clear_player()` is called. Output then stays suppressed and every complete input carries `force_listen` until the exact actually-sent `input_id` returns `listen`; 450 ms of user quiet admits the new answer. `response_id` is deliberately not treated as a turn boundary | `turn.py`, `audio.py`, `main.py` |
-| False triggers from its own echo/motors | YRobot searches every candidate against exact recently scheduled speaker PCM across the variable capture latency. High-correlation residual is rejected as echo; a loud uncorrelated head bump starts only a provisional near-end candidate and expires without touching playback unless it survives the 500 ms duration gate. A 40 ms gap tolerance preserves speech flicker from XVF double-talk suppression, while the adaptive floor absorbs steady motor noise | `audio.py`, `main.py` |
+| Barge-in | Client-owned and destructive: clear near-end speech takes a high-confidence 140 ms path; ambiguous double-talk takes the conservative 500 ms path. A commit advances the playback epoch and calls SDK `clear_player()`, so interrupted audio cannot replay. Complete one-second inputs then carry `force_listen` until the model returns to listening | `barge.py`, `turn.py`, `main.py` |
+| False triggers from its own echo/motors | Every candidate is compared with exact recently scheduled speaker PCM. Echo similarity, unexplained energy and cheap speech-shape checks gate the fast path; head bumps and uncertain residuals must survive the safe path. A 40 ms gap tolerance handles XVF double-talk suppression | `barge.py`, `audio.py` |
 | Wooden motion | One 50 Hz thread owns the pose. Breathing and posture cross-fade; gaze and idle saccades both use velocity-limited second-order trajectories, so a new random glance cannot step the head in one tick | `motion.py` |
 | Deaf DoA | Samples are gated by locally confirmed user voice, transformed with the daemon's physical head pose, confidence-weighted with the XVF speech flag, circularly averaged, and dead-banded | `motion.py`, `main.py` |
-| Context rot | Vision costs ~64 kv tokens/frame against an ~8 k budget: frames go up at 1 fps in conversation, 0.2 fps idle, never while only the robot is speaking; sessions rotate at the first quiet moment past the time/kv budget | `main.py` |
+| Visual blindness / context rot | Camera capture continues while either side speaks and stays alive across Gateway rotation. Conversation frames publish at 1 fps; idle frames publish on scene change plus a 3 s heartbeat, always latest-only. Video sessions rotate before the 300 s cap at a quiet boundary and carry a bounded assistant-side continuity hint; capture, send and true handoff gaps are logged | `vision.py`, `session.py`, `main.py` |
+| Generic voice / passive behaviour | Optional LLM and TTS reference WAVs use the documented `session.init.voice` fields. Video mode also adds a restrained proactive-observation policy; both features are explicit environment settings | `config.py`, `realtime.py` |
 
 ## Protocol in one paragraph
 
@@ -54,8 +55,10 @@ assistant.` — a free-form persona drifts the model out of its duplex distribut
 `force_listen`, and—only in video mode—base64 JPEG `video_frames`. The server streams
 `response.output.delta` events with `kind ∈ {listen, text, audio}` (audio is 24 kHz
 float32); **only `listen` is an utterance boundary** — text and audio are independent
-streams. During barge-in, only a `listen` carrying the latest forced `input_id` is an
-acknowledgement. See `realtime.py`.
+streams. YRobot uses `input_id` for strong local causality when the gateway echoes it;
+because the public protocol does not require that echo, it also has a guarded fallback:
+an untagged `listen` is accepted only after the latest forced packet has actually crossed
+the socket and no newer voice has appeared. See `realtime.py` and `turn.py`.
 
 ## Run
 
@@ -66,6 +69,11 @@ pip install -e .
 cp .env.example .env   # point YROBOT_REALTIME_URL at your gateway
 yrobot
 ```
+
+The shipped default is real `mode=video` with continuous frames. Voice-only mode is an
+explicit fallback: use `mode=audio`, set `YROBOT_SEND_VIDEO=0`, and proactive vision is
+disabled automatically. Optional reference-voice and tuning variables are documented in
+[`.env.example`](.env.example).
 
 It also registers as a Reachy Mini app (`reachy_mini_apps` entry point `yrobot`), so the
 dashboard can start and stop it.
@@ -84,13 +92,16 @@ yrobot/config.py     env → one frozen Settings dataclass; URL normalization
 yrobot/realtime.py   gateway protocol client + <think>-leak filter
 yrobot/turn.py       barge-in state machine (pure logic, fully unit-tested)
 yrobot/audio.py      mic framing, VAD stack, 24→16 k resampler, epoch speaker
+yrobot/barge.py      echo-aware fast/safe acoustic barge-in qualification
+yrobot/vision.py     continuous scene-aware, latest-only camera worker
+yrobot/session.py    quiet-boundary rotation + bounded continuity memory
 yrobot/motion.py     DoA sound compass + 50 Hz choreographer
 yrobot/main.py       wiring, session rotation, ReachyMiniApp + CLI
 ```
 
 Every module docstring states the non-obvious constraint it encodes (gateway behaviour
 verified live, SDK threading rules, XVF3800 quirks). If you change a number, read the
-docstring above it first.
+docstring above it first. See [`plan.md`](plan.md) for the real-hardware acceptance gates.
 
 ## License
 

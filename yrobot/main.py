@@ -17,8 +17,6 @@ import logging
 import queue
 import threading
 import time
-from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -26,23 +24,14 @@ from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
-try:  # optional: shrinks camera frames before upload (weak networks)
-    import cv2
-except ImportError:  # pragma: no cover
-    cv2 = None
-
-from yrobot.audio import (
-    EchoMatch,
-    Microphone,
-    Speaker,
-    UplinkGain,
-    VoiceDetector,
-    apply_audio_startup_config,
-)
+from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
+from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
 from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
+from yrobot.session import ConversationMemory, RotationPolicy
 from yrobot.turn import TurnGate
+from yrobot.vision import LatestCamera, VisionStats
 
 logger = logging.getLogger(__name__)
 
@@ -55,31 +44,6 @@ ACTIVE_WINDOW_S = 10.0  # camera stays at 1 fps this long after the user spoke
 # sessions every ~85 s and wiped the model's memory mid-conversation
 # (hardware log 2026-07-24).
 KV_PER_S_IDLE, KV_PER_S_BUSY, KV_PER_FRAME = 13.0, 28.0, 64.0
-# The model reads frames at max_slice_nums=1 (~448 px): a full-resolution
-# JPEG is pure uplink waste and stalls audio on weak wifi.
-FRAME_MAX_DIM = 448
-FRAME_JPEG_QUALITY = 80
-# During live playout, collect enough speech structure to distinguish the
-# exact far-end waveform from genuine double-talk. Re-evaluate a blocked
-# continuous run every 100 ms so a user can still enter over a long vowel.
-BARGE_MATCH_FRAMES = 10
-BARGE_RECHECK_FRAMES = 5
-BARGE_GAP_FRAMES = 2
-BARGE_ECHO_LOG_PERIOD_S = 2.0
-BARGE_ANALYSIS_S = BARGE_MATCH_FRAMES * FRAME_S
-
-
-def shrink_jpeg(bgr_frame: np.ndarray | None) -> bytes | None:
-    """Encode a camera frame at the model's native vision scale."""
-    if bgr_frame is None or cv2 is None:
-        return None
-    height, width = bgr_frame.shape[:2]
-    scale = FRAME_MAX_DIM / max(height, width)
-    if scale < 1.0:
-        size = (max(1, round(width * scale)), max(1, round(height * scale)))
-        bgr_frame = cv2.resize(bgr_frame, size, interpolation=cv2.INTER_AREA)
-    ok, encoded = cv2.imencode(".jpg", bgr_frame, [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
-    return encoded.tobytes() if ok else None
 
 
 @dataclass(frozen=True)
@@ -90,67 +54,6 @@ class UplinkPacket:
     force_listen: bool
     captured_at: float
     input_id: str
-
-
-class LatestCamera(threading.Thread):
-    """Capture and encode video away from the realtime audio path.
-
-    Only the newest JPEG is retained: video is context, not a lossless stream,
-    so a slow network must never build a stale frame backlog.
-    """
-
-    def __init__(
-        self,
-        media,
-        active: Callable[[float], bool],
-        robot_audible: Callable[[float], bool],
-        active_period_s: float,
-        idle_period_s: float,
-    ) -> None:
-        super().__init__(name="yrobot-camera", daemon=True)
-        self._media = media
-        self._active = active
-        self._robot_audible = robot_audible
-        self._active_period_s = active_period_s
-        self._idle_period_s = idle_period_s
-        self._halt = threading.Event()
-        self._lock = threading.Lock()
-        self._latest: tuple[int, bytes] | None = None
-        self._sequence = 0
-        self._taken_sequence = 0
-
-    def close(self) -> None:
-        self._halt.set()
-
-    def take_latest(self) -> bytes | None:
-        """Return each encoded frame at most once."""
-        with self._lock:
-            if self._latest is None or self._latest[0] == self._taken_sequence:
-                return None
-            self._taken_sequence, jpeg = self._latest
-            return jpeg
-
-    def run(self) -> None:
-        next_capture = 0.0
-        while not self._halt.wait(0.02):
-            now = time.monotonic()
-            if now < next_capture or self._robot_audible(now):
-                continue
-            period = self._active_period_s if self._active(now) else self._idle_period_s
-            next_capture = now + period
-            try:
-                if cv2 is not None:
-                    jpeg = shrink_jpeg(self._media.get_frame())
-                else:
-                    jpeg = self._media.get_frame_jpeg()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("camera capture skipped: %s", exc)
-                continue
-            if not jpeg:
-                continue
-            with self._lock:
-                self._sequence += 1
-                self._latest = (self._sequence, jpeg)
 
 
 class Conversation:
@@ -166,6 +69,18 @@ class Conversation:
         self._gate = TurnGate()
         self._turn_lock = threading.Lock()
         self._agc = UplinkGain()
+        self._barge = BargeDetector(
+            BargeConfig(
+                echo_similarity=settings.barge_echo_similarity,
+                unexplained_db=settings.barge_unexplained_db,
+                confirm_ms=settings.barge_confirm_ms,
+                fast_confirm_ms=settings.barge_fast_confirm_ms,
+                fast_echo_similarity=settings.barge_fast_echo_similarity,
+                fast_unexplained_db=settings.barge_fast_unexplained_db,
+            )
+        )
+        self._rotation = RotationPolicy(settings.session_budget_s, settings.kv_budget_tokens)
+        self._memory = ConversationMemory()
         self._choreo = Choreographer(mini)
         self._compass = SoundCompass(
             mini.media,
@@ -182,12 +97,21 @@ class Conversation:
         self._video_kv_est = 0.0
         self._last_logged_audio_onset_at = -1e9
         self._input_sequence = 0
-        self._barge_frames: deque[np.ndarray] = deque(maxlen=BARGE_MATCH_FRAMES)
-        self._barge_frames_since_match = 0
-        self._barge_quiet_frames = 0
-        self._near_end_started_at: float | None = None
-        self._near_end_onset_at = -1e9
-        self._last_echo_rejection_log_at = -1e9
+        self._session_sequence = 0
+        self._last_session_ended_at: float | None = None
+        self._camera = (
+            LatestCamera(
+                mini.media,
+                active=lambda now: (
+                    now - self._last_voice_at < ACTIVE_WINDOW_S or self._speaker.audible(now)
+                ),
+                capture_period_s=settings.frame_period_active_s,
+                idle_heartbeat_s=settings.frame_period_idle_s,
+                scene_threshold=settings.scene_change_threshold,
+            )
+            if settings.send_video
+            else None
+        )
 
     def run(self) -> None:
         self._mini.media.start_recording()
@@ -202,6 +126,8 @@ class Conversation:
         self._speaker.start()
         self._choreo.start()
         self._compass.start()
+        if self._camera is not None:
+            self._camera.start()
         try:
             while not self._stop.is_set():
                 self._one_session()
@@ -210,9 +136,14 @@ class Conversation:
             self._compass.close()
             self._choreo.close()
             self._speaker.close()
+            if self._camera is not None:
+                self._camera.close()
             self._compass.join(timeout=2)
             self._choreo.join(timeout=2)
             self._speaker.join(timeout=2)
+            if self._camera is not None:
+                self._camera.join(timeout=2)
+                self._log_vision_stats("total", self._camera.stats())
             self._mini.media.stop_recording()
 
     # -- session ------------------------------------------------------------
@@ -224,19 +155,34 @@ class Conversation:
         self._video_kv_est = 0.0
         self._last_logged_audio_onset_at = -1e9
         self._input_sequence = 0
-        self._reset_barge_candidate()
+        self._barge.reset()
+        self._rotation.reset()
+        self._session_sequence += 1
+        session_sequence = self._session_sequence
         with self._turn_lock:
             self._gate = TurnGate()
-        client = RealtimeClient(self._s, on_delta=self._on_delta, on_closed=self._on_closed)
+        client = RealtimeClient(
+            self._s,
+            on_delta=lambda delta: self._on_delta(delta, session_sequence),
+            on_closed=lambda reason: self._on_closed(reason, session_sequence),
+            system_prompt=self._memory.prompt(self._s.effective_system_prompt),
+        )
         try:
             client.open()
         except Exception as exc:  # noqa: BLE001 — queue/backend failures are routine
             logger.warning("session open failed: %s", exc)
             client.close()
             return
+        if self._last_session_ended_at is not None:
+            logger.info(
+                "session %d handoff gap %.0f ms",
+                session_sequence,
+                (time.monotonic() - self._last_session_ended_at) * 1000,
+            )
         try:
             self._uplink_loop(client)
         finally:
+            self._last_session_ended_at = time.monotonic()
             # A transport/session boundary is also a playback boundary.
             # Never let buffered deltas from a dead session leak into the
             # reconnecting one.
@@ -250,25 +196,14 @@ class Conversation:
         frames: list[np.ndarray] = []
         packets: queue.Queue[UplinkPacket] = queue.Queue(maxsize=4)
         sender_halt = threading.Event()
-        camera = (
-            LatestCamera(
-                self._mini.media,
-                active=lambda now: now - self._last_voice_at < ACTIVE_WINDOW_S,
-                robot_audible=self._speaker.playing,
-                active_period_s=self._s.frame_period_active_s,
-                idle_period_s=self._s.frame_period_idle_s,
-            )
-            if self._s.send_video
-            else None
-        )
+        camera = self._camera
+        vision_start = camera.stats() if camera is not None else None
         sender = threading.Thread(
             target=self._send_loop,
             args=(client, packets, sender_halt, camera),
             name="yrobot-uplink",
             daemon=True,
         )
-        if camera is not None:
-            camera.start()
         sender.start()
         while self._mic.read_frames():  # drop audio captured during session setup
             pass
@@ -334,10 +269,10 @@ class Conversation:
                     return
         finally:
             sender_halt.set()
-            if camera is not None:
-                camera.close()
-                camera.join(timeout=2)
             sender.join(timeout=2)
+            if camera is not None:
+                assert vision_start is not None
+                self._log_vision_stats("session", _stats_delta(camera.stats(), vision_start))
 
     def _send_loop(
         self,
@@ -356,9 +291,6 @@ class Conversation:
             started = time.monotonic()
             queue_ms = (started - packet.captured_at) * 1000
             try:
-                if packet.force_listen:
-                    with self._turn_lock:
-                        self._gate.force_sent(packet.input_id, started)
                 client.send_chunk(
                     packet.audio,
                     jpeg,
@@ -369,15 +301,22 @@ class Conversation:
                 logger.info("uplink ended: %s", exc)
                 self._session_dead.set()
                 return
-            send_ms = (time.monotonic() - started) * 1000
+            sent_at = time.monotonic()
+            send_ms = (sent_at - started) * 1000
             if packet.force_listen:
+                with self._turn_lock:
+                    self._gate.force_sent(packet.input_id, sent_at)
                 logger.info(
-                    "force_listen sent: %.0f ms queue age, %.0f ms websocket",
+                    "force_listen sent: %.0f ms from user onset, %.0f ms queue age, "
+                    "%.0f ms websocket",
+                    (sent_at - self._last_user_onset_at) * 1000,
                     queue_ms,
                     send_ms,
                 )
             if jpeg is not None:
                 self._video_kv_est += KV_PER_FRAME
+                if camera is not None:
+                    camera.mark_sent()
             if send_ms > 300 or queue_ms > 150:
                 logger.warning(
                     "slow uplink: websocket %.0f ms, queue age %.0f ms, depth %d, video=%s",
@@ -420,13 +359,9 @@ class Conversation:
     def _process_mic(self) -> list[np.ndarray]:
         """Read mic frames; run VAD, barge-in and posture per 20 ms frame.
 
-        The XVF3800 profile conditions double-talk before WebRTC VAD. During a
-        live robot turn, a 200 ms candidate is compared with the exact recent
-        speaker PCM over the variable capture latency. Echo-explained voice is
-        ignored without touching playback. Unexplained near-end evidence must
-        span the configured 500 ms before it advances the epoch, flushes the
-        player and latches force_listen; short head bumps therefore expire
-        harmlessly. Candidates are rechecked every 100 ms.
+        The XVF3800 profile conditions double-talk before WebRTC VAD. Clear,
+        speech-shaped near-end evidence takes the fast path; ambiguous sound
+        keeps the longer echo-aware confirmation that rejects motor knocks.
         """
         out = self._mic.read_frames()
         # A device read may return several frames. Approximate their capture
@@ -438,9 +373,17 @@ class Conversation:
             robot_turn_live = self._speaker.audible(now)
             voiced = self._detector.process(frame, now, floor_frozen=robot_sounding)
             if robot_turn_live and not self._gate_latched():
-                self._consider_barge(frame, voiced, now)
+                decision = self._barge.process(
+                    frame,
+                    voiced=voiced,
+                    raw_streak=self._detector.streak,
+                    now=now,
+                    echo_match=self._speaker.echo_match,
+                )
+                if decision is not None:
+                    self._begin_barge(now, decision=decision)
             else:
-                self._reset_barge_candidate(now, reason="robot turn ended")
+                self._barge.reset()
             # Once a barge is latched, every voiced frame keeps force sticky.
             # While the robot is silent, ordinary user speech still drives
             # DoA/camera activity without creating an interruption.
@@ -458,102 +401,11 @@ class Conversation:
             self._choreo.set_mode(IDLE)
         return out
 
-    def _consider_barge(self, frame: np.ndarray, voiced: bool, now: float) -> None:
-        """Commit only voice that cannot be explained by recent playout."""
-        if self._detector.streak <= 0:
-            self._barge_quiet_frames += 1
-            if not self._barge_frames or self._barge_quiet_frames > BARGE_GAP_FRAMES:
-                self._reset_barge_candidate(now, reason="voice ended")
-            else:
-                # XVF double-talk suppression can punch a 20–40 ms hole in
-                # quiet real speech. Keep the acoustic window contiguous,
-                # but never classify until WebRTC VAD confirms again.
-                self._barge_frames.append(frame)
-                self._barge_frames_since_match += 1
-            return
-        self._barge_quiet_frames = 0
-        self._barge_frames.append(frame)
-        self._barge_frames_since_match += 1
-        if (
-            not voiced
-            or len(self._barge_frames) < BARGE_MATCH_FRAMES
-            or self._barge_frames_since_match < BARGE_RECHECK_FRAMES
-        ):
-            return
-
-        self._barge_frames_since_match = 0
-        candidate = np.concatenate(tuple(self._barge_frames))
-        match = self._speaker.echo_match(candidate, now)
-        echo_explained = (
-            match.similarity >= self._s.barge_echo_similarity
-            and match.unexplained_db < self._s.barge_unexplained_db
-        )
-        if echo_explained:
-            self._cancel_near_end_candidate(now, reason="matched playback echo")
-            if now - self._last_echo_rejection_log_at >= BARGE_ECHO_LOG_PERIOD_S:
-                self._last_echo_rejection_log_at = now
-                logger.info(
-                    "barge candidate rejected as playback echo: mic %.1f dB, "
-                    "similarity %.2f, unexplained %.1f dB, lag %.0f ms",
-                    self._detector.last_db,
-                    match.similarity,
-                    match.unexplained_db,
-                    match.lag_ms,
-                )
-            return
-
-        if self._near_end_started_at is None:
-            self._near_end_started_at = now
-            self._near_end_onset_at = now - (len(self._barge_frames) - 1) * FRAME_S
-            logger.info(
-                "barge candidate: unexplained near-end sound; confirming %d ms "
-                "(mic %.1f dB, similarity %.2f, unexplained %.1f dB)",
-                self._s.barge_confirm_ms,
-                self._detector.last_db,
-                match.similarity,
-                match.unexplained_db,
-            )
-
-        evidence_s = BARGE_ANALYSIS_S + max(0.0, now - self._near_end_started_at)
-        if evidence_s + 1e-9 < self._s.barge_confirm_ms / 1000.0:
-            return
-
-        onset_at = self._near_end_onset_at
-        self._reset_barge_candidate()
-        self._begin_barge(now, onset_at=onset_at, match=match)
-
-    def _cancel_near_end_candidate(self, now: float, *, reason: str) -> None:
-        if self._near_end_started_at is not None:
-            evidence_ms = (BARGE_ANALYSIS_S + max(0.0, now - self._near_end_started_at)) * 1000.0
-            logger.info(
-                "barge candidate ignored before confirmation: %.0f ms evidence (%s)",
-                evidence_ms,
-                reason,
-            )
-        self._near_end_started_at = None
-        self._near_end_onset_at = -1e9
-
-    def _reset_barge_candidate(
-        self,
-        now: float | None = None,
-        *,
-        reason: str = "",
-    ) -> None:
-        if now is not None and reason:
-            self._cancel_near_end_candidate(now, reason=reason)
-        else:
-            self._near_end_started_at = None
-            self._near_end_onset_at = -1e9
-        self._barge_frames.clear()
-        self._barge_frames_since_match = 0
-        self._barge_quiet_frames = 0
-
     def _begin_barge(
         self,
         now: float,
         *,
-        onset_at: float | None = None,
-        match: EchoMatch | None = None,
+        decision: BargeDecision | None = None,
     ) -> None:
         """Atomically suppress output and hard-stop the interrupted local turn."""
         with self._turn_lock:
@@ -562,8 +414,9 @@ class Conversation:
                 self._captions = ThinkFilter()
                 epoch = self._speaker.interrupt()
         if started:
-            self._mark_user_voice(now if onset_at is None else onset_at)
-            if match is None:
+            onset_at = decision.onset_at if decision is not None else now
+            self._mark_user_voice(onset_at)
+            if decision is None:
                 logger.info(
                     "barge-in: local playback discarded at epoch %d (mic %.1f dB); "
                     "force latched for next complete unit",
@@ -571,11 +424,14 @@ class Conversation:
                     self._detector.last_db,
                 )
             else:
+                match = decision.match
                 logger.info(
-                    "barge-in: unexplained near-end voice discarded playback at epoch %d "
+                    "barge-in %s path: playback discarded at epoch %d after %.0f ms "
                     "(mic %.1f dB, similarity %.2f, unexplained %.1f dB, lag %.0f ms); "
                     "force latched for next complete unit",
+                    decision.path,
                     epoch,
+                    decision.evidence_ms,
                     self._detector.last_db,
                     match.similarity,
                     match.unexplained_db,
@@ -607,19 +463,19 @@ class Conversation:
             return self._choreo.current_yaw()
 
     def _should_rotate(self, elapsed: float, kv_est: float, now: float) -> bool:
-        over = elapsed > self._s.session_budget_s or kv_est > self._s.kv_budget_tokens
-        if not over:
-            return False
         quiet = (
             not self._gate_latched()
             and not self._speaker.audible(now)
             and not self._confirmed_user_active(now)
         )
-        return quiet or elapsed > self._s.session_budget_s + 30.0
+        return self._rotation.should_rotate(elapsed_s=elapsed, kv_tokens=kv_est, quiet=quiet)
 
     # -- gateway callbacks (yrobot-recv thread) -------------------------------
 
-    def _on_delta(self, delta: Delta) -> None:
+    def _on_delta(self, delta: Delta, session_sequence: int | None = None) -> None:
+        if session_sequence is not None and session_sequence != self._session_sequence:
+            logger.debug("ignored delta from stale session %d", session_sequence)
+            return
         now = delta.received_at
         kv = delta.metrics.get("kv_cache_length")
         if isinstance(kv, int | float):
@@ -633,7 +489,7 @@ class Conversation:
             if acknowledged:
                 logger.info(
                     "force_listen acknowledged by %s: waiting for user turn end",
-                    delta.input_id,
+                    delta.input_id or "causal fallback",
                 )
             elif was_latched:
                 logger.info(
@@ -664,15 +520,43 @@ class Conversation:
             with self._turn_lock:
                 was_latched = self._gate.latched
                 allowed = self._gate.model_text(now, delta.response_id)
-                caption = self._captions.feed(delta.text).strip() if allowed else ""
+                fragment = self._captions.feed(delta.text) if allowed else ""
+                caption = fragment.strip()
+                self._memory.append_assistant(fragment)
             if was_latched and allowed:
                 logger.info("barge-in boundary complete: accepting new model response")
             if caption:
                 logger.info("robot: %s", caption)
 
-    def _on_closed(self, reason: str) -> None:
+    def _on_closed(self, reason: str, session_sequence: int | None = None) -> None:
+        if session_sequence is not None and session_sequence != self._session_sequence:
+            logger.debug("ignored close from stale session %d: %s", session_sequence, reason)
+            return
         logger.info("session closed: %s", reason)
         self._session_dead.set()
+
+    @staticmethod
+    def _log_vision_stats(scope: str, stats: VisionStats) -> None:
+        logger.info(
+            "vision %s stats: captured=%d changed=%d published=%d selected=%d sent=%d failures=%d",
+            scope,
+            stats.captured,
+            stats.changed,
+            stats.published,
+            stats.selected,
+            stats.sent,
+            stats.failures,
+        )
+
+
+def _stats_delta(after: VisionStats, before: VisionStats) -> VisionStats:
+    """Return per-session counters from a camera shared across sessions."""
+    return VisionStats(
+        **{
+            name: getattr(after, name) - getattr(before, name)
+            for name in VisionStats.__dataclass_fields__
+        }
+    )
 
 
 class Yrobot(ReachyMiniApp):

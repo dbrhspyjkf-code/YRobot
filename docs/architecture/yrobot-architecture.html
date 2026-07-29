@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YRobot Architecture Diagram</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #ffffff;
+      min-height: 100vh;
+      padding: 2rem;
+      color: #0f172a;
+    }
+    .container { max-width: 1240px; margin: 0 auto; }
+    .header { margin-bottom: 1.75rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+    .pulse-dot { width: 12px; height: 12px; background: #3b82f6; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; color: #0f172a; }
+    .subtitle { color: #64748b; font-size: 0.875rem; margin-left: 1.75rem; }
+    .diagram-container {
+      background: #ffffff;
+      border-radius: 1rem;
+      border: 1px solid #e2e8f0;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg { width: 100%; min-width: 1040px; display: block; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+    .card { background: #f8fafc; border-radius: 0.75rem; border: 1px solid #e2e8f0; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.blue { background: #3b82f6; }
+    .card-dot.emerald { background: #10b981; }
+    .card-dot.violet { background: #8b5cf6; }
+    .card-dot.amber { background: #f59e0b; }
+    .card-dot.rose { background: #f43f5e; }
+    .card h3 { font-size: 0.875rem; font-weight: 600; color: #0f172a; }
+    .card ul { list-style: none; color: #475569; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; line-height: 1.4; }
+    .card li b { color: #0f172a; font-weight: 600; }
+    .card li code { color: #6d28d9; }
+    .footer { text-align: center; margin-top: 1.5rem; color: #94a3b8; font-size: 0.75rem; }
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle {
+      background: transparent; border: none; color: #94a3b8; cursor: pointer;
+      font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem; border-radius: 0.375rem;
+      transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: #475569; background: #f1f5f9; }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: #f8fafc; border: 1px solid #cbd5e1; color: #475569;
+      padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit;
+      font-size: 0.75rem; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+    }
+    .toolbar-actions button:hover { background: #eef2f7; color: #0f172a; border-color: #94a3b8; }
+    @media print { body { background: #ffffff; padding: 1rem; } .toolbar { display: none !important; } }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>YRobot Architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export options" aria-label="Export options">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Full-duplex MiniCPM-o 4.5 conversation for Reachy Mini Wireless — a 7-thread conversation loop</p>
+    </div>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1180 760">
+        <defs>
+          <marker id="a-blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#3b82f6"/></marker>
+          <marker id="a-green" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#10b981"/></marker>
+          <marker id="a-rose" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#f43f5e"/></marker>
+          <marker id="a-slate" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#94a3b8"/></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#f1f5f9" stroke-width="1"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- ===================== ZONE BOUNDARIES ===================== -->
+        <rect x="138" y="80" width="142" height="552" rx="14" fill="#fbfcfe" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="7,5"/>
+        <text x="209" y="99" fill="#64748b" font-size="10" font-weight="700" text-anchor="middle">Reachy Mini</text>
+        <text x="209" y="112" fill="#94a3b8" font-size="8" text-anchor="middle">hardware + daemon</text>
+
+        <rect x="298" y="80" width="592" height="630" rx="14" fill="#fdfefe" stroke="#bfdbfe" stroke-width="1.2" stroke-dasharray="7,5"/>
+        <text x="314" y="99" fill="#1e40af" font-size="10.5" font-weight="700">YRobot process — Conversation (7 threads · immutable data + atomic flags)</text>
+
+        <!-- lane markers -->
+        <text x="474" y="122" fill="#3b82f6" font-size="10" font-weight="700">▲ UPLINK · capture → gateway</text>
+        <text x="316" y="432" fill="#10b981" font-size="10" font-weight="700">▼ DOWNLINK · gateway → speak &amp; move</text>
+
+        <!-- ===================== ARROWS (drawn first, masked by opaque boxes) ===================== -->
+        <!-- human I/O -->
+        <line x1="114" y1="255" x2="146" y2="252" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#a-slate)"/>
+        <text x="130" y="243" fill="#94a3b8" font-size="8" text-anchor="middle">voice</text>
+        <path d="M 114 268 C 128 200, 132 168, 146 152" fill="none" stroke="#94a3b8" stroke-width="1.4" marker-end="url(#a-slate)"/>
+        <text x="102" y="205" fill="#94a3b8" font-size="8" text-anchor="middle">face</text>
+        <line x1="146" y1="478" x2="114" y2="472" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="130" y="468" fill="#10b981" font-size="8" text-anchor="middle">hears</text>
+        <path d="M 146 588 C 132 560, 128 540, 114 528" fill="none" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="104" y="560" fill="#10b981" font-size="8" text-anchor="middle">sees</text>
+
+        <!-- uplink (blue) -->
+        <line x1="268" y1="149" x2="312" y2="149" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a-blue)"/>
+        <line x1="268" y1="235" x2="312" y2="235" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a-blue)"/>
+        <line x1="466" y1="152" x2="686" y2="168" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a-blue)"/>
+        <text x="560" y="150" fill="#64748b" font-size="8" text-anchor="middle">latest JPEG</text>
+        <line x1="466" y1="238" x2="508" y2="230" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a-blue)"/>
+        <text x="488" y="255" fill="#64748b" font-size="8" text-anchor="middle">1 s unit</text>
+        <line x1="630" y1="228" x2="686" y2="212" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a-blue)"/>
+        <path d="M 840 196 C 878 202, 884 288, 908 314" fill="none" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#a-blue)"/>
+        <text x="884" y="250" fill="#64748b" font-size="8" text-anchor="middle">input.append</text>
+
+        <!-- downlink (green) -->
+        <path d="M 908 402 C 884 430, 878 462, 842 480" fill="none" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="862" y="432" fill="#64748b" font-size="8" text-anchor="middle">deltas</text>
+        <line x1="686" y1="492" x2="630" y2="492" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="658" y="484" fill="#64748b" font-size="8" text-anchor="middle">audio 24k</text>
+        <line x1="464" y1="480" x2="270" y2="480" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="367" y="472" fill="#64748b" font-size="8" text-anchor="middle">paced 16k · epoch</text>
+        <line x1="498" y1="591" x2="468" y2="591" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="483" y="583" fill="#64748b" font-size="8" text-anchor="middle">gaze</text>
+        <line x1="314" y1="591" x2="270" y2="591" stroke="#10b981" stroke-width="1.5" marker-end="url(#a-green)"/>
+        <text x="292" y="583" fill="#64748b" font-size="8" text-anchor="middle">pose</text>
+
+        <!-- control plane (rose dashed) → TurnGate hub -->
+        <line x1="446" y1="290" x2="536" y2="332" stroke="#f43f5e" stroke-width="1.4" stroke-dasharray="5,4" marker-end="url(#a-rose)"/>
+        <text x="470" y="316" fill="#f43f5e" font-size="8" text-anchor="middle">latch / force</text>
+        <line x1="726" y1="270" x2="710" y2="328" stroke="#f43f5e" stroke-width="1.4" stroke-dasharray="5,4" marker-end="url(#a-rose)"/>
+        <text x="760" y="304" fill="#f43f5e" font-size="8" text-anchor="middle">force_sent</text>
+        <line x1="712" y1="440" x2="700" y2="408" stroke="#f43f5e" stroke-width="1.4" stroke-dasharray="5,4" marker-end="url(#a-rose)"/>
+        <text x="742" y="430" fill="#f43f5e" font-size="8" text-anchor="middle">gate check</text>
+
+        <!-- ===================== HUMAN + GATEWAY PILLARS ===================== -->
+        <rect x="24" y="250" width="90" height="300" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
+        <text x="69" y="396" fill="#334155" font-size="14" font-weight="700" text-anchor="middle">You</text>
+        <text x="69" y="414" fill="#94a3b8" font-size="8" text-anchor="middle">human</text>
+
+        <rect x="910" y="250" width="150" height="300" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+        <text x="985" y="288" fill="#b45309" font-size="12.5" font-weight="700" text-anchor="middle">MiniCPM-o 4.5</text>
+        <text x="985" y="305" fill="#d97706" font-size="9" text-anchor="middle">Realtime Gateway</text>
+        <line x1="930" y1="316" x2="1040" y2="316" stroke="#fde68a" stroke-width="1"/>
+        <text x="985" y="336" fill="#64748b" font-size="8" text-anchor="middle">wss://…/v1/realtime</text>
+        <text x="985" y="352" fill="#64748b" font-size="8" text-anchor="middle">?mode=audio | video</text>
+        <text x="985" y="376" fill="#64748b" font-size="8" text-anchor="middle">queue → init → created</text>
+        <text x="985" y="392" fill="#64748b" font-size="8" text-anchor="middle">1 s inference units</text>
+        <text x="985" y="416" fill="#64748b" font-size="8" text-anchor="middle">response.output.delta</text>
+        <text x="985" y="432" fill="#64748b" font-size="8" text-anchor="middle">listen · text · audio</text>
+        <text x="985" y="456" fill="#64748b" font-size="8" text-anchor="middle">~8k kv budget</text>
+        <text x="985" y="472" fill="#64748b" font-size="8" text-anchor="middle">session rotation ≤ 600 s</text>
+
+        <!-- ===================== HARDWARE (slate) ===================== -->
+        <rect x="150" y="126" width="118" height="46" rx="7" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+        <text x="209" y="146" fill="#334155" font-size="10.5" font-weight="600" text-anchor="middle">Camera</text>
+        <text x="209" y="161" fill="#94a3b8" font-size="8" text-anchor="middle">BGR frames</text>
+
+        <rect x="150" y="196" width="118" height="78" rx="7" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+        <text x="209" y="216" fill="#334155" font-size="10.5" font-weight="600" text-anchor="middle">XVF3800 mic</text>
+        <text x="209" y="232" fill="#94a3b8" font-size="8" text-anchor="middle">16 kHz · AEC · AGC</text>
+        <text x="209" y="245" fill="#94a3b8" font-size="8" text-anchor="middle">DoA + speech flag</text>
+        <text x="209" y="262" fill="#e11d48" font-size="8" text-anchor="middle">duplex profile @ boot</text>
+
+        <rect x="150" y="452" width="118" height="56" rx="7" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+        <text x="209" y="475" fill="#334155" font-size="10.5" font-weight="600" text-anchor="middle">Speaker</text>
+        <text x="209" y="491" fill="#94a3b8" font-size="8" text-anchor="middle">push · clear_player</text>
+
+        <rect x="150" y="558" width="118" height="66" rx="7" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+        <text x="209" y="580" fill="#334155" font-size="10.5" font-weight="600" text-anchor="middle">Head + antennas</text>
+        <text x="209" y="596" fill="#94a3b8" font-size="8" text-anchor="middle">body yaw · wobble</text>
+        <text x="209" y="609" fill="#94a3b8" font-size="8" text-anchor="middle">PTS-synced servos</text>
+
+        <!-- ===================== UPLINK THREADS (blue) ===================== -->
+        <rect x="316" y="126" width="150" height="46" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="391" y="146" fill="#1e40af" font-size="10.5" font-weight="700" text-anchor="middle">yrobot-camera</text>
+        <text x="391" y="161" fill="#64748b" font-size="8" text-anchor="middle">latest-only JPEG · 448 px</text>
+
+        <rect x="316" y="190" width="150" height="100" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="391" y="210" fill="#1e40af" font-size="10.5" font-weight="700" text-anchor="middle">main loop</text>
+        <text x="391" y="227" fill="#64748b" font-size="8" text-anchor="middle">Microphone · VoiceDetector</text>
+        <text x="391" y="240" fill="#64748b" font-size="8" text-anchor="middle">barge-in · echo reject</text>
+        <text x="391" y="253" fill="#64748b" font-size="8" text-anchor="middle">UplinkGain (AGC)</text>
+        <text x="391" y="268" fill="#64748b" font-size="8" text-anchor="middle">1 s units + posture mode</text>
+        <text x="391" y="283" fill="#94a3b8" font-size="7.5" text-anchor="middle">the app's driving thread</text>
+
+        <rect x="512" y="205" width="118" height="52" rx="8" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+        <text x="571" y="225" fill="#6d28d9" font-size="10" font-weight="600" text-anchor="middle">uplink queue</text>
+        <text x="571" y="241" fill="#64748b" font-size="8" text-anchor="middle">UplinkPacket ×4</text>
+
+        <rect x="686" y="150" width="154" height="120" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+        <text x="763" y="170" fill="#1e40af" font-size="10.5" font-weight="700" text-anchor="middle">yrobot-uplink</text>
+        <text x="763" y="187" fill="#64748b" font-size="8" text-anchor="middle">RealtimeClient</text>
+        <text x="763" y="200" fill="#64748b" font-size="8" text-anchor="middle">.send_chunk()</text>
+        <text x="763" y="216" fill="#64748b" font-size="8" text-anchor="middle">base64 f32 + JPEG</text>
+        <text x="763" y="229" fill="#64748b" font-size="8" text-anchor="middle">merge latest frame</text>
+        <text x="763" y="245" fill="#94a3b8" font-size="7.5" text-anchor="middle">may block safely,</text>
+        <text x="763" y="256" fill="#94a3b8" font-size="7.5" text-anchor="middle">never stalls capture</text>
+
+        <!-- ===================== CONTROL HUB (violet) ===================== -->
+        <rect x="512" y="330" width="220" height="76" rx="8" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.5"/>
+        <text x="622" y="350" fill="#6d28d9" font-size="10.5" font-weight="700" text-anchor="middle">TurnGate — barge-in hub</text>
+        <text x="622" y="367" fill="#64748b" font-size="8" text-anchor="middle">client-owned interruption boundary</text>
+        <text x="622" y="381" fill="#64748b" font-size="8" text-anchor="middle">force_listen until matched listen</text>
+        <text x="622" y="395" fill="#64748b" font-size="8" text-anchor="middle">QUIET 450 ms · latch cap 12 s</text>
+
+        <!-- ===================== DOWNLINK THREADS (green) ===================== -->
+        <rect x="686" y="440" width="154" height="130" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+        <text x="763" y="460" fill="#047857" font-size="10.5" font-weight="700" text-anchor="middle">yrobot-recv</text>
+        <text x="763" y="477" fill="#64748b" font-size="8" text-anchor="middle">RealtimeClient rx</text>
+        <text x="763" y="490" fill="#64748b" font-size="8" text-anchor="middle">delta router → gate</text>
+        <text x="763" y="503" fill="#64748b" font-size="8" text-anchor="middle">ThinkFilter captions</text>
+        <text x="763" y="519" fill="#64748b" font-size="8" text-anchor="middle">listen | text | audio</text>
+        <text x="763" y="535" fill="#94a3b8" font-size="7.5" text-anchor="middle">only listen =</text>
+        <text x="763" y="546" fill="#94a3b8" font-size="7.5" text-anchor="middle">turn boundary</text>
+
+        <rect x="466" y="448" width="162" height="95" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+        <text x="547" y="468" fill="#047857" font-size="10.5" font-weight="700" text-anchor="middle">yrobot-speaker</text>
+        <text x="547" y="485" fill="#64748b" font-size="8" text-anchor="middle">epoch-tagged playback</text>
+        <text x="547" y="498" fill="#64748b" font-size="8" text-anchor="middle">preroll · 24→16k resample</text>
+        <text x="547" y="511" fill="#64748b" font-size="8" text-anchor="middle">echo ref · interrupt()</text>
+        <text x="547" y="527" fill="#94a3b8" font-size="7.5" text-anchor="middle">owns the audio pipeline;</text>
+        <text x="547" y="538" fill="#94a3b8" font-size="7.5" text-anchor="middle">destructive, non-resumable</text>
+
+        <rect x="316" y="560" width="150" height="62" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+        <text x="391" y="580" fill="#047857" font-size="10.5" font-weight="700" text-anchor="middle">yrobot-motion</text>
+        <text x="391" y="596" fill="#64748b" font-size="8" text-anchor="middle">Choreographer 50 Hz</text>
+        <text x="391" y="609" fill="#94a3b8" font-size="7.5" text-anchor="middle">sole writer of robot pose</text>
+
+        <rect x="496" y="560" width="154" height="62" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="1.5"/>
+        <text x="573" y="580" fill="#047857" font-size="10.5" font-weight="700" text-anchor="middle">yrobot-doa</text>
+        <text x="573" y="596" fill="#64748b" font-size="8" text-anchor="middle">SoundCompass 12 Hz</text>
+        <text x="573" y="609" fill="#94a3b8" font-size="7.5" text-anchor="middle">gaze target, voice-gated</text>
+        <text x="658" y="600" fill="#94a3b8" font-size="8">◄ XVF3800 DoA</text>
+
+        <!-- ===================== CONFIG CHIP (violet) ===================== -->
+        <rect x="316" y="648" width="524" height="42" rx="8" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1.3" stroke-dasharray="4,3"/>
+        <text x="332" y="666" fill="#6d28d9" font-size="10" font-weight="600">Settings (config.py)</text>
+        <text x="332" y="681" fill="#64748b" font-size="8">frozen dataclass · built once from YROBOT_* env / .env · read by every thread at startup</text>
+
+        <!-- ===================== LEGEND ===================== -->
+        <rect x="24" y="722" width="15" height="10" rx="2" fill="#eff6ff" stroke="#3b82f6" stroke-width="1"/>
+        <text x="45" y="730" fill="#64748b" font-size="8">Capture / uplink thread</text>
+        <rect x="212" y="722" width="15" height="10" rx="2" fill="#ecfdf5" stroke="#10b981" stroke-width="1"/>
+        <text x="233" y="730" fill="#64748b" font-size="8">Receive / output thread</text>
+        <rect x="404" y="722" width="15" height="10" rx="2" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="1"/>
+        <text x="425" y="730" fill="#64748b" font-size="8">Shared state / config</text>
+        <rect x="580" y="722" width="15" height="10" rx="2" fill="#fffbeb" stroke="#f59e0b" stroke-width="1"/>
+        <text x="601" y="730" fill="#64748b" font-size="8">MiniCPM-o gateway</text>
+        <rect x="748" y="722" width="15" height="10" rx="2" fill="#f1f5f9" stroke="#64748b" stroke-width="1"/>
+        <text x="769" y="730" fill="#64748b" font-size="8">Reachy Mini hardware</text>
+        <line x1="928" y1="727" x2="947" y2="727" stroke="#f43f5e" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="953" y="730" fill="#64748b" font-size="8">Barge-in control</text>
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot blue"></div>
+          <h3>Seven threads, no shared mutable state</h3>
+        </div>
+        <ul>
+          <li>• <b>main loop</b> — mic → VAD → barge-in → gate → queue</li>
+          <li>• <b>yrobot-uplink</b> — queue + latest JPEG → websocket</li>
+          <li>• <b>yrobot-camera</b> — encode, latest-only frame slot</li>
+          <li>• <b>yrobot-recv</b> — deltas → gate → speaker / captions</li>
+          <li>• <b>yrobot-speaker</b> — paced, interruptible playback</li>
+          <li>• <b>yrobot-motion</b> — 50 Hz choreographer, owns pose</li>
+          <li>• <b>yrobot-doa</b> — 12 Hz sound compass → gaze</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot rose"></div>
+          <h3>Barge-in — client-owned &amp; destructive</h3>
+        </div>
+        <ul>
+          <li>• 200 ms candidate correlated vs exact recent playout</li>
+          <li>• echo-explained voice ignored; near-end must persist 500 ms</li>
+          <li>• commit bumps the <b>epoch</b> and calls <code>clear_player()</code></li>
+          <li>• every unit carries <b>force_listen</b> until its <code>input_id</code> replies <code>listen</code></li>
+          <li>• 450 ms of user quiet then admits the new answer</li>
+          <li>• <code>response_id</code> is deliberately not a turn boundary</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Gateway protocol &amp; context budget</h3>
+        </div>
+        <ul>
+          <li>• connect <code>?mode=audio|video</code>, wait <code>queue_done</code></li>
+          <li>• <code>session.init</code> starts "You are a helpful assistant."</li>
+          <li>• stream exactly 16,000 float32 samples (1 s) per unit</li>
+          <li>• deltas <code>listen | text | audio</code> are independent streams</li>
+          <li>• vision ~64 kv tok/frame: 1 fps active, 0.2 fps idle</li>
+          <li>• rotate sessions at a quiet boundary past time / kv budget</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="footer">
+      YRobot v3.0.0 · yrobot/{main,audio,motion,realtime,turn,config}.py · MiniCPM-o 4.5 realtime · Reachy Mini Wireless
+    </p>
+  </div>
+
+  <script>
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#ffffff', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#ffffff', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const link = document.createElement('a');
+        link.download = 'yrobot-architecture.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const el = document.getElementById('report-container');
+        const r = el.getBoundingClientRect();
+        const pad = 32;
+        const canvas = await html2canvas(document.body, { backgroundColor: '#ffffff', scale: 2, useCORS: true, ignoreElements: (e) => e.classList && e.classList.contains('toolbar'), x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('yrobot-architecture.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>
