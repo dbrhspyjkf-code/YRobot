@@ -14,6 +14,7 @@ Thread map (all communication is immutable data + atomic flags):
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -24,6 +25,7 @@ from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
+from yrobot.app_config import AppConfig, register_settings_routes
 from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
 from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
@@ -562,14 +564,22 @@ def _stats_delta(after: VisionStats, before: VisionStats) -> VisionStats:
 class Yrobot(ReachyMiniApp):
     """Reachy Mini app entry point (``reachy_mini_apps`` group)."""
 
-    def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
+    custom_app_url: str | None = "http://0.0.0.0:8042"
+
+    def __init__(self, running_on_wireless: bool = False) -> None:
         load_dotenv()
-        Conversation(Settings.from_env(), reachy_mini, stop_event).run()
+        super().__init__(running_on_wireless=running_on_wireless)
+        self._config = AppConfig()
+        assert self.settings_app is not None
+        register_settings_routes(self.settings_app, self._config)
+
+    def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
+        environment = self._config.effective_environment(os.environ)
+        Conversation(Settings.from_env(environment), reachy_mini, stop_event).run()
 
 
 def cli() -> None:
     """Run YRobot from a terminal (Ctrl-C to stop)."""
-    load_dotenv()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname).1s %(name)s: %(message)s"
     )

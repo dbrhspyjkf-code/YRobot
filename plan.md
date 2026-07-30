@@ -1,4 +1,4 @@
-# YRobot v3.1 — 全双工全模态实施与验收
+# YRobot v3.2 — 全双工全模态实施与验收
 
 目标不是“支持音频和图片”，而是在同一条 MiniCPM-o 4.5 时间线上持续听、持续看、
 边说边感知，并且允许用户自然抢话。默认产品路径必须是 `mode=video`；`mode=audio`
@@ -46,4 +46,9 @@
 ```bash
 pytest
 ruff check .
+reachy-mini-app-assistant check .
 ```
+
+应用商店版本还必须包含根目录 `index.html` / `style.css`、README 的
+`reachy_mini_python_app` 标签、可打包的应用内设置页面，以及清晰可见的音视频远端传输
+说明。自动检查全部通过后，仍需完成上述 Wireless 实机门槛再申请官方目录审核。

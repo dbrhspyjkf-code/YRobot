@@ -66,17 +66,37 @@ On the robot (Python 3.12 venv on the CM4), or any machine that can reach the da
 
 ```bash
 pip install -e .
-cp .env.example .env   # point YROBOT_REALTIME_URL at your gateway
+cp .env.example .env   # optional; the default already uses the official public Gateway
 yrobot
 ```
 
-The shipped default is real `mode=video` with continuous frames. Voice-only mode is an
-explicit fallback: use `mode=audio`, set `YROBOT_SEND_VIDEO=0`, and proactive vision is
-disabled automatically. Optional reference-voice and tuning variables are documented in
+The shipped default is the official public Gateway at
+`wss://minicpmo45.modelbest.cn/v1/realtime?mode=video`, with continuous frames; it does
+not require a locally deployed model Host. Voice-only mode is an explicit fallback: use
+`mode=audio`, set `YROBOT_SEND_VIDEO=0`, and proactive vision is disabled automatically.
+Optional reference-voice and tuning variables are documented in
 [`.env.example`](.env.example).
 
 It also registers as a Reachy Mini app (`reachy_mini_apps` entry point `yrobot`), so the
-dashboard can start and stop it.
+dashboard can start and stop it. While the app is running, use its settings icon to change
+the Gateway, TLS verification, continuous video, proactive observation and the one-line
+persona. Dashboard values are stored in `~/.config/yrobot/settings.json`; daemon/process
+environment variables take precedence, and saved changes apply after restarting YRobot.
+
+## Privacy
+
+YRobot processes microphone and camera input off-device:
+
+- While the app runs, 16 kHz microphone audio is streamed to the configured MiniCPM-o
+  realtime Gateway.
+- In video mode, JPEG camera frames are also transmitted—about 1 fps during conversation,
+  with scene-change delivery and a bounded idle heartbeat. Selecting audio-only mode in the
+  settings page disables camera transmission.
+- YRobot does not write microphone recordings or camera frames to local storage. Remote
+  processing, retention and access are governed by the operator of the Gateway you select.
+
+Review this disclosure before running the app around other people, and obtain any consent
+required in your location.
 
 Development without hardware:
 
@@ -85,10 +105,20 @@ pip install -e ".[dev]"
 pytest && ruff check .
 ```
 
+Before publishing to the Reachy Mini app store, also run:
+
+```bash
+reachy-mini-app-assistant check .
+```
+
+The automated checks do not replace the Wireless hardware acceptance gates in
+[`plan.md`](plan.md).
+
 ## Layout
 
 ```
 yrobot/config.py     env → one frozen Settings dataclass; URL normalization
+yrobot/app_config.py dashboard settings API + atomic per-user persistence
 yrobot/realtime.py   gateway protocol client + <think>-leak filter
 yrobot/turn.py       barge-in state machine (pure logic, fully unit-tested)
 yrobot/audio.py      mic framing, VAD stack, 24→16 k resampler, epoch speaker
@@ -97,6 +127,7 @@ yrobot/vision.py     continuous scene-aware, latest-only camera worker
 yrobot/session.py    quiet-boundary rotation + bounded continuity memory
 yrobot/motion.py     DoA sound compass + 50 Hz choreographer
 yrobot/main.py       wiring, session rotation, ReachyMiniApp + CLI
+yrobot/static/       Reachy Mini dashboard settings interface
 ```
 
 Every module docstring states the non-obvious constraint it encodes (gateway behaviour

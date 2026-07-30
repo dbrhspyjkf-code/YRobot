@@ -2,18 +2,50 @@
 
 import pytest
 
-from yrobot.config import TRAINED_SYSTEM_LINE, Settings
+from yrobot.config import DEFAULT_REALTIME_URL, TRAINED_SYSTEM_LINE, Settings, normalize_url
 
 
 def test_defaults_target_official_gateway():
     s = Settings()
-    assert s.url == "wss://minicpmo45.modelbest.cn/v1/realtime?mode=video"
+    assert s.url == DEFAULT_REALTIME_URL
     assert s.chunk_ms == 1000
     assert s.send_video is True
     assert s.realtime_mode == "video"
     assert s.proactive_enabled is True
     assert s.system_prompt.startswith(TRAINED_SYSTEM_LINE + "\n")
     assert len(s.effective_system_prompt) > len(s.system_prompt)
+
+
+def test_application_env_defaults_target_official_gateway(monkeypatch):
+    monkeypatch.delenv("YROBOT_REALTIME_URL", raising=False)
+    monkeypatch.delenv("YROBOT_REALTIME_MODE", raising=False)
+    assert Settings.from_env().url == DEFAULT_REALTIME_URL
+
+
+def test_from_env_accepts_an_explicit_mapping():
+    settings = Settings.from_env(
+        {
+            "YROBOT_REALTIME_URL": "gateway.example.test",
+            "YROBOT_SEND_VIDEO": "0",
+            "YROBOT_PERSONA": "Be concise.",
+        }
+    )
+    assert settings.url == "wss://gateway.example.test/v1/realtime?mode=audio"
+    assert settings.send_video is False
+    assert settings.system_prompt.endswith("Be concise.")
+
+
+@pytest.mark.parametrize("url", ["https://example.com", "file:///tmp/socket", "wss:///missing"])
+def test_realtime_url_requires_a_websocket_host(url):
+    with pytest.raises(ValueError, match="ws://|host"):
+        normalize_url(url)
+
+
+def test_legacy_send_video_flag_can_select_audio_without_url(monkeypatch):
+    monkeypatch.delenv("YROBOT_REALTIME_URL", raising=False)
+    monkeypatch.delenv("YROBOT_REALTIME_MODE", raising=False)
+    monkeypatch.setenv("YROBOT_SEND_VIDEO", "false")
+    assert Settings.from_env().url == DEFAULT_REALTIME_URL.replace("mode=video", "mode=audio")
 
 
 def test_from_env_overrides(monkeypatch):
