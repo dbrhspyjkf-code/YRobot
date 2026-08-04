@@ -22,6 +22,8 @@ def test_home_assistant_defaults_disabled():
     assert settings.ha_url is None
     assert settings.ha_token is None
     assert settings.ha_whitelist_path == "~/.config/yrobot/home_assistant_whitelist.json"
+    assert settings.hermes_tools_enabled is False
+    assert settings.hermes_tools_url == "http://192.168.1.200:8766"
 
 
 def test_application_env_defaults_target_official_gateway(monkeypatch):
@@ -55,6 +57,24 @@ def test_home_assistant_env_overrides(monkeypatch):
     assert settings.ha_url == "http://192.168.1.133:8123"
     assert settings.ha_token == "secret-token"
     assert settings.ha_whitelist_path == "/home/pollen/ha.json"
+
+
+def test_hermes_tools_env_overrides(monkeypatch):
+    monkeypatch.setenv("YROBOT_HERMES_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("YROBOT_HERMES_TOOLS_URL", "http://hermes.local:8766/")
+
+    settings = Settings.from_env()
+
+    assert settings.hermes_tools_enabled is True
+    assert settings.hermes_tools_url == "http://hermes.local:8766"
+
+
+def test_hermes_tools_prompt_mentions_deepseek_balance(monkeypatch):
+    monkeypatch.setenv("YROBOT_HERMES_TOOLS_ENABLED", "1")
+
+    prompt = Settings.from_env().effective_system_prompt
+
+    assert "DeepSeek余额" in prompt
 
 
 def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):

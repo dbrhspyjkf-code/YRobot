@@ -29,10 +29,12 @@ from yrobot.app_config import AppConfig, register_settings_routes
 from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
 from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
+from yrobot.hermes_tools import HermesToolsController
 from yrobot.home_assistant import HomeAssistantController
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
 from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
 from yrobot.session import ConversationMemory, RotationPolicy
+from yrobot.tts import synthesize_speech_24k
 from yrobot.turn import TurnGate
 from yrobot.vision import LatestCamera, VisionStats
 
@@ -73,6 +75,7 @@ class Conversation:
         self._turn_lock = threading.Lock()
         self._agc = UplinkGain()
         self._home_assistant = HomeAssistantController.from_settings(settings)
+        self._hermes_tools = HermesToolsController.from_settings(settings)
         self._barge = BargeDetector(
             BargeConfig(
                 echo_similarity=settings.barge_echo_similarity,
@@ -277,6 +280,23 @@ class Conversation:
             if camera is not None:
                 assert vision_start is not None
                 self._log_vision_stats("session", _stats_delta(camera.stats(), vision_start))
+
+    def _speak_text(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+
+        def run() -> None:
+            try:
+                pcm = synthesize_speech_24k(text)
+            except Exception as exc:  # noqa: BLE001 - status TTS should not stop conversation
+                logger.warning("status TTS failed: %s", exc)
+                return
+            epoch = self._speaker.epoch
+            self._speaker.play(epoch, pcm)
+            self._speaker.utterance_end()
+
+        threading.Thread(target=run, name="yrobot-status-tts", daemon=True).start()
 
     def _send_loop(
         self,
@@ -540,6 +560,17 @@ class Conversation:
                             "Home Assistant action failed: %s: %s",
                             result.action.name,
                             result.detail,
+                        )
+                tool_result = self._hermes_tools.handle_text(caption, delta.response_id or "")
+                if tool_result is not None:
+                    if tool_result.ok:
+                        logger.info("Hermes tool result: %s", tool_result.message)
+                        self._speak_text(tool_result.message)
+                    else:
+                        logger.warning(
+                            "Hermes tool failed: %s: %s",
+                            tool_result.name,
+                            tool_result.message,
                         )
 
     def _on_closed(self, reason: str, session_sequence: int | None = None) -> None:

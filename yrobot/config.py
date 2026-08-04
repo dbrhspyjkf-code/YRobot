@@ -25,6 +25,9 @@ HA_CONTROL_POLICY = (
     "家电控制：当用户要求控制家电时，回复必须包含完整设备名和动作，"
     "例如“关闭书台灯”或“打开厨房灯”；不要只说“关灯”“去关灯”或“好了”。"
 )
+HERMES_TOOLS_POLICY = (
+    "外部工具：当用户询问 DeepSeek 余额时，回复必须包含“DeepSeek余额”这几个字。"
+)
 
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
@@ -121,6 +124,8 @@ class Settings:
     ha_url: str | None = None
     ha_token: str | None = None
     ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
+    hermes_tools_enabled: bool = False
+    hermes_tools_url: str = "http://192.168.1.200:8766"
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -157,6 +162,8 @@ class Settings:
             parts.append(PROACTIVE_POLICY)
         if self.ha_enabled and HA_CONTROL_POLICY not in self.system_prompt:
             parts.append(HA_CONTROL_POLICY)
+        if self.hermes_tools_enabled and HERMES_TOOLS_POLICY not in self.system_prompt:
+            parts.append(HERMES_TOOLS_POLICY)
         return "\n".join(parts)
 
     @classmethod
@@ -215,4 +222,8 @@ class Settings:
                 env.get("YROBOT_HA_WHITELIST_PATH")
                 or "~/.config/yrobot/home_assistant_whitelist.json"
             ),
+            hermes_tools_enabled=_flag("YROBOT_HERMES_TOOLS_ENABLED", False, env),
+            hermes_tools_url=(
+                env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
+            ).rstrip("/"),
         )

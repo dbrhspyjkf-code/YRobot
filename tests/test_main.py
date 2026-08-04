@@ -157,11 +157,41 @@ def test_allowed_assistant_text_is_offered_to_home_assistant_controller():
             calls.append((text, response_id))
             return None
 
+    class FakeHermesTools:
+        def handle_text(self, text, response_id):
+            return None
+
     conversation._home_assistant = FakeHomeAssistant()
+    conversation._hermes_tools = FakeHermesTools()
 
     conversation._on_delta(Delta(kind="text", text="打开客厅灯", response_id="resp-ha"))
 
     assert calls == [("打开客厅灯", "resp-ha")]
+
+
+def test_hermes_tool_result_is_offered_to_speech_output():
+    spoken = []
+    conversation = _conversation_without_hardware()
+
+    class FakeHomeAssistant:
+        def handle_text(self, text, response_id):
+            return None
+
+    class FakeHermesTools:
+        def handle_text(self, text, response_id):
+            return type(
+                "Result",
+                (),
+                {"ok": True, "name": "DeepSeek余额", "message": "DeepSeek 余额：57.28 CNY"},
+            )()
+
+    conversation._home_assistant = FakeHomeAssistant()
+    conversation._hermes_tools = FakeHermesTools()
+    conversation._speak_text = spoken.append
+
+    conversation._on_delta(Delta(kind="text", text="DeepSeek余额", response_id="resp-tool"))
+
+    assert spoken == ["DeepSeek 余额：57.28 CNY"]
 
 
 def test_blocked_assistant_text_is_not_offered_to_home_assistant_controller():
@@ -173,7 +203,13 @@ def test_blocked_assistant_text_is_not_offered_to_home_assistant_controller():
             calls.append((text, response_id))
             return None
 
+    class FakeHermesTools:
+        def handle_text(self, text, response_id):
+            calls.append((text, response_id))
+            return None
+
     conversation._home_assistant = FakeHomeAssistant()
+    conversation._hermes_tools = FakeHermesTools()
     started = time.monotonic()
     conversation._begin_barge(started)
 

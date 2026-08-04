@@ -13,6 +13,7 @@ dependencies = [
     "numpy>=2.2.5,<2.3",
     "python-dotenv>=1,<2",
     "reachy-mini>=1.9,<2",
+    "edge-tts>=7,<8",
     "webrtcvad-wheels>=2.0.14,<3",
     "websockets>=13,<16",
 ]
