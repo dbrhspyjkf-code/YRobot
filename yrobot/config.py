@@ -21,6 +21,10 @@ PROACTIVE_POLICY = (
     "持续观察和倾听；只在出现明确、重要的新变化时主动简短提醒，不解说静态场景，"
     "不抢用户的话，非紧急主动发言保持克制。"
 )
+HA_CONTROL_POLICY = (
+    "家电控制：当用户要求控制家电时，回复必须包含完整设备名和动作，"
+    "例如“关闭书台灯”或“打开厨房灯”；不要只说“关灯”“去关灯”或“好了”。"
+)
 
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
@@ -148,9 +152,12 @@ class Settings:
     @property
     def effective_system_prompt(self) -> str:
         """Prompt sent to the model after applying the proactive policy."""
-        if not self.proactive_enabled or PROACTIVE_POLICY in self.system_prompt:
-            return self.system_prompt
-        return f"{self.system_prompt}\n{PROACTIVE_POLICY}"
+        parts = [self.system_prompt]
+        if self.proactive_enabled and PROACTIVE_POLICY not in self.system_prompt:
+            parts.append(PROACTIVE_POLICY)
+        if self.ha_enabled and HA_CONTROL_POLICY not in self.system_prompt:
+            parts.append(HA_CONTROL_POLICY)
+        return "\n".join(parts)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:

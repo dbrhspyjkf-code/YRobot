@@ -57,6 +57,18 @@ def test_home_assistant_env_overrides(monkeypatch):
     assert settings.ha_whitelist_path == "/home/pollen/ha.json"
 
 
+def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):
+    monkeypatch.setenv("YROBOT_HA_ENABLED", "1")
+    monkeypatch.setenv("YROBOT_HA_URL", "http://192.168.1.133:8123")
+    monkeypatch.setenv("YROBOT_HA_TOKEN", "secret-token")
+
+    prompt = Settings.from_env().effective_system_prompt
+
+    assert "家电控制" in prompt
+    assert "完整设备名" in prompt
+    assert "关闭书台灯" in prompt
+
+
 @pytest.mark.parametrize("url", ["https://example.com", "file:///tmp/socket", "wss:///missing"])
 def test_realtime_url_requires_a_websocket_host(url):
     with pytest.raises(ValueError, match="ws://|host"):
