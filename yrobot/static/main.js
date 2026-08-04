@@ -12,6 +12,19 @@ const privacyConfirm = document.getElementById("privacy-confirm");
 const saveButton = document.getElementById("save-button");
 const saveStatus = document.getElementById("save-status");
 const configPath = document.getElementById("config-path");
+const statusPanel = document.getElementById("status-panel");
+const refreshStatus = document.getElementById("refresh-status");
+const statusService = document.getElementById("status-service");
+const statusUptime = document.getElementById("status-uptime");
+const statusConversation = document.getElementById("status-conversation");
+const statusProactive = document.getElementById("status-proactive");
+const statusHa = document.getElementById("status-ha");
+const statusHaUrl = document.getElementById("status-ha-url");
+const statusHermes = document.getElementById("status-hermes");
+const statusHermesUrl = document.getElementById("status-hermes-url");
+const statusLocalInfo = document.getElementById("status-local-info");
+const statusPrivacy = document.getElementById("status-privacy");
+const statusRefreshTime = document.getElementById("status-refresh-time");
 
 function updatePersonaCount() {
   personaCount.textContent = String(persona.value.length);
@@ -41,6 +54,55 @@ function showSettings(settings) {
   }
 }
 
+function formatUptime(seconds) {
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
+  return `${Math.floor(seconds / 3600)} 小时 ${Math.floor((seconds % 3600) / 60)} 分钟`;
+}
+
+function stateText(enabled, configured = true) {
+  if (!enabled) return "关闭";
+  return configured ? "已启用" : "未配置";
+}
+
+function showStatus(status) {
+  statusService.textContent = status.service.state === "running" ? "运行中" : status.service.state;
+  statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
+
+  const mode = status.conversation.realtime_mode === "video" ? "视频模式" : "音频模式";
+  statusConversation.textContent = `${mode} / ${status.conversation.tls_verify ? "TLS 验证" : "TLS 未验证"}`;
+  statusProactive.textContent = status.conversation.proactive_enabled ? "主动观察开启" : "主动观察关闭";
+
+  const ha = status.integrations.home_assistant;
+  statusHa.textContent = stateText(ha.enabled, ha.configured);
+  statusHaUrl.textContent = ha.url || "未设置 Home Assistant 地址";
+
+  const hermes = status.integrations.hermes_tools;
+  statusHermes.textContent = stateText(hermes.enabled);
+  statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
+
+  statusLocalInfo.textContent = stateText(status.integrations.local_info.enabled);
+  statusPrivacy.textContent = status.privacy.video_uploaded_to_gateway ? "音频 + 摄像头" : "仅音频";
+  statusRefreshTime.textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+  statusPanel.classList.remove("hidden");
+}
+
+async function loadStatus() {
+  refreshStatus.disabled = true;
+  try {
+    const response = await fetch("/api/status", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "读取失败");
+    showStatus(result.status);
+  } catch (error) {
+    statusPanel.classList.remove("hidden");
+    statusService.textContent = "读取失败";
+    statusUptime.textContent = error.message;
+  } finally {
+    refreshStatus.disabled = false;
+  }
+}
+
 async function loadSettings() {
   try {
     const response = await fetch("/api/settings", { cache: "no-store" });
@@ -56,6 +118,7 @@ async function loadSettings() {
 
 persona.addEventListener("input", updatePersonaCount);
 videoEnabled.addEventListener("change", syncVideoControls);
+refreshStatus.addEventListener("click", loadStatus);
 form.addEventListener("input", () => {
   saveStatus.textContent = "有未保存的修改";
   restartBanner.classList.add("hidden");
@@ -98,4 +161,6 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+loadStatus();
 loadSettings();
+setInterval(loadStatus, 10000);

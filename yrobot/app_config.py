@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ FIELD_TO_ENV = {
     "persona": "YROBOT_PERSONA",
 }
 REQUIRED_FIELDS = frozenset(FIELD_TO_ENV)
+STARTED_AT = time.monotonic()
 
 
 def _require_bool(document: Mapping[str, Any], name: str) -> bool:
@@ -166,6 +168,53 @@ class AppConfig:
         return self.view(environ)
 
 
+def build_status(store: AppConfig, environ: Mapping[str, str]) -> dict[str, Any]:
+    """Return safe runtime status for the dashboard."""
+    effective = store.effective_environment(environ)
+    settings = Settings.from_env(effective)
+    return {
+        "service": {
+            "name": "YRobot",
+            "state": "running",
+            "pid": os.getpid(),
+            "uptime_s": max(0, int(time.monotonic() - STARTED_AT)),
+        },
+        "conversation": {
+            "gateway_url": settings.url,
+            "realtime_mode": settings.realtime_mode,
+            "tls_verify": settings.tls_verify,
+            "video_enabled": settings.send_video,
+            "proactive_enabled": settings.proactive_enabled,
+        },
+        "integrations": {
+            "home_assistant": {
+                "enabled": settings.ha_enabled,
+                "configured": bool(settings.ha_url and settings.ha_token),
+                "url": settings.ha_url,
+                "whitelist_path": settings.ha_whitelist_path,
+            },
+            "hermes_tools": {
+                "enabled": settings.hermes_tools_enabled,
+                "url": settings.hermes_tools_url,
+            },
+            "local_info": {
+                "enabled": settings.local_info_enabled,
+            },
+        },
+        "privacy": {
+            "audio_uploaded_to_gateway": True,
+            "video_uploaded_to_gateway": settings.send_video,
+            "local_media_recording": False,
+        },
+        "config": {
+            "path": str(store.path),
+            "environment_overrides": [
+                field for field, env_name in FIELD_TO_ENV.items() if env_name in environ
+            ],
+        },
+    }
+
+
 def register_settings_routes(
     app: FastAPI,
     store: AppConfig,
@@ -176,6 +225,10 @@ def register_settings_routes(
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         return {"settings": store.view(get_environment())}
+
+    @app.get("/api/status")
+    def get_status() -> dict[str, Any]:
+        return {"ok": True, "status": build_status(store, get_environment())}
 
     @app.put("/api/settings")
     def put_settings(document: dict[str, Any]) -> dict[str, Any]:

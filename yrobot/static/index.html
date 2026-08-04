@@ -14,12 +14,50 @@
       </header>
 
       <section class="intro">
-        <p class="eyebrow">CONVERSATION CONTROL</p>
-        <h1>让 Reachy 按你的方式交流。</h1>
-        <p>配置实时 Gateway、视觉模式和对话人格。保存后重启 YRobot 即可生效。</p>
+        <p class="eyebrow">ROBOT DASHBOARD</p>
+        <h1>Reachy Mini 状态与设置</h1>
+        <p>查看当前服务、对话模式和家电控制集成；需要调整时再修改下方设置。</p>
       </section>
 
       <div id="loading" class="notice">正在读取机器人配置…</div>
+      <section id="status-panel" class="panel status-panel hidden">
+        <div class="panel-heading compact">
+          <div><p class="step">STATUS</p><h2>机器状态</h2></div>
+          <button id="refresh-status" class="icon-button" type="button" title="刷新状态">刷新</button>
+        </div>
+        <div class="status-grid">
+          <div class="status-item">
+            <span>服务</span>
+            <b id="status-service">--</b>
+            <small id="status-uptime">--</small>
+          </div>
+          <div class="status-item">
+            <span>对话</span>
+            <b id="status-conversation">--</b>
+            <small id="status-proactive">--</small>
+          </div>
+          <div class="status-item">
+            <span>家电控制</span>
+            <b id="status-ha">--</b>
+            <small id="status-ha-url">--</small>
+          </div>
+          <div class="status-item">
+            <span>Hermes 工具</span>
+            <b id="status-hermes">--</b>
+            <small id="status-hermes-url">--</small>
+          </div>
+          <div class="status-item">
+            <span>本地信息</span>
+            <b id="status-local-info">--</b>
+            <small>日期和时间由 Reachy 本机回答</small>
+          </div>
+          <div class="status-item">
+            <span>数据发送</span>
+            <b id="status-privacy">--</b>
+            <small id="status-refresh-time">--</small>
+          </div>
+        </div>
+      </section>
       <div id="restart-banner" class="notice success hidden">
         <b>设置已安全保存。</b> 请在应用中心停止并重新启动 YRobot。
       </div>

@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from yrobot.app_config import AppConfig, register_settings_routes, validate_document
+from yrobot.app_config import AppConfig, build_status, register_settings_routes, validate_document
 
 
 def _document(**overrides):
@@ -86,3 +86,37 @@ def test_settings_api_rejects_unknown_fields(tmp_path):
     response = client.put("/api/settings", json={**_document(), "token": "nope"})
     assert response.status_code == 422
     assert "unknown: token" in response.json()["detail"]
+
+
+def test_build_status_reports_safe_runtime_state(tmp_path):
+    store = AppConfig(tmp_path / "settings.json")
+    status = build_status(
+        store,
+        {
+            "YROBOT_HA_ENABLED": "1",
+            "YROBOT_HA_URL": "http://homeassistant.local:8123",
+            "YROBOT_HA_TOKEN": "super-secret-token",
+            "YROBOT_HERMES_TOOLS_ENABLED": "1",
+            "YROBOT_HERMES_TOOLS_URL": "http://192.168.1.200:8766",
+            "YROBOT_PROACTIVE": "0",
+        },
+    )
+
+    assert status["service"]["state"] == "running"
+    assert status["conversation"]["proactive_enabled"] is False
+    assert status["integrations"]["home_assistant"]["configured"] is True
+    assert status["integrations"]["hermes_tools"]["enabled"] is True
+    assert status["integrations"]["local_info"]["enabled"] is True
+    assert "super-secret-token" not in json.dumps(status)
+
+
+def test_status_api_returns_status(tmp_path):
+    store = AppConfig(tmp_path / "settings.json")
+    app = FastAPI()
+    register_settings_routes(app, store, get_environment=lambda: {})
+    client = TestClient(app)
+
+    response = client.get("/api/status")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["status"]["service"]["name"] == "YRobot"
