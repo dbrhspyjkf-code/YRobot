@@ -16,6 +16,14 @@ def test_defaults_target_official_gateway():
     assert len(s.effective_system_prompt) > len(s.system_prompt)
 
 
+def test_home_assistant_defaults_disabled():
+    settings = Settings()
+    assert settings.ha_enabled is False
+    assert settings.ha_url is None
+    assert settings.ha_token is None
+    assert settings.ha_whitelist_path == "~/.config/yrobot/home_assistant_whitelist.json"
+
+
 def test_application_env_defaults_target_official_gateway(monkeypatch):
     monkeypatch.delenv("YROBOT_REALTIME_URL", raising=False)
     monkeypatch.delenv("YROBOT_REALTIME_MODE", raising=False)
@@ -33,6 +41,20 @@ def test_from_env_accepts_an_explicit_mapping():
     assert settings.url == "wss://gateway.example.test/v1/realtime?mode=audio"
     assert settings.send_video is False
     assert settings.system_prompt.endswith("Be concise.")
+
+
+def test_home_assistant_env_overrides(monkeypatch):
+    monkeypatch.setenv("YROBOT_HA_ENABLED", "1")
+    monkeypatch.setenv("YROBOT_HA_URL", "http://192.168.1.133:8123/")
+    monkeypatch.setenv("YROBOT_HA_TOKEN", "secret-token")
+    monkeypatch.setenv("YROBOT_HA_WHITELIST_PATH", "/home/pollen/ha.json")
+
+    settings = Settings.from_env()
+
+    assert settings.ha_enabled is True
+    assert settings.ha_url == "http://192.168.1.133:8123"
+    assert settings.ha_token == "secret-token"
+    assert settings.ha_whitelist_path == "/home/pollen/ha.json"
 
 
 @pytest.mark.parametrize("url", ["https://example.com", "file:///tmp/socket", "wss:///missing"])

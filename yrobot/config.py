@@ -113,6 +113,10 @@ class Settings:
     ref_audio_path: str | None = None
     tts_ref_audio_path: str | None = None
     proactive_enabled: bool = True
+    ha_enabled: bool = False
+    ha_url: str | None = None
+    ha_token: str | None = None
+    ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -197,4 +201,11 @@ class Settings:
             ref_audio_path=env.get("YROBOT_REF_AUDIO_PATH") or None,
             tts_ref_audio_path=env.get("YROBOT_TTS_REF_AUDIO_PATH") or None,
             proactive_enabled=proactive,
+            ha_enabled=_flag("YROBOT_HA_ENABLED", False, env),
+            ha_url=(env.get("YROBOT_HA_URL") or "").rstrip("/") or None,
+            ha_token=env.get("YROBOT_HA_TOKEN") or None,
+            ha_whitelist_path=(
+                env.get("YROBOT_HA_WHITELIST_PATH")
+                or "~/.config/yrobot/home_assistant_whitelist.json"
+            ),
         )
