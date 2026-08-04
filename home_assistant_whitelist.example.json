@@ -1,0 +1,14 @@
+[
+  {
+    "name": "客厅灯",
+    "phrases": ["打开客厅灯", "客厅灯打开"],
+    "service": "light.turn_on",
+    "entity_id": "light.living_room"
+  },
+  {
+    "name": "客厅灯",
+    "phrases": ["关闭客厅灯", "客厅灯关闭"],
+    "service": "light.turn_off",
+    "entity_id": "light.living_room"
+  }
+]

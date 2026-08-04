@@ -83,6 +83,22 @@ the Gateway, TLS verification, continuous video, proactive observation and the o
 persona. Dashboard values are stored in `~/.config/yrobot/settings.json`; daemon/process
 environment variables take precedence, and saved changes apply after restarting YRobot.
 
+## Home Assistant Control
+
+Home Assistant control is disabled by default. Enable it only with a local
+whitelist:
+
+```bash
+export YROBOT_HA_ENABLED=1
+export YROBOT_HA_URL=http://192.168.1.133:8123
+export YROBOT_HA_TOKEN=...
+export YROBOT_HA_WHITELIST_PATH=~/.config/yrobot/home_assistant_whitelist.json
+```
+
+Do not commit the token. The whitelist maps exact phrases to one allowed
+Home Assistant service call. Do not include locks, alarm panels, garage doors,
+covers, gas, heaters, or other high-risk devices in the first version.
+
 ## Privacy
 
 YRobot processes microphone and camera input off-device:
