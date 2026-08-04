@@ -37,6 +37,7 @@ from yrobot.session import ConversationMemory, RotationPolicy
 from yrobot.tts import synthesize_speech_24k
 from yrobot.turn import TurnGate
 from yrobot.vision import LatestCamera, VisionStats
+from yrobot.wake import WakeGate
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class Conversation:
         self._agc = UplinkGain()
         self._home_assistant = HomeAssistantController.from_settings(settings)
         self._hermes_tools = HermesToolsController.from_settings(settings)
+        self._wake = WakeGate(settings.wake_phrase, settings.wake_window_s, settings.wake_enabled)
         self._barge = BargeDetector(
             BargeConfig(
                 echo_similarity=settings.barge_echo_similarity,
@@ -524,6 +526,7 @@ class Conversation:
             with self._turn_lock:
                 was_latched = self._gate.latched
                 allowed = self._gate.model_audio(now, delta.response_id)
+                allowed = allowed and self._wake.awake(now)
                 if allowed:
                     epoch = self._speaker.epoch
                     self._speaker.play(epoch, delta.audio)
@@ -546,10 +549,12 @@ class Conversation:
                 allowed = self._gate.model_text(now, delta.response_id)
                 fragment = self._captions.feed(delta.text) if allowed else ""
                 caption = fragment.strip()
-                self._memory.append_assistant(fragment)
+                awake = self._wake.observe_text(caption, now) if caption else self._wake.awake(now)
+                if awake:
+                    self._memory.append_assistant(fragment)
             if was_latched and allowed:
                 logger.info("barge-in boundary complete: accepting new model response")
-            if caption:
+            if caption and awake:
                 logger.info("robot: %s", caption)
                 result = self._home_assistant.handle_text(caption, delta.response_id or "")
                 if result is not None:

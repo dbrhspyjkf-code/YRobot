@@ -28,6 +28,11 @@ HA_CONTROL_POLICY = (
 HERMES_TOOLS_POLICY = (
     "外部工具：当用户询问 DeepSeek 余额时，回复必须包含“DeepSeek余额”这几个字。"
 )
+WAKE_POLICY = (
+    "唤醒规则：只有用户说出“你好大白”后才回复和执行请求。"
+    "当你听到唤醒词时，回复文字必须包含“你好大白”；"
+    "如果唤醒词后面还有命令，也要在同一句回复里包含完整命令。"
+)
 
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
@@ -126,6 +131,9 @@ class Settings:
     ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
     hermes_tools_enabled: bool = False
     hermes_tools_url: str = "http://192.168.1.200:8766"
+    wake_enabled: bool = True
+    wake_phrase: str = "你好大白"
+    wake_window_s: float = 10.0
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -164,6 +172,8 @@ class Settings:
             parts.append(HA_CONTROL_POLICY)
         if self.hermes_tools_enabled and HERMES_TOOLS_POLICY not in self.system_prompt:
             parts.append(HERMES_TOOLS_POLICY)
+        if self.wake_enabled and WAKE_POLICY not in self.system_prompt:
+            parts.append(WAKE_POLICY)
         return "\n".join(parts)
 
     @classmethod
@@ -226,4 +236,7 @@ class Settings:
             hermes_tools_url=(
                 env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
             ).rstrip("/"),
+            wake_enabled=_flag("YROBOT_WAKE_ENABLED", True, env),
+            wake_phrase=env.get("YROBOT_WAKE_PHRASE") or "你好大白",
+            wake_window_s=_num("YROBOT_WAKE_WINDOW_S", 10.0, env),
         )
