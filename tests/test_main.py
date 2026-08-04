@@ -91,7 +91,7 @@ def _conversation_without_hardware() -> Conversation:
         media = FakeMedia()
 
     return Conversation(
-        Settings(head_tracking_weight=0.0, wake_enabled=False),
+        Settings(head_tracking_weight=0.0),
         FakeMini(),
         threading.Event(),
     )
@@ -235,61 +235,3 @@ def test_late_callbacks_from_rotated_session_cannot_poison_current_session():
 
     assert conversation._speaker._q.empty()
     assert not conversation._session_dead.is_set()
-
-
-def test_sleeping_conversation_drops_audio_output():
-    conversation = _conversation_without_hardware()
-    conversation._wake = type("SleepingWake", (), {"awake": lambda self, now: False})()
-    pcm = np.ones(2400, np.float32)
-
-    conversation._on_delta(Delta(kind="audio", audio=pcm, response_id="sleep-audio"))
-
-    assert conversation._speaker._q.empty()
-
-
-def test_sleeping_conversation_blocks_text_side_effects():
-    calls = []
-    conversation = _conversation_without_hardware()
-    conversation._wake = type(
-        "SleepingWake",
-        (),
-        {"observe_text": lambda self, text, now: False},
-    )()
-
-    class FakeController:
-        def handle_text(self, text, response_id):
-            calls.append((text, response_id))
-            return None
-
-    conversation._home_assistant = FakeController()
-    conversation._hermes_tools = FakeController()
-
-    conversation._on_delta(Delta(kind="text", text="打开书台灯", response_id="sleep-text"))
-
-    assert calls == []
-
-
-def test_wake_phrase_allows_text_side_effects():
-    calls = []
-    conversation = _conversation_without_hardware()
-    conversation._wake = type(
-        "WakingWake",
-        (),
-        {"observe_text": lambda self, text, now: "你好大白" in text},
-    )()
-
-    class FakeHomeAssistant:
-        def handle_text(self, text, response_id):
-            calls.append((text, response_id))
-            return None
-
-    class FakeHermesTools:
-        def handle_text(self, text, response_id):
-            return None
-
-    conversation._home_assistant = FakeHomeAssistant()
-    conversation._hermes_tools = FakeHermesTools()
-
-    conversation._on_delta(Delta(kind="text", text="你好大白，打开书台灯", response_id="wake-text"))
-
-    assert calls == [("你好大白，打开书台灯", "wake-text")]

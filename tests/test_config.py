@@ -24,9 +24,6 @@ def test_home_assistant_defaults_disabled():
     assert settings.ha_whitelist_path == "~/.config/yrobot/home_assistant_whitelist.json"
     assert settings.hermes_tools_enabled is False
     assert settings.hermes_tools_url == "http://192.168.1.200:8766"
-    assert settings.wake_enabled is True
-    assert settings.wake_phrase == "你好大白"
-    assert settings.wake_window_s == 10.0
 
 
 def test_application_env_defaults_target_official_gateway(monkeypatch):
@@ -78,25 +75,6 @@ def test_hermes_tools_prompt_mentions_deepseek_balance(monkeypatch):
     prompt = Settings.from_env().effective_system_prompt
 
     assert "DeepSeek余额" in prompt
-
-
-def test_wake_env_overrides(monkeypatch):
-    monkeypatch.setenv("YROBOT_WAKE_ENABLED", "0")
-    monkeypatch.setenv("YROBOT_WAKE_PHRASE", "你好机器人")
-    monkeypatch.setenv("YROBOT_WAKE_WINDOW_S", "15")
-
-    settings = Settings.from_env()
-
-    assert settings.wake_enabled is False
-    assert settings.wake_phrase == "你好机器人"
-    assert settings.wake_window_s == 15.0
-
-
-def test_wake_prompt_mentions_phrase():
-    prompt = Settings().effective_system_prompt
-
-    assert "唤醒规则" in prompt
-    assert "你好大白" in prompt
 
 
 def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):
