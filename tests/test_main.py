@@ -148,6 +148,47 @@ def test_interrupted_multi_branch_output_waits_for_force_listen_boundary():
     assert queued is pcm
 
 
+def test_allowed_assistant_text_is_offered_to_home_assistant_controller():
+    calls = []
+    conversation = _conversation_without_hardware()
+
+    class FakeHomeAssistant:
+        def handle_text(self, text, response_id):
+            calls.append((text, response_id))
+            return None
+
+    conversation._home_assistant = FakeHomeAssistant()
+
+    conversation._on_delta(Delta(kind="text", text="打开客厅灯", response_id="resp-ha"))
+
+    assert calls == [("打开客厅灯", "resp-ha")]
+
+
+def test_blocked_assistant_text_is_not_offered_to_home_assistant_controller():
+    calls = []
+    conversation = _conversation_without_hardware()
+
+    class FakeHomeAssistant:
+        def handle_text(self, text, response_id):
+            calls.append((text, response_id))
+            return None
+
+    conversation._home_assistant = FakeHomeAssistant()
+    started = time.monotonic()
+    conversation._begin_barge(started)
+
+    conversation._on_delta(
+        Delta(
+            kind="text",
+            text="打开客厅灯",
+            response_id="old",
+            received_at=started + 0.01,
+        )
+    )
+
+    assert calls == []
+
+
 def test_late_callbacks_from_rotated_session_cannot_poison_current_session():
     conversation = _conversation_without_hardware()
     conversation._session_sequence = 2

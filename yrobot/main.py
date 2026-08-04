@@ -29,6 +29,7 @@ from yrobot.app_config import AppConfig, register_settings_routes
 from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
 from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
+from yrobot.home_assistant import HomeAssistantController
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
 from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
 from yrobot.session import ConversationMemory, RotationPolicy
@@ -71,6 +72,7 @@ class Conversation:
         self._gate = TurnGate()
         self._turn_lock = threading.Lock()
         self._agc = UplinkGain()
+        self._home_assistant = HomeAssistantController.from_settings(settings)
         self._barge = BargeDetector(
             BargeConfig(
                 echo_similarity=settings.barge_echo_similarity,
@@ -529,6 +531,16 @@ class Conversation:
                 logger.info("barge-in boundary complete: accepting new model response")
             if caption:
                 logger.info("robot: %s", caption)
+                result = self._home_assistant.handle_text(caption, delta.response_id or "")
+                if result is not None:
+                    if result.ok:
+                        logger.info("Home Assistant action succeeded: %s", result.action.name)
+                    else:
+                        logger.warning(
+                            "Home Assistant action failed: %s: %s",
+                            result.action.name,
+                            result.detail,
+                        )
 
     def _on_closed(self, reason: str, session_sequence: int | None = None) -> None:
         if session_sequence is not None and session_sequence != self._session_sequence:
