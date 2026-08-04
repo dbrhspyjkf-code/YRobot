@@ -34,6 +34,11 @@ def _clean_memory(text: str) -> str:
     return clean
 
 
+def _looks_complete(text: str) -> bool:
+    stripped = text.strip()
+    return not stripped or stripped[-1] in "。.!！？?" or len(_normalize(stripped)) >= 6
+
+
 class PersistentMemory:
     """Small explicit long-term memory stored on the robot."""
 
@@ -112,14 +117,16 @@ class PersistentMemory:
 
         remember = self._extract_after_marker(
             self._buffer_text,
-            ("记住：", "记住:", "请记住：", "请记住:"),
+            ("记住：", "记住:", "请记住：", "请记住:", "记住了：", "记住了:"),
         )
         if remember is not None:
+            if not _looks_complete(remember):
+                return None
             return self._once(response_id, "remember", lambda: self._remember_result(remember))
 
         forget = self._extract_after_marker(
             self._buffer_text,
-            ("忘掉：", "忘掉:", "忘记：", "忘记:"),
+            ("忘掉：", "忘掉:", "忘记：", "忘记:", "忘掉了：", "忘掉了:"),
         )
         if forget is not None:
             return self._once(response_id, "forget", lambda: self._forget_result(forget))
