@@ -31,6 +31,7 @@ from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
 from yrobot.hermes_tools import HermesToolsController
 from yrobot.home_assistant import HomeAssistantController
+from yrobot.local_info import LocalInfoController
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
 from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
 from yrobot.session import ConversationMemory, RotationPolicy
@@ -76,6 +77,8 @@ class Conversation:
         self._agc = UplinkGain()
         self._home_assistant = HomeAssistantController.from_settings(settings)
         self._hermes_tools = HermesToolsController.from_settings(settings)
+        self._local_info = LocalInfoController(enabled=settings.local_info_enabled)
+        self._muted_response_ids: set[str] = set()
         self._barge = BargeDetector(
             BargeConfig(
                 echo_similarity=settings.barge_echo_similarity,
@@ -524,6 +527,7 @@ class Conversation:
             with self._turn_lock:
                 was_latched = self._gate.latched
                 allowed = self._gate.model_audio(now, delta.response_id)
+                allowed = allowed and delta.response_id not in self._muted_response_ids
                 if allowed:
                     epoch = self._speaker.epoch
                     self._speaker.play(epoch, delta.audio)
@@ -551,6 +555,19 @@ class Conversation:
                 logger.info("barge-in boundary complete: accepting new model response")
             if caption:
                 logger.info("robot: %s", caption)
+                info_result = self._local_info.handle_text(caption, delta.response_id or "")
+                if info_result is not None:
+                    if info_result.mute_model_audio and delta.response_id:
+                        self._muted_response_ids.add(delta.response_id)
+                    if info_result.ok:
+                        logger.info("Local info result: %s", info_result.message)
+                        self._speak_text(info_result.message)
+                    else:
+                        logger.warning(
+                            "Local info failed: %s: %s",
+                            info_result.name,
+                            info_result.message,
+                        )
                 result = self._home_assistant.handle_text(caption, delta.response_id or "")
                 if result is not None:
                     if result.ok:

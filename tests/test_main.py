@@ -194,6 +194,45 @@ def test_hermes_tool_result_is_offered_to_speech_output():
     assert spoken == ["DeepSeek 余额：57.28 CNY"]
 
 
+def test_local_info_result_is_spoken_and_mutes_model_audio():
+    spoken = []
+    conversation = _conversation_without_hardware()
+
+    class FakeHomeAssistant:
+        def handle_text(self, text, response_id):
+            return None
+
+    class FakeHermesTools:
+        def handle_text(self, text, response_id):
+            return None
+
+    class FakeLocalInfo:
+        def handle_text(self, text, response_id):
+            return type(
+                "Result",
+                (),
+                {
+                    "ok": True,
+                    "name": "本地日期",
+                    "message": "今天是2026年8月4日，星期二。",
+                    "mute_model_audio": True,
+                },
+            )()
+
+    conversation._home_assistant = FakeHomeAssistant()
+    conversation._hermes_tools = FakeHermesTools()
+    conversation._local_info = FakeLocalInfo()
+    conversation._speak_text = spoken.append
+
+    conversation._on_delta(Delta(kind="text", text="当前日期", response_id="date-response"))
+    conversation._on_delta(
+        Delta(kind="audio", audio=np.ones(2400, np.float32), response_id="date-response")
+    )
+
+    assert spoken == ["今天是2026年8月4日，星期二。"]
+    assert conversation._speaker._q.empty()
+
+
 def test_blocked_assistant_text_is_not_offered_to_home_assistant_controller():
     calls = []
     conversation = _conversation_without_hardware()

@@ -28,6 +28,10 @@ HA_CONTROL_POLICY = (
 HERMES_TOOLS_POLICY = (
     "外部工具：当用户询问 DeepSeek 余额时，回复必须包含“DeepSeek余额”这几个字。"
 )
+LOCAL_INFO_POLICY = (
+    "日期时间：当用户询问今天日期、几号、星期几或当前时间时，"
+    "只回复触发词“当前日期”或“当前时间”，不要编造具体日期时间。"
+)
 
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
@@ -126,6 +130,7 @@ class Settings:
     ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
     hermes_tools_enabled: bool = False
     hermes_tools_url: str = "http://192.168.1.200:8766"
+    local_info_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -164,6 +169,8 @@ class Settings:
             parts.append(HA_CONTROL_POLICY)
         if self.hermes_tools_enabled and HERMES_TOOLS_POLICY not in self.system_prompt:
             parts.append(HERMES_TOOLS_POLICY)
+        if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
+            parts.append(LOCAL_INFO_POLICY)
         return "\n".join(parts)
 
     @classmethod
@@ -226,4 +233,5 @@ class Settings:
             hermes_tools_url=(
                 env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
             ).rstrip("/"),
+            local_info_enabled=_flag("YROBOT_LOCAL_INFO_ENABLED", True, env),
         )

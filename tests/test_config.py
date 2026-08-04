@@ -24,6 +24,7 @@ def test_home_assistant_defaults_disabled():
     assert settings.ha_whitelist_path == "~/.config/yrobot/home_assistant_whitelist.json"
     assert settings.hermes_tools_enabled is False
     assert settings.hermes_tools_url == "http://192.168.1.200:8766"
+    assert settings.local_info_enabled is True
 
 
 def test_application_env_defaults_target_official_gateway(monkeypatch):
@@ -75,6 +76,22 @@ def test_hermes_tools_prompt_mentions_deepseek_balance(monkeypatch):
     prompt = Settings.from_env().effective_system_prompt
 
     assert "DeepSeek余额" in prompt
+
+
+def test_local_info_env_override(monkeypatch):
+    monkeypatch.setenv("YROBOT_LOCAL_INFO_ENABLED", "0")
+
+    settings = Settings.from_env()
+
+    assert settings.local_info_enabled is False
+
+
+def test_local_info_prompt_uses_markers():
+    prompt = Settings().effective_system_prompt
+
+    assert "日期时间" in prompt
+    assert "当前日期" in prompt
+    assert "当前时间" in prompt
 
 
 def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):
