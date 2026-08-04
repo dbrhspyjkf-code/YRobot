@@ -250,9 +250,11 @@ def test_sleeping_conversation_drops_audio_output():
 def test_sleeping_conversation_blocks_text_side_effects():
     calls = []
     conversation = _conversation_without_hardware()
-    from yrobot.wake import WakeGate
-
-    conversation._wake = WakeGate("你好大白", 10.0, enabled=True)
+    conversation._wake = type(
+        "SleepingWake",
+        (),
+        {"observe_text": lambda self, text, now: False},
+    )()
 
     class FakeController:
         def handle_text(self, text, response_id):
@@ -270,9 +272,11 @@ def test_sleeping_conversation_blocks_text_side_effects():
 def test_wake_phrase_allows_text_side_effects():
     calls = []
     conversation = _conversation_without_hardware()
-    from yrobot.wake import WakeGate
-
-    conversation._wake = WakeGate("你好大白", 10.0, enabled=True)
+    conversation._wake = type(
+        "WakingWake",
+        (),
+        {"observe_text": lambda self, text, now: "你好大白" in text},
+    )()
 
     class FakeHomeAssistant:
         def handle_text(self, text, response_id):
@@ -289,44 +293,3 @@ def test_wake_phrase_allows_text_side_effects():
     conversation._on_delta(Delta(kind="text", text="你好大白，打开书台灯", response_id="wake-text"))
 
     assert calls == [("你好大白，打开书台灯", "wake-text")]
-
-
-def test_wake_response_audio_is_not_spoken_back():
-    conversation = _conversation_without_hardware()
-    from yrobot.wake import WakeGate
-
-    conversation._wake = WakeGate("你好大白", 10.0, enabled=True)
-    pcm = np.ones(2400, np.float32)
-
-    conversation._on_delta(
-        Delta(kind="text", text="你好大白", response_id="wake-response", received_at=100.0)
-    )
-    conversation._on_delta(
-        Delta(kind="audio", audio=pcm, response_id="wake-response", received_at=100.1)
-    )
-
-    assert conversation._speaker._q.empty()
-
-
-def test_wake_response_with_command_still_runs_side_effects():
-    calls = []
-    conversation = _conversation_without_hardware()
-    from yrobot.wake import WakeGate
-
-    conversation._wake = WakeGate("你好大白", 10.0, enabled=True)
-
-    class FakeHomeAssistant:
-        def handle_text(self, text, response_id):
-            calls.append((text, response_id))
-            return None
-
-    class FakeHermesTools:
-        def handle_text(self, text, response_id):
-            return None
-
-    conversation._home_assistant = FakeHomeAssistant()
-    conversation._hermes_tools = FakeHermesTools()
-
-    conversation._on_delta(Delta(kind="text", text="你好大白，打开书台灯", response_id="wake-cmd"))
-
-    assert calls == [("你好大白，打开书台灯", "wake-cmd")]

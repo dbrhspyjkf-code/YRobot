@@ -78,7 +78,6 @@ class Conversation:
         self._home_assistant = HomeAssistantController.from_settings(settings)
         self._hermes_tools = HermesToolsController.from_settings(settings)
         self._wake = WakeGate(settings.wake_phrase, settings.wake_window_s, settings.wake_enabled)
-        self._muted_response_ids: set[str] = set()
         self._barge = BargeDetector(
             BargeConfig(
                 echo_similarity=settings.barge_echo_similarity,
@@ -528,7 +527,6 @@ class Conversation:
                 was_latched = self._gate.latched
                 allowed = self._gate.model_audio(now, delta.response_id)
                 allowed = allowed and self._wake.awake(now)
-                allowed = allowed and delta.response_id not in self._muted_response_ids
                 if allowed:
                     epoch = self._speaker.epoch
                     self._speaker.play(epoch, delta.audio)
@@ -551,10 +549,7 @@ class Conversation:
                 allowed = self._gate.model_text(now, delta.response_id)
                 fragment = self._captions.feed(delta.text) if allowed else ""
                 caption = fragment.strip()
-                was_awake = self._wake.awake(now)
                 awake = self._wake.observe_text(caption, now) if caption else self._wake.awake(now)
-                if awake and not was_awake and delta.response_id:
-                    self._muted_response_ids.add(delta.response_id)
                 if awake:
                     self._memory.append_assistant(fragment)
             if was_latched and allowed:
