@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,37 @@ class HomeAssistantResult:
     action: HomeAssistantAction
     ok: bool
     detail: str = ""
+
+
+class HomeAssistantClient:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        *,
+        opener: Callable = urllib.request.urlopen,
+        timeout: float = 5.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._opener = opener
+        self._timeout = timeout
+
+    def call(self, action: HomeAssistantAction) -> None:
+        domain, service = action.service.split(".", 1)
+        url = f"{self._base_url}/api/services/{domain}/{service}"
+        body = json.dumps({"entity_id": action.entity_id}).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with self._opener(request, timeout=self._timeout) as response:
+            response.read()
 
 
 def _normalize(text: str) -> str:
@@ -87,6 +119,9 @@ class HomeAssistantController:
             logger.warning("Home Assistant whitelist disabled: %s", exc)
             actions = ()
             enabled = False
+        if caller is None and enabled:
+            client = HomeAssistantClient(settings.ha_url or "", settings.ha_token or "")
+            caller = client.call
         return cls(actions, caller or (lambda action: None), enabled)
 
     def handle_text(self, text: str, response_id: str) -> HomeAssistantResult | None:
