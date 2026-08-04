@@ -148,15 +148,19 @@ class HomeAssistantController:
             for action in self._actions
             if any(_normalize(phrase) in normalized for phrase in action.phrases)
         ]
-        if len(matches) != 1:
+        if not matches:
             return None
-        action = matches[0]
-        key = (response_id, action.name)
-        if key in self._fired:
+        pending = []
+        for action in matches:
+            key = (response_id, action.service, action.entity_id)
+            if key not in self._fired:
+                pending.append(action)
+                self._fired.add(key)
+        if not pending:
             return None
-        self._fired.add(key)
         try:
-            self._caller(action)
+            for action in pending:
+                self._caller(action)
         except Exception as exc:  # noqa: BLE001 - HA failures should not stop conversation
             return HomeAssistantResult(action, False, str(exc))
-        return HomeAssistantResult(action, True)
+        return HomeAssistantResult(pending[0], True)

@@ -84,6 +84,48 @@ def test_duplicate_response_does_not_fire_same_action_twice(tmp_path):
     assert len(calls) == 1
 
 
+def test_one_phrase_can_trigger_multiple_actions_once(tmp_path):
+    path = tmp_path / "ha.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "书台灯",
+                    "phrases": ["关灯睡觉"],
+                    "service": "switch.turn_off",
+                    "entity_id": "switch.desk_light",
+                },
+                {
+                    "name": "电视机",
+                    "phrases": ["关灯睡觉"],
+                    "service": "switch.turn_on",
+                    "entity_id": "switch.tv_speaker_mode",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    settings = Settings(
+        ha_enabled=True,
+        ha_url="http://ha.local:8123",
+        ha_token="secret",
+        ha_whitelist_path=str(path),
+    )
+    controller = HomeAssistantController.from_settings(settings, caller=calls.append)
+
+    first = controller.handle_text("好的，关灯睡觉。", "resp-scene")
+    second = controller.handle_text("关灯睡觉。", "resp-scene")
+
+    assert first is not None
+    assert second is None
+    assert [(call.service, call.entity_id) for call in calls] == [
+        ("switch.turn_off", "switch.desk_light"),
+        ("switch.turn_on", "switch.tv_speaker_mode"),
+    ]
+
+
 def test_split_response_text_matches_after_accumulation(tmp_path):
     path = tmp_path / "ha.json"
     path.write_text(
