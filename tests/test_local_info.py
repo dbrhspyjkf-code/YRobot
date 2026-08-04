@@ -67,3 +67,27 @@ def test_plain_today_statement_does_not_trigger_date():
     )
 
     assert controller.handle_text("今天是个好日子", "resp-chat") is None
+
+
+def test_model_answer_with_wrong_full_date_is_replaced():
+    controller = LocalInfoController(
+        enabled=True,
+        now=lambda: datetime(2026, 8, 4, 23, 35),
+    )
+
+    result = controller.handle_text("今天日期是2024年6月19日，星期三。", "resp-date")
+
+    assert result is not None
+    assert result.message == "今天是2026年8月4日，星期二。"
+
+
+def test_model_answer_with_wrong_weekday_is_replaced():
+    controller = LocalInfoController(
+        enabled=True,
+        now=lambda: datetime(2026, 8, 4, 23, 35),
+    )
+
+    result = controller.handle_text("今天是星期三。", "resp-weekday")
+
+    assert result is not None
+    assert result.message == "今天是2026年8月4日，星期二。"

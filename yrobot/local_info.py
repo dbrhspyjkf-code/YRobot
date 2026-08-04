@@ -41,7 +41,16 @@ class LocalInfoController:
         self._buffer_text += text
         normalized = _normalize(self._buffer_text)
 
-        if "当前日期" in normalized or re.search(r"今天是.+月.+[日号]", normalized):
+        if (
+            "当前日期" in normalized
+            or "今天日期" in normalized
+            or "今天几号" in normalized
+            or "今天星期" in normalized
+            or "今天周" in normalized
+            or re.search(r"今天是.+月.+[日号]", normalized)
+            or re.search(r"今天是星期[一二三四五六日天]", normalized)
+            or re.search(r"今天是周[一二三四五六日天]", normalized)
+        ):
             return self._once(response_id, "date", self._date_result)
         if "当前时间" in normalized or "现在是" in normalized or "几点" in normalized:
             return self._once(response_id, "time", self._time_result)
