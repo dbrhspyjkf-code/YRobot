@@ -84,6 +84,40 @@ def test_duplicate_response_does_not_fire_same_action_twice(tmp_path):
     assert len(calls) == 1
 
 
+def test_split_response_text_matches_after_accumulation(tmp_path):
+    path = tmp_path / "ha.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "书台灯",
+                    "phrases": ["打开书台灯"],
+                    "service": "switch.turn_on",
+                    "entity_id": "switch.desk_light",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    settings = Settings(
+        ha_enabled=True,
+        ha_url="http://ha.local:8123",
+        ha_token="secret",
+        ha_whitelist_path=str(path),
+    )
+    controller = HomeAssistantController.from_settings(settings, caller=calls.append)
+
+    first = controller.handle_text("打开书", "resp-1")
+    second = controller.handle_text("台灯。", "resp-1")
+
+    assert first is None
+    assert second is not None
+    assert second.action.name == "书台灯"
+    assert len(calls) == 1
+
+
 class FakeResponse:
     def __enter__(self):
         return self

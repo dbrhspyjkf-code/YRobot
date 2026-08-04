@@ -105,6 +105,8 @@ class HomeAssistantController:
         self._caller = caller
         self._enabled = enabled
         self._fired: set[tuple[str, str]] = set()
+        self._buffer_response_id = ""
+        self._buffer_text = ""
 
     @classmethod
     def from_settings(
@@ -127,7 +129,11 @@ class HomeAssistantController:
     def handle_text(self, text: str, response_id: str) -> HomeAssistantResult | None:
         if not self._enabled:
             return None
-        normalized = _normalize(text)
+        if response_id != self._buffer_response_id:
+            self._buffer_response_id = response_id
+            self._buffer_text = ""
+        self._buffer_text += text
+        normalized = _normalize(self._buffer_text)
         matches = [
             action
             for action in self._actions
