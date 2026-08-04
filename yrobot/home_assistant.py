@@ -6,6 +6,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from yrobot.config import Settings
 
@@ -20,6 +21,7 @@ class HomeAssistantAction:
     phrases: tuple[str, ...]
     service: str
     entity_id: str
+    service_data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -46,7 +48,10 @@ class HomeAssistantClient:
     def call(self, action: HomeAssistantAction) -> None:
         domain, service = action.service.split(".", 1)
         url = f"{self._base_url}/api/services/{domain}/{service}"
-        body = json.dumps({"entity_id": action.entity_id}).encode("utf-8")
+        payload = {"entity_id": action.entity_id}
+        if action.service_data:
+            payload.update(action.service_data)
+        body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url,
             data=body,
@@ -83,12 +88,16 @@ def _load_actions(path: str) -> tuple[HomeAssistantAction, ...]:
         phrases = tuple(str(p) for p in item["phrases"] if str(p).strip())
         if not phrases:
             raise ValueError("Home Assistant whitelist entry needs phrases")
+        service_data = item.get("service_data")
+        if service_data is not None and not isinstance(service_data, dict):
+            raise ValueError("Home Assistant service_data must be an object")
         actions.append(
             HomeAssistantAction(
                 name=str(item["name"]),
                 phrases=phrases,
                 service=service,
                 entity_id=str(item["entity_id"]),
+                service_data=service_data,
             )
         )
     return tuple(actions)

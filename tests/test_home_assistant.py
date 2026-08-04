@@ -151,6 +151,64 @@ def test_rest_client_sends_expected_home_assistant_request():
     assert captured["timeout"] == 5.0
 
 
+def test_rest_client_merges_service_data_into_request_body():
+    captured = {}
+
+    def opener(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = request.data
+        return FakeResponse()
+
+    client = HomeAssistantClient("http://ha.local:8123/", "secret-token", opener=opener)
+    action = HomeAssistantAction(
+        "客厅电视",
+        ("电视音量大一点",),
+        "media_player.volume_set",
+        "media_player.living_room_tv",
+        {"volume_level": 0.35},
+    )
+
+    client.call(action)
+
+    assert captured["url"] == "http://ha.local:8123/api/services/media_player/volume_set"
+    assert json.loads(captured["body"]) == {
+        "entity_id": "media_player.living_room_tv",
+        "volume_level": 0.35,
+    }
+
+
+def test_whitelist_loads_optional_service_data(tmp_path):
+    path = tmp_path / "ha.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "客厅电视",
+                    "phrases": ["电视音量大一点"],
+                    "service": "media_player.volume_set",
+                    "entity_id": "media_player.living_room_tv",
+                    "service_data": {"volume_level": 0.35},
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    settings = Settings(
+        ha_enabled=True,
+        ha_url="http://ha.local:8123",
+        ha_token="secret",
+        ha_whitelist_path=str(path),
+    )
+    controller = HomeAssistantController.from_settings(settings, caller=calls.append)
+
+    result = controller.handle_text("好的，电视音量大一点。", "resp-volume")
+
+    assert result is not None
+    assert calls[0].service_data == {"volume_level": 0.35}
+
+
 def test_controller_converts_rest_failure_to_failed_result(tmp_path):
     path = tmp_path / "ha.json"
     path.write_text(
