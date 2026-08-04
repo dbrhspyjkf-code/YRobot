@@ -22,6 +22,7 @@ class HomeAssistantAction:
     service: str
     entity_id: str
     service_data: dict[str, Any] | None = None
+    response: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ def _load_actions(path: str) -> tuple[HomeAssistantAction, ...]:
                 service=service,
                 entity_id=str(item["entity_id"]),
                 service_data=service_data,
+                response=str(item["response"]).strip() if item.get("response") else None,
             )
         )
     return tuple(actions)

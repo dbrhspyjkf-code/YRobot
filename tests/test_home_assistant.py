@@ -126,6 +126,37 @@ def test_one_phrase_can_trigger_multiple_actions_once(tmp_path):
     ]
 
 
+def test_whitelist_loads_optional_spoken_response(tmp_path):
+    path = tmp_path / "ha.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "睡觉场景",
+                    "phrases": ["关灯睡觉"],
+                    "service": "switch.turn_off",
+                    "entity_id": "switch.desk_light",
+                    "response": "好的，晚安。",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        ha_enabled=True,
+        ha_url="http://ha.local:8123",
+        ha_token="secret",
+        ha_whitelist_path=str(path),
+    )
+    controller = HomeAssistantController.from_settings(settings, caller=lambda action: None)
+
+    result = controller.handle_text("好的，关灯睡觉。", "resp-scene")
+
+    assert result is not None
+    assert result.action.response == "好的，晚安。"
+
+
 def test_split_response_text_matches_after_accumulation(tmp_path):
     path = tmp_path / "ha.json"
     path.write_text(

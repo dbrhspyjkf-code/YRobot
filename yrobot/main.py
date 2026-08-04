@@ -602,6 +602,10 @@ class Conversation:
                 if result is not None:
                     if result.ok:
                         logger.info("Home Assistant action succeeded: %s", result.action.name)
+                        if result.action.response:
+                            if delta.response_id:
+                                self._muted_response_ids.add(delta.response_id)
+                            self._speak_text(result.action.response)
                     else:
                         logger.warning(
                             "Home Assistant action failed: %s: %s",
