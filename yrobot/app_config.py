@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 
 from yrobot.config import DEFAULT_PERSONA, Settings, normalize_url
+from yrobot.persistent_memory import PersistentMemory
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,10 @@ def build_status(store: AppConfig, environ: Mapping[str, str]) -> dict[str, Any]
             "local_info": {
                 "enabled": settings.local_info_enabled,
             },
+            "memory": {
+                "enabled": settings.memory_enabled,
+                "path": settings.memory_path,
+            },
         },
         "privacy": {
             "audio_uploaded_to_gateway": True,
@@ -219,8 +224,16 @@ def register_settings_routes(
     app: FastAPI,
     store: AppConfig,
     get_environment: Callable[[], Mapping[str, str]] = lambda: os.environ,
+    memory_path: str | Path | None = None,
 ) -> None:
     """Attach the small settings API consumed by ``yrobot/static``."""
+
+    def memory_store() -> PersistentMemory:
+        settings = Settings.from_env(store.effective_environment(get_environment()))
+        return PersistentMemory(
+            memory_path or settings.memory_path,
+            enabled=settings.memory_enabled,
+        )
 
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
@@ -229,6 +242,28 @@ def register_settings_routes(
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:
         return {"ok": True, "status": build_status(store, get_environment())}
+
+    @app.get("/api/memory")
+    def get_memory() -> dict[str, Any]:
+        return {"memory": memory_store().view()}
+
+    @app.put("/api/memory")
+    def put_memory(document: dict[str, Any]) -> dict[str, Any]:
+        text = document.get("text")
+        if not isinstance(text, str):
+            raise HTTPException(status_code=422, detail="text must be a string")
+        item = memory_store().add(text)
+        if item is None:
+            raise HTTPException(status_code=422, detail="text must be non-empty")
+        return {"memory": memory_store().view(), "message": f"Saved memory: {item}"}
+
+    @app.delete("/api/memory")
+    def delete_memory(document: dict[str, Any]) -> dict[str, Any]:
+        text = document.get("text")
+        if not isinstance(text, str):
+            raise HTTPException(status_code=422, detail="text must be a string")
+        removed = memory_store().forget(text)
+        return {"memory": memory_store().view(), "removed": removed}
 
     @app.put("/api/settings")
     def put_settings(document: dict[str, Any]) -> dict[str, Any]:

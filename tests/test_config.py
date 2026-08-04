@@ -25,6 +25,8 @@ def test_home_assistant_defaults_disabled():
     assert settings.hermes_tools_enabled is False
     assert settings.hermes_tools_url == "http://192.168.1.200:8766"
     assert settings.local_info_enabled is True
+    assert settings.memory_enabled is True
+    assert settings.memory_path == "~/.config/yrobot/memory.json"
 
 
 def test_application_env_defaults_target_official_gateway(monkeypatch):

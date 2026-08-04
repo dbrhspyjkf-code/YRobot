@@ -120,3 +120,25 @@ def test_status_api_returns_status(tmp_path):
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert response.json()["status"]["service"]["name"] == "YRobot"
+
+
+def test_memory_api_returns_safe_local_memories(tmp_path):
+    store = AppConfig(tmp_path / "settings.json")
+    app = FastAPI()
+    register_settings_routes(
+        app,
+        store,
+        get_environment=lambda: {"YROBOT_HA_TOKEN": "super-secret-token"},
+        memory_path=tmp_path / "memory.json",
+    )
+    client = TestClient(app)
+
+    put = client.put("/api/memory", json={"text": "我喜欢喝拿铁。"})
+    assert put.status_code == 200
+
+    response = client.get("/api/memory")
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["memory"]["items"] == ["我喜欢喝拿铁。"]
+    assert payload["memory"]["count"] == 1
+    assert "super-secret-token" not in json.dumps(payload)

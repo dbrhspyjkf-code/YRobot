@@ -52,11 +52,28 @@
             <small>日期和时间由 Reachy 本机回答</small>
           </div>
           <div class="status-item">
+            <span>本地记忆</span>
+            <b id="status-memory">--</b>
+            <small id="status-memory-path">--</small>
+          </div>
+          <div class="status-item">
             <span>数据发送</span>
             <b id="status-privacy">--</b>
             <small id="status-refresh-time">--</small>
           </div>
         </div>
+      </section>
+      <section id="memory-panel" class="panel hidden">
+        <div class="panel-heading compact">
+          <div><p class="step">MEMORY</p><h2>本地记忆</h2></div>
+          <button id="refresh-memory" class="icon-button" type="button" title="刷新记忆">刷新</button>
+        </div>
+        <div id="memory-list" class="memory-list"></div>
+        <div class="memory-editor">
+          <input id="memory-text" type="text" maxlength="160" placeholder="输入一条要保存的记忆" />
+          <button id="add-memory" type="button">添加</button>
+        </div>
+        <p id="memory-status" class="hint">语音说“记住：……”也会保存到这里。</p>
       </section>
       <div id="restart-banner" class="notice success hidden">
         <b>设置已安全保存。</b> 请在应用中心停止并重新启动 YRobot。

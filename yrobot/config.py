@@ -32,6 +32,11 @@ LOCAL_INFO_POLICY = (
     "日期时间：当用户询问今天日期、几号、星期几或当前时间时，"
     "只回复触发词“当前日期”或“当前时间”，不要编造具体日期时间。"
 )
+MEMORY_POLICY = (
+    "本地记忆：只有当用户明确要求记住某件事时，回复必须包含“记住：”和要保存的内容；"
+    "当用户要求忘掉某件事时，回复必须包含“忘掉：”和要删除的关键词；"
+    "当用户询问你记得什么时，回复必须包含“我记得什么”。"
+)
 
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
@@ -131,6 +136,8 @@ class Settings:
     hermes_tools_enabled: bool = False
     hermes_tools_url: str = "http://192.168.1.200:8766"
     local_info_enabled: bool = True
+    memory_enabled: bool = True
+    memory_path: str = "~/.config/yrobot/memory.json"
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -171,6 +178,8 @@ class Settings:
             parts.append(HERMES_TOOLS_POLICY)
         if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
             parts.append(LOCAL_INFO_POLICY)
+        if self.memory_enabled and MEMORY_POLICY not in self.system_prompt:
+            parts.append(MEMORY_POLICY)
         return "\n".join(parts)
 
     @classmethod
@@ -234,4 +243,6 @@ class Settings:
                 env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
             ).rstrip("/"),
             local_info_enabled=_flag("YROBOT_LOCAL_INFO_ENABLED", True, env),
+            memory_enabled=_flag("YROBOT_MEMORY_ENABLED", True, env),
+            memory_path=env.get("YROBOT_MEMORY_PATH") or "~/.config/yrobot/memory.json",
         )

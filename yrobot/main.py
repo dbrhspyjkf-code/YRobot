@@ -33,6 +33,7 @@ from yrobot.hermes_tools import HermesToolsController
 from yrobot.home_assistant import HomeAssistantController
 from yrobot.local_info import LocalInfoController
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
+from yrobot.persistent_memory import PersistentMemory
 from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
 from yrobot.session import ConversationMemory, RotationPolicy
 from yrobot.tts import synthesize_speech_24k
@@ -78,6 +79,10 @@ class Conversation:
         self._home_assistant = HomeAssistantController.from_settings(settings)
         self._hermes_tools = HermesToolsController.from_settings(settings)
         self._local_info = LocalInfoController(enabled=settings.local_info_enabled)
+        self._persistent_memory = PersistentMemory(
+            settings.memory_path,
+            enabled=settings.memory_enabled,
+        )
         self._muted_response_ids: set[str] = set()
         self._barge = BargeDetector(
             BargeConfig(
@@ -175,7 +180,16 @@ class Conversation:
             self._s,
             on_delta=lambda delta: self._on_delta(delta, session_sequence),
             on_closed=lambda reason: self._on_closed(reason, session_sequence),
-            system_prompt=self._memory.prompt(self._s.effective_system_prompt),
+            system_prompt=self._memory.prompt(
+                "\n".join(
+                    part
+                    for part in (
+                        self._s.effective_system_prompt,
+                        self._persistent_memory.prompt_context(),
+                    )
+                    if part
+                )
+            ),
         )
         try:
             client.open()
@@ -555,6 +569,22 @@ class Conversation:
                 logger.info("barge-in boundary complete: accepting new model response")
             if caption:
                 logger.info("robot: %s", caption)
+                memory_result = self._persistent_memory.handle_text(
+                    caption,
+                    delta.response_id or "",
+                )
+                if memory_result is not None:
+                    if memory_result.mute_model_audio and delta.response_id:
+                        self._muted_response_ids.add(delta.response_id)
+                    if memory_result.ok:
+                        logger.info("Memory result: %s", memory_result.message)
+                        self._speak_text(memory_result.message)
+                    else:
+                        logger.warning(
+                            "Memory failed: %s: %s",
+                            memory_result.name,
+                            memory_result.message,
+                        )
                 info_result = self._local_info.handle_text(caption, delta.response_id or "")
                 if info_result is not None:
                     if info_result.mute_model_audio and delta.response_id:

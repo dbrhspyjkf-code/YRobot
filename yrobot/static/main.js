@@ -23,8 +23,16 @@ const statusHaUrl = document.getElementById("status-ha-url");
 const statusHermes = document.getElementById("status-hermes");
 const statusHermesUrl = document.getElementById("status-hermes-url");
 const statusLocalInfo = document.getElementById("status-local-info");
+const statusMemory = document.getElementById("status-memory");
+const statusMemoryPath = document.getElementById("status-memory-path");
 const statusPrivacy = document.getElementById("status-privacy");
 const statusRefreshTime = document.getElementById("status-refresh-time");
+const memoryPanel = document.getElementById("memory-panel");
+const refreshMemory = document.getElementById("refresh-memory");
+const memoryList = document.getElementById("memory-list");
+const memoryText = document.getElementById("memory-text");
+const addMemory = document.getElementById("add-memory");
+const memoryStatus = document.getElementById("memory-status");
 
 function updatePersonaCount() {
   personaCount.textContent = String(persona.value.length);
@@ -82,9 +90,36 @@ function showStatus(status) {
   statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
 
   statusLocalInfo.textContent = stateText(status.integrations.local_info.enabled);
+  statusMemory.textContent = stateText(status.integrations.memory.enabled);
+  statusMemoryPath.textContent = status.integrations.memory.path;
   statusPrivacy.textContent = status.privacy.video_uploaded_to_gateway ? "音频 + 摄像头" : "仅音频";
   statusRefreshTime.textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
   statusPanel.classList.remove("hidden");
+}
+
+function showMemory(memory) {
+  memoryList.innerHTML = "";
+  if (!memory.items.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-memory";
+    empty.textContent = "还没有保存任何记忆";
+    memoryList.append(empty);
+  }
+  for (const item of memory.items) {
+    const row = document.createElement("div");
+    row.className = "memory-row";
+    const text = document.createElement("span");
+    text.textContent = item;
+    const button = document.createElement("button");
+    button.className = "icon-button";
+    button.type = "button";
+    button.textContent = "删除";
+    button.addEventListener("click", () => deleteMemory(item));
+    row.append(text, button);
+    memoryList.append(row);
+  }
+  memoryStatus.textContent = `共 ${memory.count} 条，保存位置：${memory.path}`;
+  memoryPanel.classList.remove("hidden");
 }
 
 async function loadStatus() {
@@ -100,6 +135,60 @@ async function loadStatus() {
     statusUptime.textContent = error.message;
   } finally {
     refreshStatus.disabled = false;
+  }
+}
+
+async function loadMemory() {
+  refreshMemory.disabled = true;
+  try {
+    const response = await fetch("/api/memory", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "读取失败");
+    showMemory(result.memory);
+  } catch (error) {
+    memoryPanel.classList.remove("hidden");
+    memoryStatus.textContent = `无法读取记忆：${error.message}`;
+  } finally {
+    refreshMemory.disabled = false;
+  }
+}
+
+async function saveMemory() {
+  const text = memoryText.value.trim();
+  if (!text) {
+    memoryText.focus();
+    return;
+  }
+  addMemory.disabled = true;
+  try {
+    const response = await fetch("/api/memory", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "保存失败");
+    memoryText.value = "";
+    showMemory(result.memory);
+  } catch (error) {
+    memoryStatus.textContent = `保存失败：${error.message}`;
+  } finally {
+    addMemory.disabled = false;
+  }
+}
+
+async function deleteMemory(text) {
+  try {
+    const response = await fetch("/api/memory", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "删除失败");
+    showMemory(result.memory);
+  } catch (error) {
+    memoryStatus.textContent = `删除失败：${error.message}`;
   }
 }
 
@@ -119,6 +208,11 @@ async function loadSettings() {
 persona.addEventListener("input", updatePersonaCount);
 videoEnabled.addEventListener("change", syncVideoControls);
 refreshStatus.addEventListener("click", loadStatus);
+refreshMemory.addEventListener("click", loadMemory);
+addMemory.addEventListener("click", saveMemory);
+memoryText.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") saveMemory();
+});
 form.addEventListener("input", () => {
   saveStatus.textContent = "有未保存的修改";
   restartBanner.classList.add("hidden");
@@ -162,5 +256,6 @@ form.addEventListener("submit", async (event) => {
 });
 
 loadStatus();
+loadMemory();
 loadSettings();
 setInterval(loadStatus, 10000);
