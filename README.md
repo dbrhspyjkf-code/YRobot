@@ -5,7 +5,7 @@ colorFrom: indigo
 colorTo: pink
 sdk: static
 pinned: false
-short_description: Full-duplex MiniCPM-o 4.5 conversation for Reachy Mini Wireless
+short_description: Full-duplex MiniCPM-o conversation for Reachy Mini
 tags:
   - reachy_mini
   - reachy_mini_python_app
