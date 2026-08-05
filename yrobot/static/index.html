@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YRobot 设置</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div class="brand"><span>Y</span><b>YRobot</b></div>
+        <div class="connection"><i></i> Reachy Mini 应用设置</div>
+      </header>
+
+      <section class="intro">
+        <p class="eyebrow">CONVERSATION CONTROL</p>
+        <h1>让 Reachy 按你的方式交流。</h1>
+        <p>配置实时 Gateway、视觉模式和对话人格。保存后重启 YRobot 即可生效。</p>
+      </section>
+
+      <div id="loading" class="notice">正在读取机器人配置…</div>
+      <div id="restart-banner" class="notice success hidden">
+        <b>设置已安全保存。</b> 请在应用中心停止并重新启动 YRobot。
+      </div>
+
+      <form id="settings-form" class="hidden">
+        <section class="panel">
+          <div class="panel-heading">
+            <div><p class="step">01 / CONNECTION</p><h2>实时服务</h2></div>
+            <span class="pill">WebSocket</span>
+          </div>
+          <label for="gateway-url">MiniCPM-o Gateway</label>
+          <input id="gateway-url" name="gateway_url" type="text" spellcheck="false" required />
+          <p class="hint">可填写主机名或完整的 ws:// / wss:// 地址；音频/视频模式会自动写入 URL。</p>
+
+          <div class="toggle-row">
+            <div><b>验证 TLS 证书</b><small>公网 Gateway 建议始终开启</small></div>
+            <label class="switch"><input id="tls-verify" type="checkbox" /><span></span></label>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div><p class="step">02 / PERCEPTION</p><h2>感知方式</h2></div>
+            <span class="pill mint">Live</span>
+          </div>
+          <div class="toggle-row">
+            <div><b>启用连续视觉</b><small>对话期间约 1 fps，并带空闲心跳</small></div>
+            <label class="switch"><input id="video-enabled" type="checkbox" /><span></span></label>
+          </div>
+          <div class="toggle-row">
+            <div><b>克制的主动观察</b><small>只在出现明确、重要变化时主动提醒</small></div>
+            <label class="switch"><input id="proactive-enabled" type="checkbox" /><span></span></label>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
+            <div><p class="step">03 / CHARACTER</p><h2>对话人格</h2></div>
+            <span class="pill">≤ 240</span>
+          </div>
+          <label for="persona">一句话 Persona</label>
+          <textarea id="persona" rows="3" maxlength="240"></textarea>
+          <div class="counter"><span id="persona-count">0</span> / 240</div>
+        </section>
+
+        <section class="privacy-card">
+          <div class="privacy-mark">◎</div>
+          <div>
+            <h2>发送前请了解</h2>
+            <p>
+              YRobot 运行时会把麦克风音频发送到上方配置的 Gateway。开启连续视觉后，摄像头
+              JPEG 画面也会发送。YRobot 不在本机保存录音或图像；远端数据如何处理取决于
+              Gateway 提供方。关闭连续视觉即可使用纯音频模式。
+            </p>
+            <label class="consent"><input id="privacy-confirm" type="checkbox" /> 我已了解上述数据传输方式</label>
+          </div>
+        </section>
+
+        <div id="override-warning" class="notice warning hidden"></div>
+        <div class="form-footer">
+          <div><b id="save-status">尚未修改</b><small id="config-path"></small></div>
+          <button id="save-button" type="submit">保存设置</button>
+        </div>
+      </form>
+    </main>
+    <script src="/static/main.js"></script>
+  </body>
+</html>

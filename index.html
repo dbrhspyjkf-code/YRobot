@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="YRobot gives Reachy Mini Wireless a full-duplex voice, continuous vision, responsive gaze and expressive motion."
+    />
+    <title>YRobot — Full-duplex conversation for Reachy Mini</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="YRobot home">
+        <span class="brand-mark" aria-hidden="true">Y</span>
+        <span>YRobot</span>
+      </a>
+      <span class="store-badge"><i></i> Reachy Mini App</span>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">LISTENS · WATCHES · RESPONDS · MOVES</p>
+          <h1>A conversation that feels <em>present.</em></h1>
+          <p class="lede">
+            YRobot turns Reachy Mini Wireless into a full-duplex, scene-aware companion
+            powered by MiniCPM-o 4.5. Speak naturally, interrupt naturally, and watch the
+            robot orient toward your voice.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#install">Install on Reachy Mini</a>
+            <a class="button secondary" href="https://github.com/thomas-yanxin/YRobot">View source</a>
+          </div>
+          <div class="trust-row" aria-label="Project facts">
+            <span>Apache-2.0</span>
+            <span>Reachy Mini Wireless</span>
+            <span>Python 3.11–3.12</span>
+          </div>
+        </div>
+
+        <div class="robot-stage" aria-label="Abstract illustration of an attentive robot">
+          <div class="orbit orbit-one"></div>
+          <div class="orbit orbit-two"></div>
+          <div class="sound-wave wave-left"><i></i><i></i><i></i></div>
+          <div class="sound-wave wave-right"><i></i><i></i><i></i></div>
+          <div class="robot">
+            <div class="antenna left"></div>
+            <div class="antenna right"></div>
+            <div class="head"><div class="eye"></div></div>
+            <div class="neck"></div>
+            <div class="body"><span>LIVE</span></div>
+          </div>
+          <div class="status-chip chip-vision"><b></b> Scene aware</div>
+          <div class="status-chip chip-audio"><b></b> Full duplex</div>
+        </div>
+      </section>
+
+      <section class="feature-grid" aria-label="YRobot capabilities">
+        <article>
+          <span class="feature-number">01</span>
+          <h2>Interrupt without waiting</h2>
+          <p>Echo-aware local barge-in stops stale playback and gives clear speech a fast path.</p>
+        </article>
+        <article>
+          <span class="feature-number">02</span>
+          <h2>Continuous visual context</h2>
+          <p>Latest-only camera delivery keeps the scene fresh without allowing video to delay audio.</p>
+        </article>
+        <article>
+          <span class="feature-number">03</span>
+          <h2>Motion with attention</h2>
+          <p>Direction-of-arrival gaze, breathing and expressive antennas share one smooth motion loop.</p>
+        </article>
+      </section>
+
+      <section class="signal-section">
+        <div>
+          <p class="eyebrow">ONE LIVE TIMELINE</p>
+          <h2>Audio, vision and motion stay in step.</h2>
+        </div>
+        <div class="signal-flow" aria-label="YRobot information flow">
+          <span>You</span><i></i><span>Reachy Mini</span><i></i><span>MiniCPM-o</span><i></i><span>Response</span>
+        </div>
+      </section>
+
+      <section class="privacy-section" id="privacy">
+        <div class="privacy-icon" aria-hidden="true">◎</div>
+        <div>
+          <p class="eyebrow">PRIVACY, IN PLAIN LANGUAGE</p>
+          <h2>Know what leaves the robot.</h2>
+          <p>
+            While YRobot runs, microphone audio is sent to the configured MiniCPM-o realtime
+            Gateway. In video mode, camera JPEG frames are sent too—about once per second during
+            conversation, with a bounded idle heartbeat. YRobot does not save recordings locally.
+            The Gateway operator's policies govern remotely processed data. Choose audio-only mode
+            in the app settings to disable camera transmission.
+          </p>
+        </div>
+      </section>
+
+      <section class="install-section" id="install">
+        <div>
+          <p class="eyebrow">READY WHEN REACHY IS</p>
+          <h2>Install, open settings, start talking.</h2>
+        </div>
+        <ol>
+          <li><b>01</b><span>Open <strong>Applications</strong> in Reachy Mini Control.</span></li>
+          <li><b>02</b><span>Install YRobot, then press <strong>Start</strong>.</span></li>
+          <li><b>03</b><span>Use the settings icon to select Gateway, video and persona.</span></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>
+      <span>YRobot</span>
+      <span>Built for Reachy Mini Wireless</span>
+    </footer>
+  </body>
+</html>
