@@ -8,7 +8,7 @@ Design rules that keep motion lifelike:
   ever steps or fights;
 * speech articulation is delegated to the SDK's ``enable_wobbling()``
   (daemon-side, PTS-synced to the actual speaker output) and body rotation
-  to ``set_automatic_body_yaw(True)`` — both compose with our target pose;
+  follows the measured world head yaw outside a small head-only deadband;
 * the XVF3800 DoA angle (0 = left, π/2 = front/back-ambiguous, π = right,
   head-relative) is sampled only after VAD *and* echo rejection confirm the
   user. The firmware speech flag supplies confidence rather than the gate,
@@ -182,6 +182,11 @@ class Choreographer(threading.Thread):
 
     RATE_HZ = 50
     YAW_LIMIT = 2.4  # rad, stay inside the ±160° body envelope
+    # Keep breathing, speech wobble and the largest idle saccade head-only.
+    # Once a sustained gaze clears this threshold, the slower body spring
+    # catches up until the head is nearly parallel again.
+    BODY_FOLLOW_ENGAGE_RAD = 0.30
+    BODY_FOLLOW_RELEASE_RAD = 0.08
     ANTENNA_NEUTRAL = 0.17
 
     def __init__(self, mini) -> None:
@@ -191,6 +196,9 @@ class Choreographer(threading.Thread):
         self._mode = IDLE
         self._mode_blend = {IDLE: 1.0, LISTEN: 0.0, SPEAK: 0.0}
         self._gaze = GazeSpring()
+        self._body_yaw = GazeSpring(omega=3.0, max_vel=0.8)
+        self._body_yaw_initialized = False
+        self._body_following = False
         self._last_voice_at = -1e9
         self._saccade_yaw = GazeSpring(omega=10.0, max_vel=1.2)
         self._saccade_pitch = GazeSpring(omega=10.0, max_vel=0.8)
@@ -234,6 +242,7 @@ class Choreographer(threading.Thread):
             self._mini.set_automatic_body_yaw(True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("automatic body yaw unavailable: %s", exc)
+        self._initialize_body_yaw()
         dt = 1 / self.RATE_HZ
         t0 = time.monotonic()
         next_tick = t0
@@ -242,8 +251,9 @@ class Choreographer(threading.Thread):
             t = now - t0
             self._blend_modes(dt)
             pose, antennas = self._compose(t, now, dt)
+            body_yaw = self._body_yaw_for(pose, dt)
             try:
-                self._mini.set_target(head=pose, antennas=antennas)
+                self._mini.set_target(head=pose, antennas=antennas, body_yaw=body_yaw)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("set_target dropped: %s", exc)
             next_tick += dt
@@ -252,6 +262,52 @@ class Choreographer(threading.Thread):
                 time.sleep(sleep)
             else:
                 next_tick = time.monotonic()  # never try to catch up with a jump
+
+    def _initialize_body_yaw(self) -> None:
+        """Seed the follower from the physical body so startup never snaps home."""
+        if self._body_yaw_initialized:
+            return
+        current = 0.0
+        try:
+            head_joints, _ = self._mini.get_current_joint_positions()
+            current = float(head_joints[0])
+        except Exception:  # daemon read hiccup or a minimal test double
+            pass
+        current = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, current))
+        self._body_yaw.pos = current
+        self._body_yaw.target = current
+        self._body_yaw_initialized = True
+
+    def _body_yaw_for(self, commanded_pose: np.ndarray, dt: float) -> float:
+        """Follow physical head yaw without making the body copy small gestures.
+
+        Daemon-side face tracking and speech wobble are composed after our head
+        target, so the commanded pose alone is not the head's final direction.
+        Reading the daemon's cached physical pose keeps the body aligned with
+        all motion layers. The commanded pose is a safe fallback during a
+        transient pose-read failure.
+        """
+        self._initialize_body_yaw()
+        try:
+            physical_pose = np.asarray(self._mini.get_current_head_pose(), dtype=float)
+            if physical_pose.shape != (4, 4):
+                raise ValueError(f"unexpected head pose shape: {physical_pose.shape}")
+            head_yaw = head_yaw_of(physical_pose)
+        except Exception:  # daemon read hiccup: follow our own target for this tick
+            head_yaw = head_yaw_of(commanded_pose)
+
+        delta = _wrap(head_yaw - self._body_yaw.pos)
+        if not self._body_following and abs(delta) >= self.BODY_FOLLOW_ENGAGE_RAD:
+            self._body_following = True
+
+        if self._body_following and abs(delta) > self.BODY_FOLLOW_RELEASE_RAD:
+            target = self._body_yaw.pos + delta
+            self._body_yaw.target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, target))
+        else:
+            self._body_following = False
+            self._body_yaw.target = self._body_yaw.pos
+
+        return self._body_yaw.step(dt, freeze=self._still)
 
     def _blend_modes(self, dt: float) -> None:
         """Cross-fade posture weights (~250 ms) so mode flips never step."""
