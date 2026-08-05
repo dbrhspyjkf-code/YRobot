@@ -557,46 +557,56 @@ class Conversation:
                 logger.info("barge-in boundary complete: accepting new model response")
             if caption:
                 logger.info("robot: %s", caption)
-                info_result = self._local_info.handle_text(caption, delta.response_id or "")
-                if info_result is not None:
-                    if info_result.mute_model_audio and delta.response_id:
-                        self._muted_response_ids.add(delta.response_id)
-                    if info_result.ok:
-                        logger.info("Local info result: %s", info_result.message)
-                        self._speak_text(info_result.message)
-                    else:
-                        logger.warning(
-                            "Local info failed: %s: %s",
-                            info_result.name,
-                            info_result.message,
-                        )
-                result = self._home_assistant.handle_text(caption, delta.response_id or "")
-                if result is not None:
-                    if result.ok:
-                        logger.info("Home Assistant action succeeded: %s", result.action.name)
-                        if result.action.response:
-                            if delta.response_id:
-                                self._muted_response_ids.add(delta.response_id)
-                            self._speak_text(result.action.response)
-                    else:
-                        logger.warning(
-                            "Home Assistant action failed: %s: %s",
-                            result.action.name,
-                            result.detail,
-                        )
-                tool_result = self._hermes_tools.handle_text(caption, delta.response_id or "")
-                if tool_result is not None:
-                    if tool_result.mute_model_audio and delta.response_id:
-                        self._muted_response_ids.add(delta.response_id)
-                    if tool_result.ok:
-                        logger.info("Hermes tool result: %s", tool_result.message)
-                        self._speak_text(tool_result.message)
-                    else:
-                        logger.warning(
-                            "Hermes tool failed: %s: %s",
-                            tool_result.name,
-                            tool_result.message,
-                        )
+                # Only process commands when user actually spoke recently.
+                # This prevents the model's own words from triggering HA/Hermes
+                # when wake was caused by noise/echo rather than user intent.
+                user_voice_gap = now - self._last_user_onset_at
+                if user_voice_gap < 15.0:
+                    info_result = self._local_info.handle_text(caption, delta.response_id or "")
+                    if info_result is not None:
+                        if info_result.mute_model_audio and delta.response_id:
+                            self._muted_response_ids.add(delta.response_id)
+                        if info_result.ok:
+                            logger.info("Local info result: %s", info_result.message)
+                            self._speak_text(info_result.message)
+                        else:
+                            logger.warning(
+                                "Local info failed: %s: %s",
+                                info_result.name,
+                                info_result.message,
+                            )
+                    result = self._home_assistant.handle_text(caption, delta.response_id or "")
+                    if result is not None:
+                        if result.ok:
+                            logger.info("Home Assistant action succeeded: %s", result.action.name)
+                            if result.action.response:
+                                if delta.response_id:
+                                    self._muted_response_ids.add(delta.response_id)
+                                self._speak_text(result.action.response)
+                        else:
+                            logger.warning(
+                                "Home Assistant action failed: %s: %s",
+                                result.action.name,
+                                result.detail,
+                            )
+                    tool_result = self._hermes_tools.handle_text(caption, delta.response_id or "")
+                    if tool_result is not None:
+                        if tool_result.mute_model_audio and delta.response_id:
+                            self._muted_response_ids.add(delta.response_id)
+                        if tool_result.ok:
+                            logger.info("Hermes tool result: %s", tool_result.message)
+                            self._speak_text(tool_result.message)
+                        else:
+                            logger.warning(
+                                "Hermes tool failed: %s: %s",
+                                tool_result.name,
+                                tool_result.message,
+                            )
+                else:
+                    logger.debug(
+                        "skipped command handlers (no user voice for %.0f s)",
+                        user_voice_gap,
+                    )
 
     def _on_closed(self, reason: str, session_sequence: int | None = None) -> None:
         if session_sequence is not None and session_sequence != self._session_sequence:
