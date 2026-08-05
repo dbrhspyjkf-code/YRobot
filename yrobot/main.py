@@ -100,6 +100,9 @@ class Conversation:
         )
         self._captions = ThinkFilter()
         self._session_dead = threading.Event()
+        # Lightweight silence gate: keep audio uplink live only while conversation is active.
+        self._uplink_live = True
+        self._last_delta_at = 0.0
         self._last_voice_at = -1e9
         self._last_user_onset_at = -1e9
         self._confirmed_voice_until = -1e9
@@ -245,6 +248,28 @@ class Conversation:
                     continue
                 raw_chunk = np.concatenate(frames[:chunk_frames])
                 del frames[:chunk_frames]
+                # ---------- silence gate ----------
+                # Activate instantly on any user voice; suspend after
+                # 15 s of mutual silence to prevent echo loops.
+                if not self._uplink_live:
+                    if self._confirmed_user_active(now):
+                        self._uplink_live = True
+                        self._last_delta_at = now
+                        logger.info("silence gate: uplink resumed (user voice)")
+                    else:
+                        continue
+                elif (
+                    now - self._last_delta_at > 15.0
+                    and not self._speaker.audible(now)
+                    and not self._confirmed_user_active(now)
+                ):
+                    self._uplink_live = False
+                    logger.info(
+                        "silence gate: uplink paused (%.0f s of mutual silence)",
+                        now - self._last_delta_at,
+                    )
+                    continue
+                # ---------- end silence gate ----------
                 chunk = self._agc.process(
                     raw_chunk,
                     playback_active=self._speaker.playing(now),
@@ -506,6 +531,7 @@ class Conversation:
             logger.debug("ignored delta from stale session %d", session_sequence)
             return
         now = delta.received_at
+        self._last_delta_at = now
         kv = delta.metrics.get("kv_cache_length")
         if isinstance(kv, int | float):
             self._server_kv = float(kv)
