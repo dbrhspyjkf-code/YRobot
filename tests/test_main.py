@@ -272,6 +272,47 @@ def test_tool_claimed_response_suppresses_followup_text_and_memory():
     assert conversation._speaker._q.empty()
 
 
+def test_home_assistant_action_without_response_suppresses_model_loop():
+    memory = []
+    conversation = _conversation_without_hardware()
+
+    class FakeHomeAssistant:
+        def handle_text(self, text, response_id):
+            if "厨房灯" not in text:
+                return None
+            action = type(
+                "Action",
+                (),
+                {
+                    "name": "厨房灯",
+                    "response": None,
+                },
+            )()
+            return type("Result", (), {"ok": True, "action": action})()
+
+    class FakeHermesTools:
+        def handle_text(self, text, response_id):
+            return None
+
+    class FakeMemory:
+        def append_assistant(self, text):
+            memory.append(text)
+
+    conversation._home_assistant = FakeHomeAssistant()
+    conversation._hermes_tools = FakeHermesTools()
+    conversation._memory = FakeMemory()
+    conversation._last_user_onset_at = time.monotonic()
+    old_epoch = conversation._speaker.epoch
+
+    conversation._on_delta(Delta(kind="text", text="好的，我明白。厨房灯已关闭。", response_id="ha-loop"))
+    conversation._on_delta(Delta(kind="text", text="关掉厨房灯。好的，我明白。", response_id="ha-loop"))
+    conversation._on_delta(Delta(kind="audio", audio=np.ones(2400, np.float32), response_id="ha-loop"))
+
+    assert memory == []
+    assert conversation._speaker.epoch == old_epoch + 1
+    assert conversation._speaker._q.empty()
+
+
 def test_local_info_result_is_spoken_and_mutes_model_audio():
     spoken = []
     conversation = _conversation_without_hardware()
