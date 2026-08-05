@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -49,9 +50,24 @@ class HomeAssistantClient:
     def call(self, action: HomeAssistantAction) -> None:
         domain, service = action.service.split(".", 1)
         url = f"{self._base_url}/api/services/{domain}/{service}"
-        payload = {"entity_id": action.entity_id}
+        payload: dict[str, Any] = {"entity_id": action.entity_id}
         if action.service_data:
             payload.update(action.service_data)
+        # number.set_value + relative_step: read the current value and nudge
+        # it by the delta, clamped to the entity's min/max. This lets a
+        # whitelist entry say “音量 +10” without knowing the absolute level.
+        if (
+            domain == "number"
+            and service == "set_value"
+            and isinstance(action.service_data, dict)
+            and action.service_data.get("relative_step") is not None
+        ):
+            step = float(action.service_data["relative_step"])
+            current = self._read_number(action.entity_id)
+            if current is not None:
+                value, lo, hi = current
+                payload["value"] = int(max(lo, min(hi, value + step)))
+            payload.pop("relative_step", None)
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url,
@@ -64,6 +80,29 @@ class HomeAssistantClient:
         )
         with self._opener(request, timeout=self._timeout) as response:
             response.read()
+
+    def _read_number(self, entity_id: str) -> tuple[int, float, float] | None:
+        """Return (value, min, max) for a number entity, or None on failure."""
+        url = f"{self._base_url}/api/states/{entity_id}"
+        request = urllib.request.Request(
+            url,
+            method="GET",
+            headers={"Authorization": f"Bearer {self._token}"},
+        )
+        try:
+            with self._opener(request, timeout=self._timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - best-effort read
+            logger.warning("number read failed for %s: %s", entity_id, exc)
+            return None
+        try:
+            attributes = data.get("attributes") or {}
+            lo = float(attributes.get("min", -float("inf")))
+            hi = float(attributes.get("max", float("inf")))
+            return int(float(data.get("state"))), lo, hi
+        except (TypeError, ValueError):
+            logger.warning("number state parse failed for %s", entity_id)
+            return None
 
 
 def _normalize(text: str) -> str:
@@ -116,6 +155,8 @@ class HomeAssistantController:
         self._caller = caller
         self._enabled = enabled
         self._fired: set[tuple[str, str]] = set()
+        self._last_fired: dict[str, float] = {}  # entity_id → timestamp
+        self._cooldown_s = 30.0
         self._buffer_response_id = ""
         self._buffer_text = ""
 
@@ -153,11 +194,22 @@ class HomeAssistantController:
         if not matches:
             return None
         pending = []
+        now = time.monotonic()
         for action in matches:
             key = (response_id, action.service, action.entity_id)
-            if key not in self._fired:
-                pending.append(action)
-                self._fired.add(key)
+            if key in self._fired:
+                continue
+            # cooldown: don't fire the same entity again within cooldown window
+            last = self._last_fired.get(action.entity_id, 0.0)
+            if now - last < self._cooldown_s:
+                logger.info(
+                    "Home Assistant cooldown skipped %s/%s (%.0fs ago)",
+                    action.name, action.service, now - last,
+                )
+                continue
+            pending.append(action)
+            self._fired.add(key)
+            self._last_fired[action.entity_id] = now
         if not pending:
             return None
         try:

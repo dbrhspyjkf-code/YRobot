@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -32,6 +33,45 @@ logger = logging.getLogger(__name__)
 FRAME_MS = 20
 FRAME_SAMPLES = 16_000 * FRAME_MS // 1000  # 320
 SILENT_DB = -120.0
+# Tunable VAD threshold: set via environment or /api/audio/vad runtime.
+_vad_rms_min = float(os.environ.get("YROBOT_VAD_RMS_MIN", "0.04"))
+DASHBOARD_MIC_SILENT_DB = -60.0
+DASHBOARD_MIC_LOUD_DB = 0.0
+DASHBOARD_MIC_VOICED_RMS = 0.004
+_dashboard_mic_lock = threading.Lock()
+_dashboard_mic_signal: dict[str, float | bool] = {
+    "level_db": DASHBOARD_MIC_SILENT_DB,
+    "level_percent": 0.0,
+    "rms": 0.0,
+    "voiced": False,
+    "updated_at": 0.0,
+}
+
+
+def _publish_dashboard_mic(rms: float) -> None:
+    db = 20.0 * math.log10(rms + 1e-9)
+    span = DASHBOARD_MIC_LOUD_DB - DASHBOARD_MIC_SILENT_DB
+    pct = max(0.0, min(100.0, (db - DASHBOARD_MIC_SILENT_DB) / span * 100.0))
+    with _dashboard_mic_lock:
+        _dashboard_mic_signal.update(
+            {
+                "level_db": db,
+                "level_percent": pct,
+                "rms": rms,
+                "voiced": rms > DASHBOARD_MIC_VOICED_RMS,
+                "updated_at": time.monotonic(),
+            }
+        )
+
+
+def dashboard_mic_signal() -> dict[str, float | bool]:
+    """Return the latest mic level snapshot written by ``Microphone``.
+
+    The dashboard reads this cheaply without contending with the realtime
+    loop over the single GStreamer ``appsink`` reader.
+    """
+    with _dashboard_mic_lock:
+        return dict(_dashboard_mic_signal)
 WRITE_SETTLE_SECONDS = 0.1
 
 # Pollen's Reachy Mini conversation app applies this exact profile before
@@ -93,7 +133,10 @@ class Microphone:
             time.sleep(0.005)
             return []
         mono = sample[:, 0] if sample.ndim == 2 else sample
-        self._buf = np.concatenate([self._buf, mono.astype(np.float32)])
+        mono = mono.astype(np.float32, copy=False)
+        rms = float(np.sqrt(np.mean(np.square(mono, dtype=np.float64))))
+        _publish_dashboard_mic(rms)
+        self._buf = np.concatenate([self._buf, mono])
         n = len(self._buf) // FRAME_SAMPLES
         frames = [self._buf[i * FRAME_SAMPLES : (i + 1) * FRAME_SAMPLES] for i in range(n)]
         self._buf = self._buf[n * FRAME_SAMPLES :]
@@ -112,11 +155,17 @@ class VoiceDetector:
 
     CONFIRM_FRAMES = 3
     HANGOVER_S = 0.3
-    ABS_RMS_MIN = 0.004
     FLOOR_FACTOR = 3.0
 
-    def __init__(self, aggressiveness: int = 2, vad=None) -> None:
+    def __init__(self, aggressiveness: int = 2, vad=None, rms_min=None) -> None:
         self._vad = vad if vad is not None else webrtcvad.Vad(aggressiveness)
+        if rms_min is None:
+            self._rms_min = get_vad_rms_min
+        elif callable(rms_min):
+            self._rms_min = rms_min
+        else:
+            value = float(rms_min)
+            self._rms_min = lambda: value
         self._floor = 0.002
         self._streak = 0
         self._last_voiced_at = -1e9
@@ -149,7 +198,7 @@ class VoiceDetector:
             self._floor = max(self._floor, 5e-4)
         pcm16 = (np.clip(frame, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
         raw = self._vad.is_speech(pcm16, 16_000) and rms > max(
-            self.ABS_RMS_MIN, self._floor * self.FLOOR_FACTOR
+            float(self._rms_min()), self._floor * self.FLOOR_FACTOR
         )
         if raw:
             self._streak += 1
@@ -555,3 +604,13 @@ class Speaker(threading.Thread):
         self._end_requested = False
         self._turn_underrun = False
         self._resampler.reset()
+
+
+def get_vad_rms_min() -> float:
+    return _vad_rms_min
+
+
+def set_vad_rms_min(value: float) -> float:
+    global _vad_rms_min
+    _vad_rms_min = max(0.001, min(0.5, float(value)))
+    return _vad_rms_min

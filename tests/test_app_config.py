@@ -6,7 +6,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from yrobot.app_config import AppConfig, build_status, register_settings_routes, validate_document
+from yrobot.app_config import (
+    AppConfig,
+    AudioInputController,
+    build_status,
+    register_settings_routes,
+    validate_document,
+)
 
 
 def _document(**overrides):
@@ -120,6 +126,55 @@ def test_status_api_returns_status(tmp_path):
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert response.json()["status"]["service"]["name"] == "YRobot"
+
+
+def test_audio_input_api_toggles_runtime_mic_upload(tmp_path):
+    store = AppConfig(tmp_path / "settings.json")
+    controller = AudioInputController()
+    app = FastAPI()
+    register_settings_routes(
+        app,
+        store,
+        get_environment=lambda: {},
+        audio_input_controller=controller,
+    )
+    client = TestClient(app)
+
+    initial = client.get("/api/status")
+    assert initial.status_code == 200
+    assert initial.json()["status"]["audio"]["input_enabled"] is True
+
+    disabled = client.put("/api/audio/input", json={"enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json()["audio_input"]["enabled"] is False
+
+    status = client.get("/api/status")
+    assert status.json()["status"]["audio"]["input_enabled"] is False
+    assert status.json()["status"]["privacy"]["audio_uploaded_to_gateway"] is False
+
+    enabled = client.put("/api/audio/input", json={"enabled": True})
+    assert enabled.status_code == 200
+    assert enabled.json()["audio_input"]["enabled"] is True
+
+
+def test_vad_api_persists_threshold_to_env_file(tmp_path):
+    store = AppConfig(tmp_path / "settings.json")
+    env_path = tmp_path / "ha.env"
+    env_path.write_text(
+        "YROBOT_HA_TOKEN=secret-token\nYROBOT_VAD_RMS_MIN=0.065\n",
+        encoding="utf-8",
+    )
+    app = FastAPI()
+    register_settings_routes(app, store, get_environment=lambda: {}, vad_env_path=env_path)
+    client = TestClient(app)
+
+    response = client.put("/api/audio/vad", json={"rms_min": 0.081})
+
+    assert response.status_code == 200
+    assert response.json()["vad"]["rms_min"] == 0.081
+    text = env_path.read_text(encoding="utf-8")
+    assert "YROBOT_VAD_RMS_MIN=0.081" in text
+    assert "YROBOT_HA_TOKEN=secret-token" in text
 
 
 def test_memory_api_returns_safe_local_memories(tmp_path):

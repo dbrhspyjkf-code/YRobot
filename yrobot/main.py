@@ -25,7 +25,12 @@ from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
-from yrobot.app_config import AppConfig, register_settings_routes
+from yrobot.app_config import (
+    AppConfig,
+    _MediaHolder,
+    audio_input_controller_singleton,
+    register_settings_routes,
+)
 from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
 from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
@@ -33,7 +38,6 @@ from yrobot.hermes_tools import HermesToolsController
 from yrobot.home_assistant import HomeAssistantController
 from yrobot.local_info import LocalInfoController
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
-from yrobot.persistent_memory import PersistentMemory
 from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
 from yrobot.session import ConversationMemory, RotationPolicy
 from yrobot.tts import synthesize_speech_24k
@@ -79,11 +83,9 @@ class Conversation:
         self._home_assistant = HomeAssistantController.from_settings(settings)
         self._hermes_tools = HermesToolsController.from_settings(settings)
         self._local_info = LocalInfoController(enabled=settings.local_info_enabled)
-        self._persistent_memory = PersistentMemory(
-            settings.memory_path,
-            enabled=settings.memory_enabled,
-        )
+        self._audio_input_enabled = audio_input_controller_singleton().enabled
         self._muted_response_ids: set[str] = set()
+        self._suppressed_response_ids: set[str] = set()
         self._barge = BargeDetector(
             BargeConfig(
                 echo_similarity=settings.barge_echo_similarity,
@@ -105,6 +107,9 @@ class Conversation:
         )
         self._captions = ThinkFilter()
         self._session_dead = threading.Event()
+        # Lightweight silence gate: keep audio uplink live only while conversation is active.
+        self._uplink_live = True
+        self._last_delta_at = 0.0
         self._last_voice_at = -1e9
         self._last_user_onset_at = -1e9
         self._confirmed_voice_until = -1e9
@@ -181,14 +186,7 @@ class Conversation:
             on_delta=lambda delta: self._on_delta(delta, session_sequence),
             on_closed=lambda reason: self._on_closed(reason, session_sequence),
             system_prompt=self._memory.prompt(
-                "\n".join(
-                    part
-                    for part in (
-                        self._s.effective_system_prompt,
-                        self._persistent_memory.prompt_context(),
-                    )
-                    if part
-                )
+                self._s.effective_system_prompt
             ),
         )
         try:
@@ -257,6 +255,30 @@ class Conversation:
                     continue
                 raw_chunk = np.concatenate(frames[:chunk_frames])
                 del frames[:chunk_frames]
+                if not self._audio_input_enabled():
+                    continue
+                # ---------- silence gate ----------
+                # Activate instantly on any user voice; suspend after
+                # 15 s of mutual silence to prevent echo loops.
+                if not self._uplink_live:
+                    if self._confirmed_user_active(now):
+                        self._uplink_live = True
+                        self._last_delta_at = now
+                        logger.info("silence gate: uplink resumed (user voice)")
+                    else:
+                        continue
+                elif (
+                    now - self._last_delta_at > 15.0
+                    and not self._speaker.audible(now)
+                    and not self._confirmed_user_active(now)
+                ):
+                    self._uplink_live = False
+                    logger.info(
+                        "silence gate: uplink paused (%.0f s of mutual silence)",
+                        now - self._last_delta_at,
+                    )
+                    continue
+                # ---------- end silence gate ----------
                 chunk = self._agc.process(
                     raw_chunk,
                     playback_active=self._speaker.playing(now),
@@ -518,6 +540,7 @@ class Conversation:
             logger.debug("ignored delta from stale session %d", session_sequence)
             return
         now = delta.received_at
+        self._last_delta_at = now
         kv = delta.metrics.get("kv_cache_length")
         if isinstance(kv, int | float):
             self._server_kv = float(kv)
@@ -541,7 +564,11 @@ class Conversation:
             with self._turn_lock:
                 was_latched = self._gate.latched
                 allowed = self._gate.model_audio(now, delta.response_id)
-                allowed = allowed and delta.response_id not in self._muted_response_ids
+                allowed = (
+                    allowed
+                    and delta.response_id not in self._muted_response_ids
+                    and delta.response_id not in self._suppressed_response_ids
+                )
                 if allowed:
                     epoch = self._speaker.epoch
                     self._speaker.play(epoch, delta.audio)
@@ -559,70 +586,77 @@ class Conversation:
                     delta.response_id or "unknown",
                 )
         elif delta.kind == "text":
+            if delta.response_id in self._suppressed_response_ids:
+                return
             with self._turn_lock:
                 was_latched = self._gate.latched
                 allowed = self._gate.model_text(now, delta.response_id)
                 fragment = self._captions.feed(delta.text) if allowed else ""
                 caption = fragment.strip()
-                self._memory.append_assistant(fragment)
             if was_latched and allowed:
                 logger.info("barge-in boundary complete: accepting new model response")
             if caption:
                 logger.info("robot: %s", caption)
-                memory_result = self._persistent_memory.handle_text(
-                    caption,
-                    delta.response_id or "",
-                )
-                if memory_result is not None:
-                    if memory_result.mute_model_audio and delta.response_id:
-                        self._muted_response_ids.add(delta.response_id)
-                    if memory_result.ok:
-                        logger.info("Memory result: %s", memory_result.message)
-                        self._speak_text(memory_result.message)
-                    else:
-                        logger.warning(
-                            "Memory failed: %s: %s",
-                            memory_result.name,
-                            memory_result.message,
-                        )
-                info_result = self._local_info.handle_text(caption, delta.response_id or "")
-                if info_result is not None:
-                    if info_result.mute_model_audio and delta.response_id:
-                        self._muted_response_ids.add(delta.response_id)
-                    if info_result.ok:
-                        logger.info("Local info result: %s", info_result.message)
-                        self._speak_text(info_result.message)
-                    else:
-                        logger.warning(
-                            "Local info failed: %s: %s",
-                            info_result.name,
-                            info_result.message,
-                        )
-                result = self._home_assistant.handle_text(caption, delta.response_id or "")
-                if result is not None:
-                    if result.ok:
-                        logger.info("Home Assistant action succeeded: %s", result.action.name)
-                        if result.action.response:
-                            if delta.response_id:
-                                self._muted_response_ids.add(delta.response_id)
-                            self._speak_text(result.action.response)
-                    else:
-                        logger.warning(
-                            "Home Assistant action failed: %s: %s",
-                            result.action.name,
-                            result.detail,
-                        )
-                tool_result = self._hermes_tools.handle_text(caption, delta.response_id or "")
-                if tool_result is not None:
-                    if tool_result.ok:
-                        logger.info("Hermes tool result: %s", tool_result.message)
-                        self._speak_text(tool_result.message)
-                    else:
-                        logger.warning(
-                            "Hermes tool failed: %s: %s",
-                            tool_result.name,
-                            tool_result.message,
-                        )
+                # Only process commands when user actually spoke recently.
+                # This prevents the model's own words from triggering HA/Hermes
+                # when wake was caused by noise/echo rather than user intent.
+                user_voice_gap = now - self._last_user_onset_at
+                if user_voice_gap < 15.0:
+                    info_result = self._local_info.handle_text(caption, delta.response_id or "")
+                    if info_result is not None:
+                        if info_result.mute_model_audio and delta.response_id:
+                            self._suppress_response(delta.response_id)
+                        if info_result.ok:
+                            logger.info("Local info result: %s", info_result.message)
+                            self._speak_text(info_result.message)
+                        else:
+                            logger.warning(
+                                "Local info failed: %s: %s",
+                                info_result.name,
+                                info_result.message,
+                            )
+                    result = self._home_assistant.handle_text(caption, delta.response_id or "")
+                    if result is not None:
+                        if result.ok:
+                            logger.info("Home Assistant action succeeded: %s", result.action.name)
+                            if result.action.response:
+                                if delta.response_id:
+                                    self._suppress_response(delta.response_id)
+                                self._speak_text(result.action.response)
+                        else:
+                            logger.warning(
+                                "Home Assistant action failed: %s: %s",
+                                result.action.name,
+                                result.detail,
+                            )
+                    tool_result = self._hermes_tools.handle_text(caption, delta.response_id or "")
+                    if tool_result is not None:
+                        if tool_result.mute_model_audio and delta.response_id:
+                            self._suppress_response(delta.response_id)
+                        if tool_result.ok:
+                            logger.info("Hermes tool result: %s", tool_result.message)
+                            self._speak_text(tool_result.message)
+                        else:
+                            logger.warning(
+                                "Hermes tool failed: %s: %s",
+                                tool_result.name,
+                                tool_result.message,
+                            )
+                else:
+                    logger.debug(
+                        "skipped command handlers (no user voice for %.0f s)",
+                        user_voice_gap,
+                    )
+                if delta.response_id not in self._suppressed_response_ids:
+                    self._memory.append_assistant(fragment)
+
+    def _suppress_response(self, response_id: str) -> None:
+        if not response_id:
+            return
+        self._muted_response_ids.add(response_id)
+        self._suppressed_response_ids.add(response_id)
+        self._captions = ThinkFilter()
+        self._speaker.interrupt()
 
     def _on_closed(self, reason: str, session_sequence: int | None = None) -> None:
         if session_sequence is not None and session_sequence != self._session_sequence:
@@ -664,12 +698,49 @@ class Yrobot(ReachyMiniApp):
         load_dotenv()
         super().__init__(running_on_wireless=running_on_wireless)
         self._config = AppConfig()
+        self._media_holder = _MediaHolder()
         assert self.settings_app is not None
-        register_settings_routes(self.settings_app, self._config)
+        register_settings_routes(
+            self.settings_app,
+            self._config,
+            media_holder=self._media_holder,
+        )
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
+        self._media_holder.media = reachy_mini.media
+        self._wake_up_if_needed(reachy_mini)
         environment = self._config.effective_environment(os.environ)
         Conversation(Settings.from_env(environment), reachy_mini, stop_event).run()
+
+    @staticmethod
+    def _wake_up_if_needed(reachy_mini: ReachyMini) -> None:
+        """Wake the robot head if it is still in the sleep pose at startup.
+
+        Mirrors the official conversation app lifecycle: after a cold boot the
+        head may stay lowered in the sleep pose, and the choreographer then
+        fights a dead/depowered pose. A short wake_up() brings it back to the
+        neutral position so speech/look animations have a valid baseline.
+        """
+        try:
+            from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
+            from reachy_mini.utils.interpolation import distance_between_poses
+
+            pose = reachy_mini.get_current_head_pose()
+            if pose is None:
+                logger.info("head pose unavailable; skipping wake-up check")
+                return
+            pose = np.asarray(pose, dtype=np.float64)
+            if pose.shape != (4, 4):
+                logger.warning("unexpected head pose shape %s; skipping wake-up", pose.shape)
+                return
+            t_dist, r_dist, _ = distance_between_poses(pose, SLEEP_HEAD_POSE)
+            if t_dist <= 0.05 and r_dist <= 0.35:
+                logger.info("head in sleep pose; running wake-up movement")
+                reachy_mini.wake_up()
+            else:
+                logger.info("head not in sleep pose; skipping wake-up")
+        except Exception as exc:  # noqa: BLE001 - startup wake-up is best effort
+            logger.warning("wake-up check failed: %s", exc)
 
 
 def cli() -> None:

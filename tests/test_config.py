@@ -130,6 +130,7 @@ def test_from_env_overrides(monkeypatch):
     monkeypatch.setenv("YROBOT_BARGE_ECHO_SIMILARITY", "0.8")
     monkeypatch.setenv("YROBOT_BARGE_UNEXPLAINED_DB", "-44")
     monkeypatch.setenv("YROBOT_BARGE_CONFIRM_MS", "600")
+    monkeypatch.setenv("YROBOT_VAD_RMS_MIN", "0.065")
     s = Settings.from_env()
     assert s.url == "wss://10.0.16.184:8006/v1/realtime?mode=audio"
     assert s.tls_verify is False
@@ -137,6 +138,7 @@ def test_from_env_overrides(monkeypatch):
     assert s.barge_echo_similarity == 0.8
     assert s.barge_unexplained_db == -44.0
     assert s.barge_confirm_ms == 600
+    assert s.vad_rms_min == 0.065
     assert s.system_prompt == f"{TRAINED_SYSTEM_LINE}\n只说中文。"
 
 

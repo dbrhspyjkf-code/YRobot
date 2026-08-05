@@ -73,7 +73,7 @@ def test_microphone_reframes_arbitrary_stereo_blocks():
 
 
 def test_voice_detector_needs_streak_and_energy():
-    det = VoiceDetector(vad=FakeVad(True))
+    det = VoiceDetector(vad=FakeVad(True), rms_min=0.004)
     loud = np.full(FRAME_SAMPLES, 0.1, np.float32)
     quiet = np.full(FRAME_SAMPLES, 1e-4, np.float32)
     assert det.process(quiet, 0.00) is False  # energy below floor gate
@@ -84,8 +84,22 @@ def test_voice_detector_needs_streak_and_energy():
     assert det.active(0.40) is False
 
 
+def test_voice_detector_uses_updated_runtime_rms_threshold():
+    current = {"rms_min": 0.2}
+    det = VoiceDetector(vad=FakeVad(True), rms_min=lambda: current["rms_min"])
+    speech = np.full(FRAME_SAMPLES, 0.1, np.float32)
+    for i in range(3):
+        assert det.process(speech, i * 0.02) is False
+
+    current["rms_min"] = 0.05
+    voiced = False
+    for i in range(3, 6):
+        voiced = det.process(speech, i * 0.02)
+    assert voiced is True
+
+
 def test_voice_detector_adapts_noise_floor():
-    det = VoiceDetector(vad=FakeVad(True))
+    det = VoiceDetector(vad=FakeVad(True), rms_min=0.004)
     hum = np.full(FRAME_SAMPLES, 0.02, np.float32)  # steady motor noise
     for i in range(400):
         det.process(hum, i * 0.02)
@@ -97,7 +111,7 @@ def test_voice_detector_adapts_noise_floor():
 
 
 def test_voice_detector_frozen_floor_keeps_barge_sensitivity():
-    det = VoiceDetector(vad=FakeVad(True))
+    det = VoiceDetector(vad=FakeVad(True), rms_min=0.004)
     echo = np.full(FRAME_SAMPLES, 0.05, np.float32)
     # 10 s of the robot's own monologue echo: the floor must not learn it
     for i in range(500):

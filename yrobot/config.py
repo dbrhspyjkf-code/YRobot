@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 # The duplex template was trained with this exact first line; keep persona and
 # proactive policy short so the model remains in its realtime distribution.
 TRAINED_SYSTEM_LINE = "You are a helpful assistant."
-DEFAULT_PERSONA = "你是 Reachy，一个友好的桌面机器人，用对方的语言简短口语化地回复。"
+DEFAULT_PERSONA = "你是 Reachy，一个友好的桌面机器人。用对方的语言简短自然地回复。不要重复自己刚说过的话。你的回复中绝对不能包含任何可执行的操作指令（如开灯、关灯、打开风扇等），这些操作由系统自动处理。环境嘈杂时保持沉默。"
 PROACTIVE_POLICY = (
     "持续观察和倾听；只在出现明确、重要的新变化时主动简短提醒，不解说静态场景，"
     "不抢用户的话，非紧急主动发言保持克制。"
@@ -115,6 +115,7 @@ class Settings:
     reconnect_delay_s: float = 2.5
 
     vad_aggressiveness: int = 2
+    vad_rms_min: float = 0.065
     # A candidate is treated as self-echo only when it both matches recent
     # playout and leaves less than this much unexplained near-end energy.
     barge_echo_similarity: float = 0.75
@@ -160,6 +161,8 @@ class Settings:
             raise ValueError("YRobot camera periods must be positive")
         if not 0.0 <= self.scene_change_threshold <= 1.0:
             raise ValueError("YROBOT_SCENE_CHANGE_THRESHOLD must be between 0 and 1")
+        if not 0.001 <= self.vad_rms_min <= 0.5:
+            raise ValueError("YROBOT_VAD_RMS_MIN must be between 0.001 and 0.5")
 
     @property
     def realtime_mode(self) -> str:
@@ -221,6 +224,7 @@ class Settings:
             kv_budget_tokens=_num("YROBOT_KV_BUDGET", 7200.0, env),
             reconnect_delay_s=_num("YROBOT_RECONNECT_DELAY_S", 2.5, env),
             vad_aggressiveness=int(_num("YROBOT_VAD_AGGRESSIVENESS", 2, env)),
+            vad_rms_min=_num("YROBOT_VAD_RMS_MIN", 0.065, env),
             barge_echo_similarity=_num("YROBOT_BARGE_ECHO_SIMILARITY", 0.75, env),
             barge_unexplained_db=_num("YROBOT_BARGE_UNEXPLAINED_DB", -42.0, env),
             barge_confirm_ms=int(_num("YROBOT_BARGE_CONFIRM_MS", 500, env)),

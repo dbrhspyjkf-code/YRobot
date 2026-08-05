@@ -92,6 +92,27 @@ def test_duplicate_deepseek_balance_response_does_not_call_twice():
     assert calls == ["http://hermes.local:8766/api/deepseek/balance"]
 
 
+def test_duplicate_deepseek_balance_is_debounced_across_responses():
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        return FakeResponse(
+            {
+                "ok": True,
+                "currency": "CNY",
+                "total_balance": "57.28",
+            }
+        )
+
+    settings = Settings(hermes_tools_enabled=True, hermes_tools_url="http://hermes.local:8766")
+    controller = HermesToolsController.from_settings(settings, opener=opener)
+
+    assert controller.handle_text("DeepSeek余额", "resp-1") is not None
+    assert controller.handle_text("DeepSeek余额", "resp-2") is None
+    assert calls == ["http://hermes.local:8766/api/deepseek/balance"]
+
+
 def test_disabled_hermes_tools_ignore_text():
     controller = HermesToolsController.from_settings(Settings(hermes_tools_enabled=False))
 

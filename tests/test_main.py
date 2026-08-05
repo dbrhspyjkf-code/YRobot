@@ -83,6 +83,37 @@ def test_slow_websocket_sender_does_not_block_packet_producer():
         sender.join(timeout=2)
 
 
+def test_disabled_audio_input_drops_uplink_chunks():
+    conversation = _conversation_without_hardware()
+    stop_after_second_poll = {"polls": 0}
+    sent = []
+
+    conversation._audio_input_enabled = lambda: False
+    conversation._mic.read_frames = lambda: []
+    conversation._last_delta_at = time.monotonic()
+
+    def process_mic():
+        stop_after_second_poll["polls"] += 1
+        if stop_after_second_poll["polls"] == 1:
+            return [np.ones(320, np.float32) for _ in range(50)]
+        conversation._stop.set()
+        return []
+
+    def send_loop(client, packets, halt, camera):
+        while not halt.is_set():
+            try:
+                sent.append(packets.get(timeout=0.02))
+            except queue.Empty:
+                pass
+
+    conversation._process_mic = process_mic
+    conversation._send_loop = send_loop
+
+    conversation._uplink_loop(object())
+
+    assert sent == []
+
+
 def _conversation_without_hardware() -> Conversation:
     class FakeMedia:
         pass
@@ -192,6 +223,53 @@ def test_hermes_tool_result_is_offered_to_speech_output():
     conversation._on_delta(Delta(kind="text", text="DeepSeek余额", response_id="resp-tool"))
 
     assert spoken == ["DeepSeek 余额：57.28 CNY"]
+
+
+def test_tool_claimed_response_suppresses_followup_text_and_memory():
+    spoken = []
+    memory = []
+    conversation = _conversation_without_hardware()
+
+    class FakeHomeAssistant:
+        def handle_text(self, text, response_id):
+            return None
+
+    class FakeHermesTools:
+        def handle_text(self, text, response_id):
+            if "DeepSeek余额" in text:
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "ok": True,
+                        "name": "DeepSeek余额",
+                        "message": "DeepSeek 余额：57.28 CNY",
+                        "mute_model_audio": True,
+                    },
+                )()
+            return None
+
+    class FakeMemory:
+        def append_assistant(self, text):
+            memory.append(text)
+
+    conversation._home_assistant = FakeHomeAssistant()
+    conversation._hermes_tools = FakeHermesTools()
+    conversation._memory = FakeMemory()
+    conversation._speak_text = spoken.append
+    conversation._last_user_onset_at = time.monotonic()
+    old_epoch = conversation._speaker.epoch
+
+    conversation._on_delta(Delta(kind="text", text="DeepSeek余额", response_id="resp-tool"))
+    conversation._on_delta(Delta(kind="text", text="。好的，我继续查询", response_id="resp-tool"))
+    conversation._on_delta(
+        Delta(kind="audio", audio=np.ones(2400, np.float32), response_id="resp-tool")
+    )
+
+    assert spoken == ["DeepSeek 余额：57.28 CNY"]
+    assert memory == []
+    assert conversation._speaker.epoch == old_epoch + 1
+    assert conversation._speaker._q.empty()
 
 
 def test_local_info_result_is_spoken_and_mutes_model_audio():
