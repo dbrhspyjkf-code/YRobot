@@ -16,10 +16,26 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 # The duplex template was trained with this exact first line; keep persona and
 # proactive policy short so the model remains in its realtime distribution.
 TRAINED_SYSTEM_LINE = "You are a helpful assistant."
-DEFAULT_PERSONA = "你是 Reachy，一个友好的桌面机器人，用对方的语言简短口语化地回复。"
+DEFAULT_PERSONA = "你是 Reachy，一个友好的桌面机器人。用对方的语言简短自然地回复。不要重复自己刚说过的话。只有在用户明确对你提出要求时才执行操作，不要自行假设用户想要什么。如果环境嘈杂或不确定对方是否在对你说话，保持安静。"
 PROACTIVE_POLICY = (
     "持续观察和倾听；只在出现明确、重要的新变化时主动简短提醒，不解说静态场景，"
     "不抢用户的话，非紧急主动发言保持克制。"
+)
+HA_CONTROL_POLICY = (
+    "家电控制：当用户要求控制家电时，回复必须包含完整设备名和动作，"
+    "例如“关闭书台灯”或“打开厨房灯”；不要只说“关灯”“去关灯”或“好了”。"
+)
+HERMES_TOOLS_POLICY = (
+    "外部工具：当用户询问 DeepSeek 余额时，回复必须包含“DeepSeek余额”这几个字。"
+)
+LOCAL_INFO_POLICY = (
+    "日期时间：当用户询问今天日期、几号、星期几或当前时间时，"
+    "只回复触发词“当前日期”或“当前时间”，不要编造具体日期时间。"
+)
+MEMORY_POLICY = (
+    "本地记忆：只有当用户明确要求记住某件事时，回复必须包含“记住：”和要保存的内容；"
+    "当用户要求忘掉某件事时，回复必须包含“忘掉：”和要删除的关键词；"
+    "当用户询问你记得什么时，回复必须包含“我记得什么”。"
 )
 
 # Public Gateway documented at:
@@ -113,6 +129,15 @@ class Settings:
     ref_audio_path: str | None = None
     tts_ref_audio_path: str | None = None
     proactive_enabled: bool = True
+    ha_enabled: bool = False
+    ha_url: str | None = None
+    ha_token: str | None = None
+    ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
+    hermes_tools_enabled: bool = False
+    hermes_tools_url: str = "http://192.168.1.200:8766"
+    local_info_enabled: bool = True
+    memory_enabled: bool = True
+    memory_path: str = "~/.config/yrobot/memory.json"
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -144,9 +169,18 @@ class Settings:
     @property
     def effective_system_prompt(self) -> str:
         """Prompt sent to the model after applying the proactive policy."""
-        if not self.proactive_enabled or PROACTIVE_POLICY in self.system_prompt:
-            return self.system_prompt
-        return f"{self.system_prompt}\n{PROACTIVE_POLICY}"
+        parts = [self.system_prompt]
+        if self.proactive_enabled and PROACTIVE_POLICY not in self.system_prompt:
+            parts.append(PROACTIVE_POLICY)
+        if self.ha_enabled and HA_CONTROL_POLICY not in self.system_prompt:
+            parts.append(HA_CONTROL_POLICY)
+        if self.hermes_tools_enabled and HERMES_TOOLS_POLICY not in self.system_prompt:
+            parts.append(HERMES_TOOLS_POLICY)
+        if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
+            parts.append(LOCAL_INFO_POLICY)
+        if self.memory_enabled and MEMORY_POLICY not in self.system_prompt:
+            parts.append(MEMORY_POLICY)
+        return "\n".join(parts)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
@@ -197,4 +231,18 @@ class Settings:
             ref_audio_path=env.get("YROBOT_REF_AUDIO_PATH") or None,
             tts_ref_audio_path=env.get("YROBOT_TTS_REF_AUDIO_PATH") or None,
             proactive_enabled=proactive,
+            ha_enabled=_flag("YROBOT_HA_ENABLED", False, env),
+            ha_url=(env.get("YROBOT_HA_URL") or "").rstrip("/") or None,
+            ha_token=env.get("YROBOT_HA_TOKEN") or None,
+            ha_whitelist_path=(
+                env.get("YROBOT_HA_WHITELIST_PATH")
+                or "~/.config/yrobot/home_assistant_whitelist.json"
+            ),
+            hermes_tools_enabled=_flag("YROBOT_HERMES_TOOLS_ENABLED", False, env),
+            hermes_tools_url=(
+                env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
+            ).rstrip("/"),
+            local_info_enabled=_flag("YROBOT_LOCAL_INFO_ENABLED", True, env),
+            memory_enabled=_flag("YROBOT_MEMORY_ENABLED", True, env),
+            memory_path=env.get("YROBOT_MEMORY_PATH") or "~/.config/yrobot/memory.json",
         )

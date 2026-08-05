@@ -10,16 +10,139 @@
     <main class="shell">
       <header>
         <div class="brand"><span>Y</span><b>YRobot</b></div>
+        <h1 class="header-title">Reachy Mini 状态与设置</h1>
         <div class="connection"><i></i> Reachy Mini 应用设置</div>
+        <div class="header-actions">
+          <button id="power-restart" class="header-icon-btn" type="button" title="重启 YRobot 服务">↻</button>
+        </div>
       </header>
 
       <section class="intro">
-        <p class="eyebrow">CONVERSATION CONTROL</p>
-        <h1>让 Reachy 按你的方式交流。</h1>
-        <p>配置实时 Gateway、视觉模式和对话人格。保存后重启 YRobot 即可生效。</p>
+        <p class="eyebrow">ROBOT DASHBOARD</p>
       </section>
 
       <div id="loading" class="notice">正在读取机器人配置…</div>
+      <div class="dashboard-grid">
+        <section id="status-panel" class="panel status-panel hidden">
+        <div class="panel-heading compact">
+          <div><p class="step">STATUS</p><h2>机器状态</h2></div>
+          <button id="refresh-status" class="icon-button" type="button" title="刷新状态">刷新</button>
+        </div>
+        <div class="status-grid">
+          <div class="status-item">
+            <span>服务</span>
+            <b id="status-service">--</b>
+            <small id="status-uptime">--</small>
+          </div>
+          <div class="status-item">
+            <span>对话</span>
+            <b id="status-conversation">--</b>
+            <small id="status-proactive">--</small>
+          </div>
+          <div class="status-item">
+            <span>家电控制</span>
+            <b id="status-ha">--</b>
+            <small id="status-ha-url">--</small>
+          </div>
+          <div class="status-item">
+            <span>Hermes 工具</span>
+            <b id="status-hermes">--</b>
+            <small id="status-hermes-url">--</small>
+          </div>
+          <div class="status-item">
+            <span>本地信息</span>
+            <b id="status-local-info">--</b>
+            <small>日期和时间由 Reachy 本机回答</small>
+          </div>
+          <div class="status-item">
+            <span>数据发送</span>
+            <b id="status-privacy">--</b>
+            <small id="status-refresh-time">--</small>
+          </div>
+        </div>
+      </section>
+      <section id="camera-panel" class="panel camera-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">CAMERA</p><h2>摄像头预览</h2></div>
+          <div class="camera-controls">
+            <span id="camera-status" class="pill">关闭</span>
+            <label class="switch" title="开启 / 关闭摄像头预览">
+              <input id="camera-toggle" type="checkbox" />
+              <span></span>
+            </label>
+          </div>
+        </div>
+        <div class="camera-frame">
+          <img id="camera-image" alt="摄像头预览" />
+          <div id="camera-placeholder" class="camera-placeholder">
+            <strong>摄像头预览已关闭</strong>
+            <small>开启后每 0.5 秒刷新一帧；不使用时建议关闭以节省 Reachy Mini 的 CPU。</small>
+          </div>
+        </div>
+        <p id="camera-meta" class="hint">点击右上角开关开始预览。</p>
+        <div class="camera-audio" id="audio-panel">
+          <div class="camera-audio-row">
+            <span class="camera-audio-label">音量</span>
+            <input
+              id="volume-slider"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value="0"
+              disabled
+            />
+            <button id="volume-mute" class="icon-button" type="button" title="静音 / 取消静音">静音</button>
+            <b id="audio-volume-value" class="camera-audio-value">--</b>
+          </div>
+          <div class="camera-audio-row">
+            <span class="camera-audio-label">麦克风</span>
+            <div class="mic-meter" aria-hidden="true">
+              <div class="mic-meter-fill" id="mic-meter-fill"></div>
+              <span class="mic-meter-mark" style="left:30%"></span>
+              <span class="mic-meter-mark" style="left:60%"></span>
+              <span class="mic-meter-mark" style="left:90%"></span>
+            </div>
+            <b id="audio-mic-value" class="camera-audio-value">--</b>
+          </div>
+          <div class="camera-audio-row">
+            <span class="camera-audio-label">灵敏度</span>
+            <input id="vad-slider" type="range" min="1" max="500" step="5" value="40" disabled />
+            <b id="audio-vad-value" class="camera-audio-value">--</b>
+          </div>
+          <p class="camera-audio-meta">
+            <span id="audio-status">运行中</span>
+            <span id="audio-volume-note" class="muted"></span>
+            <span id="audio-mic-note" class="muted"></span>
+          </p>
+        </div>
+      </section>
+      <section id="log-panel" class="panel log-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">LOG</p><h2>运行 Log</h2></div>
+          <div class="log-controls">
+            <label class="log-level-picker">
+              <span>级别</span>
+              <select id="log-level">
+                <option value="debug">Debug</option>
+                <option value="info" selected>Info</option>
+                <option value="notice">Notice</option>
+                <option value="warning">Warning</option>
+                <option value="error">Error</option>
+              </select>
+            </label>
+            <button id="log-toggle" class="icon-button" type="button" title="暂停 / 继续自动滚动">暂停</button>
+            <button id="log-clear" class="icon-button" type="button" title="清除当前已加载的日志">清除</button>
+          </div>
+        </div>
+        <div id="log-frame" class="log-frame">
+          <ol id="log-list" class="log-list" aria-live="polite"></ol>
+          <p id="log-empty" class="log-empty">暂无日志</p>
+          <button id="log-jump" class="log-jump hidden" type="button" title="跳到最新">跳到最新 ▾</button>
+        </div>
+        <p id="log-meta" class="hint">每 2 秒刷新一次；向上滚动可暂停自动滚动。</p>
+      </section>
+      </div>
       <div id="restart-banner" class="notice success hidden">
         <b>设置已安全保存。</b> 请在应用中心停止并重新启动 YRobot。
       </div>
