@@ -725,6 +725,11 @@ class Yrobot(ReachyMiniApp):
             from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
             from reachy_mini.utils.interpolation import distance_between_poses
 
+            try:
+                reachy_mini.enable_motors()
+                logger.info("motors enabled for startup wake-up")
+            except Exception as exc:  # noqa: BLE001 - wake-up remains best effort
+                logger.warning("motor enable failed before wake-up: %s", exc)
             pose = reachy_mini.get_current_head_pose()
             if pose is None:
                 logger.info("head pose unavailable; skipping wake-up check")

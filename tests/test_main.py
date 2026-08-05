@@ -393,3 +393,26 @@ def test_late_callbacks_from_rotated_session_cannot_poison_current_session():
 
     assert conversation._speaker._q.empty()
     assert not conversation._session_dead.is_set()
+
+
+def test_startup_wake_up_enables_motors_before_movement():
+    from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
+
+    calls = []
+
+    class FakeMini:
+        def enable_motors(self):
+            calls.append("enable_motors")
+
+        def get_current_head_pose(self):
+            calls.append("get_current_head_pose")
+            return SLEEP_HEAD_POSE
+
+        def wake_up(self):
+            calls.append("wake_up")
+
+    from yrobot.main import Yrobot
+
+    Yrobot._wake_up_if_needed(FakeMini())
+
+    assert calls == ["enable_motors", "get_current_head_pose", "wake_up"]
