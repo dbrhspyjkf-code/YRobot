@@ -114,3 +114,44 @@ def test_idle_saccade_target_is_trajectory_limited(monkeypatch):
     yaw = head_yaw_of(pose)
     # The random target is +0.25 rad, but it must not appear in one 20 ms tick.
     assert 0.0 < yaw < 0.03
+
+
+class PoseMini:
+    def __init__(self, *, head_yaw: float, body_yaw: float = 0.0) -> None:
+        self.head_pose = rpy_pose(0.0, 0.0, head_yaw, 0.0)
+        self.body_yaw = body_yaw
+
+    def get_current_head_pose(self):
+        return self.head_pose
+
+    def get_current_joint_positions(self):
+        return [self.body_yaw, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0]
+
+
+def test_body_follower_ignores_head_only_idle_saccades():
+    choreo = Choreographer(PoseMini(head_yaw=0.25))
+    commanded = rpy_pose(0.0, 0.0, 0.25, 0.0)
+
+    for _ in range(200):
+        body_yaw = choreo._body_yaw_for(commanded, 0.02)
+
+    assert math.isclose(body_yaw, 0.0, abs_tol=1e-9)
+
+
+def test_body_follower_catches_up_to_sustained_physical_head_yaw():
+    choreo = Choreographer(PoseMini(head_yaw=0.8))
+    commanded = rpy_pose(0.0, 0.0, 0.0, 0.0)
+
+    samples = [choreo._body_yaw_for(commanded, 0.02) for _ in range(300)]
+
+    assert samples[0] > 0.0
+    assert all(a <= b for a, b in zip(samples, samples[1:], strict=False))
+    assert 0.70 < samples[-1] < 0.81
+
+
+def test_body_follower_starts_from_present_body_yaw():
+    choreo = Choreographer(PoseMini(head_yaw=0.4, body_yaw=0.4))
+
+    body_yaw = choreo._body_yaw_for(rpy_pose(0.0, 0.0, 0.4, 0.0), 0.02)
+
+    assert math.isclose(body_yaw, 0.4, abs_tol=1e-9)
