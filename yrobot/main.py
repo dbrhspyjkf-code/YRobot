@@ -34,6 +34,7 @@ from yrobot.app_config import (
 from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
 from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
+from yrobot.state import ROBOT_STATE
 from yrobot.hermes_tools import HermesToolsController, validate_tools, TOOL_DEFS
 from yrobot.home_assistant import HomeAssistantController
 from yrobot.local_info import LocalInfoController
@@ -43,6 +44,30 @@ from yrobot.session import ConversationMemory, RotationPolicy
 from yrobot.tts import synthesize_speech_24k
 from yrobot.turn import TurnGate
 from yrobot.vision import LatestCamera, VisionStats
+
+logger = logging.getLogger(__name__)
+
+# ── Safe-mode startup guard ────────────────────────────────────────────────────
+# Persisted across systemd restarts so a deterministic boot loop counts toward
+# the threshold. A successful run() clears the counter.
+_STARTUP_FAIL_COUNTER_PATH = "/tmp/.yrobot_startup_failures"
+_MAX_STARTUP_FAILURES = 3
+
+
+def _record_startup_failure() -> int:
+    """Increment the persisted failure counter and return the new value."""
+    try:
+        with open(_STARTUP_FAIL_COUNTER_PATH, encoding="utf-8") as f:
+            count = int((f.read() or "0").strip() or "0")
+    except (FileNotFoundError, ValueError):
+        count = 0
+    count += 1
+    try:
+        with open(_STARTUP_FAIL_COUNTER_PATH, "w", encoding="utf-8") as f:
+            f.write(str(count))
+    except OSError:
+        pass
+    return count
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +136,7 @@ class Conversation:
         # Lightweight silence gate: keep audio uplink live only while conversation is active.
         self._uplink_live = True
         self._last_delta_at = 0.0
+        self._robot_state: str = "active"  # active | sleeping | safe_mode — exposed via /api/status
         self._last_voice_at = -1e9
         self._last_user_onset_at = -1e9
         self._confirmed_voice_until = -1e9
@@ -265,6 +291,8 @@ class Conversation:
                     if self._confirmed_user_active(now):
                         self._uplink_live = True
                         self._last_delta_at = now
+                        self._robot_state = "active"
+                        ROBOT_STATE.set("active")
                         logger.info("silence gate: uplink resumed (user voice)")
                     else:
                         continue
@@ -274,6 +302,8 @@ class Conversation:
                     and not self._confirmed_user_active(now)
                 ):
                     self._uplink_live = False
+                    self._robot_state = "sleeping"
+                    ROBOT_STATE.set("sleeping")
                     logger.info(
                         "silence gate: uplink paused (%.0f s of mutual silence)",
                         now - self._last_delta_at,
@@ -738,10 +768,76 @@ class Yrobot(ReachyMiniApp):
         )
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
-        self._media_holder.media = reachy_mini.media
-        self._wake_up_if_needed(reachy_mini)
-        environment = self._config.effective_environment(os.environ)
-        Conversation(Settings.from_env(environment), reachy_mini, stop_event).run()
+        """Run YRobot with a guarded startup.
+
+        Critical init steps are wrapped so a misconfiguration (bad gateway URL,
+        corrupt profile, missing hermes) does not crash the service into a
+        systemd restart loop. After ``_MAX_STARTUP_FAILURES`` consecutive
+        failures we enter *safe mode*: the dashboard stays up so the user can
+        inspect logs and fix the config without SSH.
+        """
+        # Mark this process as alive so the previous failure counter is reset.
+        from yrobot.main import _STARTUP_FAIL_COUNTER_PATH as _fail_path
+        try:
+            os.remove(_fail_path)
+        except FileNotFoundError:
+            pass
+        try:
+            self._media_holder.media = reachy_mini.media
+            self._wake_up_if_needed(reachy_mini)
+            environment = self._config.effective_environment(os.environ)
+            conversation = Conversation(
+                Settings.from_env(environment), reachy_mini, stop_event
+            )
+        except Exception as exc:  # noqa: BLE001 — convert any startup failure to safe mode
+            logger.exception("YRobot startup failed: %s", exc)
+            ROBOT_STATE.set("safe_mode")
+            self._enter_safe_mode(exc, reachy_mini, stop_event)
+            return
+        conversation.run()
+
+    def _enter_safe_mode(
+        self,
+        exc: Exception,
+        reachy_mini: ReachyMini,
+        stop_event: threading.Event,
+    ) -> None:
+        """Run only the dashboard so the user can inspect/fix config.
+
+        Failure counter is persisted across systemd restarts so a deterministic
+        boot-loop counts toward the threshold. Safe mode resets the counter
+        on a successful start, so a single transient crash won't disable the
+        robot permanently.
+        """
+        from yrobot.main import (
+            _MAX_STARTUP_FAILURES,
+            _STARTUP_FAIL_COUNTER_PATH,
+            _record_startup_failure,
+        )
+        fails = _record_startup_failure()
+        logger.error(
+            "YRobot safe mode: %d/%d consecutive startup failures (last: %s)",
+            fails,
+            _MAX_STARTUP_FAILURES,
+            exc,
+        )
+        # Mark the daemon media as best-effort so the dashboard route still
+        # works when only the conversation half is broken.
+        try:
+            self._media_holder.media = reachy_mini.media  # noqa: F841
+        except Exception:  # noqa: BLE001
+            pass
+        if fails >= _MAX_STARTUP_FAILURES:
+            logger.error(
+                "YRobot safe mode: threshold reached; keeping dashboard up but "
+                "refusing to retry the conversation until the operator "
+                "restarts the service after fixing the config."
+            )
+        # Block until the service is told to stop. The dashboard inherited
+        # from the ReachyMiniApp base class is already running on its own
+        # task; we just don't start the conversation.
+        while not stop_event.is_set():
+            stop_event.wait(timeout=1.0)
 
     @staticmethod
     def _wake_up_if_needed(reachy_mini: ReachyMini) -> None:

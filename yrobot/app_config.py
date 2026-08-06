@@ -684,6 +684,21 @@ class LogReader:
             return 0
 
 
+def _robot_state_read() -> str:
+    """Read the live robot state from yrobot.state (lazy import).
+
+    State can be 'active' / 'sleeping' / 'safe_mode'. ``yrobot.main`` writes
+    here, ``build_status`` reads. Lazy-imported so dashboard requests stay
+    lightweight and don't pull in the Reachy stack on every poll.
+    """
+    try:
+        from yrobot.state import ROBOT_STATE
+
+        return ROBOT_STATE.current
+    except Exception:  # noqa: BLE001 — dashboard must not crash on import glitch
+        return "unknown"
+
+
 def build_status(
     store: AppConfig,
     environ: Mapping[str, str],
@@ -705,7 +720,10 @@ def build_status(
     return {
         "service": {
             "name": "YRobot",
-            "state": "running",
+            # Robot state mirrors yrobot.state.ROBOT_STATE
+            # (active / sleeping / safe_mode). The dashboard polls this every
+            # few seconds, so it lives in its own thread-safe module.
+            "state": _robot_state_read(),
             "pid": os.getpid(),
             "uptime_s": max(0, int(time.monotonic() - STARTED_AT)),
         },
