@@ -966,6 +966,7 @@ class Yrobot(ReachyMiniApp):
                             elif t == "tts" and d.get("state")=="start":
                                 logger.info("xz tts start")
                                 choreo.set_mode(SPEAK)
+                                choreo.release_still()
                                 tts_buf.clear()
                             elif t == "tts" and d.get("state")=="sentence_start":
                                 logger.info("xz tts text: %s", d.get("text","")[:80])
