@@ -143,6 +143,9 @@ class Conversation:
         self._server_kv: float | None = None
         self._video_kv_est = 0.0
         self._last_logged_audio_onset_at = -1e9
+        # Lazy presence detector — instantiated on first sleep (so non-camera
+        # test environments don't import OpenCV at startup).
+        self._presence = None
         self._input_sequence = 0
         self._session_sequence = 0
         self._last_session_ended_at: float | None = None
@@ -288,7 +291,17 @@ class Conversation:
                 # Activate instantly on any user voice; suspend after
                 # 15 s of mutual silence to prevent echo loops.
                 if not self._uplink_live:
-                    if self._confirmed_user_active(now):
+                    # Spin up the presence detector on first sleep; it
+                    # runs in its own thread and will resume the uplink
+                    # the moment it sees a face.
+                    self._ensure_presence()
+                    if self._presence is not None and self._presence.state.present:
+                        self._uplink_live = True
+                        self._last_delta_at = now
+                        self._robot_state = "active"
+                        ROBOT_STATE.set("active")
+                        logger.info("silence gate: uplink resumed (presence)")
+                    elif self._confirmed_user_active(now):
                         self._uplink_live = True
                         self._last_delta_at = now
                         self._robot_state = "active"
@@ -573,6 +586,37 @@ class Conversation:
                 logger.info("Hermes tool %s reachable", health.name)
             else:
                 logger.warning("Hermes tool %s UNREACHABLE: %s", health.name, health.detail)
+
+    def _ensure_presence(self) -> None:
+        """Lazy-start the presence detector the first time we go to sleep.
+
+        The detector is a daemon thread polling the camera at 1 Hz; it
+        updates ``self._presence.state.present`` so the silence gate can
+        resume the uplink on detection. We start it here (not in __init__)
+        so non-camera test environments don't pay the OpenCV import cost.
+        """
+        if self._presence is not None:
+            return
+        if self._camera is None:
+            # No camera pipeline (desktop / CI build) — can't detect presence.
+            return
+        try:
+            from yrobot.presence import PresenceDetector
+        except Exception as exc:  # noqa: BLE001 — presence is best-effort
+            logger.debug("presence detector not started (import failed): %s", exc)
+            return
+        try:
+            detector = PresenceDetector(
+                frame_provider=self._camera.take_latest,
+                poll_interval_s=1.0,
+                hysteresis=3,
+            )
+            detector.start()
+            self._presence = detector
+            logger.info("presence detector started (1 Hz, 3-frame hysteresis)")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("presence detector init failed: %s", exc)
+            self._presence = None
 
     @staticmethod
     def _ios_api_url() -> str:
