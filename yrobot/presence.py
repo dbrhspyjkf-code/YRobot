@@ -117,7 +117,11 @@ class PresenceDetector:
           - ``np.ndarray`` (BGR), or
           - ``bytes`` (JPEG) — common when wired to ``LatestCamera.take_latest``.
         """
-        self._ensure_classifier()
+        try:
+            self._ensure_classifier()
+        except Exception as exc:  # noqa: BLE001 — no OpenCV → best-effort skip
+            self._state.last_error = f"classifier unavailable: {exc}"
+            return self._state.present
         frame = None
         try:
             frame = self._frames()

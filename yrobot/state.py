@@ -16,7 +16,11 @@ from __future__ import annotations
 class _State:
     """Single mutable cell holding the robot state.
 
-    Values: ``"active"`` | ``"sleeping"`` | ``"safe_mode"``.
+    Values:
+      ``"active"``     — uplink live, speaker may be audible, VAD running.
+      ``"sleeping"``   — silence gate paused; user is away or quiet.
+      ``"deep_sleep"`` — extended absence: head frozen, dashboard slowed.
+      ``"safe_mode"``  — startup failed; dashboard up, conversation not running.
     """
 
     def __init__(self) -> None:
@@ -28,7 +32,7 @@ class _State:
 
     def set(self, value: str) -> None:
         """Set the state. Silently ignores unknown values to avoid typos."""
-        if value in ("active", "sleeping", "safe_mode"):
+        if value in ("active", "sleeping", "deep_sleep", "safe_mode"):
             self._value = value
 
 

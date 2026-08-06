@@ -146,6 +146,9 @@ class Conversation:
         # Lazy presence detector — instantiated on first sleep (so non-camera
         # test environments don't import OpenCV at startup).
         self._presence = None
+        # Deep-sleep transition bookkeeping.
+        self._sleep_started_at: float | None = None  # monotonic when uplink paused
+        self._deep_sleep_started_at: float | None = None
         self._input_sequence = 0
         self._session_sequence = 0
         self._last_session_ended_at: float | None = None
@@ -296,18 +299,15 @@ class Conversation:
                     # the moment it sees a face.
                     self._ensure_presence()
                     if self._presence is not None and self._presence.state.present:
-                        self._uplink_live = True
-                        self._last_delta_at = now
-                        self._robot_state = "active"
-                        ROBOT_STATE.set("active")
+                        self._wake_from_sleep(now)
                         logger.info("silence gate: uplink resumed (presence)")
                     elif self._confirmed_user_active(now):
-                        self._uplink_live = True
-                        self._last_delta_at = now
-                        self._robot_state = "active"
-                        ROBOT_STATE.set("active")
+                        self._wake_from_sleep(now)
                         logger.info("silence gate: uplink resumed (user voice)")
                     else:
+                        # Still nobody: escalate to deep sleep after a grace
+                        # period so the head freezes and motion stops.
+                        self._maybe_deep_sleep(now)
                         continue
                 elif (
                     now - self._last_delta_at > 15.0
@@ -315,6 +315,7 @@ class Conversation:
                     and not self._confirmed_user_active(now)
                 ):
                     self._uplink_live = False
+                    self._sleep_started_at = now
                     self._robot_state = "sleeping"
                     ROBOT_STATE.set("sleeping")
                     logger.info(
@@ -617,6 +618,45 @@ class Conversation:
         except Exception as exc:  # noqa: BLE001
             logger.warning("presence detector init failed: %s", exc)
             self._presence = None
+
+    def _wake_from_sleep(self, now: float) -> None:
+        """Resume the conversation uplink and unfreeze the head."""
+        if self._robot_state == "deep_sleep":
+            self._choreo.release_still()
+        self._uplink_live = True
+        self._last_delta_at = now
+        self._sleep_started_at = None
+        self._deep_sleep_started_at = None
+        self._robot_state = "active"
+        ROBOT_STATE.set("active")
+
+    def _maybe_deep_sleep(self, now: float) -> None:
+        """Freeze the head after 30 s of confirmed absence.
+
+        Called on every silence-gate tick while nobody is present. The first
+        transition to deep_sleep logs it; subsequent ticks are no-ops until
+        the head is unfrozen by _wake_from_sleep.
+        """
+        if self._deep_sleep_started_at is not None:
+            return  # already frozen; keep waiting for someone
+        if self._robot_state == "deep_sleep":
+            return
+        start = self._sleep_started_at or now
+        if now - start < 30.0:
+            return  # grace period not yet elapsed
+        # Freeze the head: set_still until far future (0.0 disables stillness
+        # check in Choreographer, so use a long duration instead).
+        try:
+            self._choreo.set_still(now + 3600.0)
+        except Exception as exc:  # noqa: BLE001 — motion is best-effort
+            logger.debug("deep-sleep freeze failed: %s", exc)
+        self._deep_sleep_started_at = now
+        self._robot_state = "deep_sleep"
+        ROBOT_STATE.set("deep_sleep")
+        logger.info(
+            "deep sleep entered (%.0f s since pause, no presence)",
+            now - start,
+        )
 
     @staticmethod
     def _ios_api_url() -> str:

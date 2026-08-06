@@ -687,9 +687,10 @@ class LogReader:
 def _robot_state_read() -> str:
     """Read the live robot state from yrobot.state (lazy import).
 
-    State can be 'active' / 'sleeping' / 'safe_mode'. ``yrobot.main`` writes
-    here, ``build_status`` reads. Lazy-imported so dashboard requests stay
-    lightweight and don't pull in the Reachy stack on every poll.
+    State can be 'active' / 'sleeping' / 'deep_sleep' / 'safe_mode'.
+    ``yrobot.main`` writes here, ``build_status`` reads. Lazy-imported so
+    dashboard requests stay lightweight and don't pull in the Reachy stack
+    on every poll.
     """
     try:
         from yrobot.state import ROBOT_STATE
