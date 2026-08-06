@@ -152,6 +152,43 @@ expects, e.g.:
 - Camera preview toggle (default off — saves resources).
 - Profile selector in the settings form (03B / PROFILE panel).
 
+### Robot states (P1 observability + deep sleep)
+
+`yrobot.state.ROBOT_STATE` is a thread-safe singleton read by `/api/status`:
+
+- `active` — uplink live, head moving, speaker ready.
+- `sleeping` — silence gate paused (15 s mutual silence); presence detector
+  runs at 1 Hz.
+- `deep_sleep` — after 30 s of *confirmed absence* the head freezes
+  (`choreo.set_still(now+3600)`); dashboard shows the state.
+- `safe_mode` — startup failed ≥3 times; dashboard stays up, conversation
+  does not run.
+
+Wake paths from sleeping/deep_sleep: user voice, wake word, or a detected
+face (Haar cascade) → `release_still()` → `active`.
+
+Caveat: Haar cascade recognizes frontal faces only. If the robot faces a
+person's back/side, presence may not trigger — a motion-delta fallback could
+be added later.
+
+### Fail-safe startup (P0)
+
+- systemd drop-in `startup-guard.conf`: `StartLimitBurst=5` /
+  `StartLimitIntervalSec=120` caps restart storms.
+- `Yrobot.run()` wraps critical init; on failure increments a persisted
+  counter in `/tmp/.yrobot_startup_failures`. After 3 consecutive failures it
+  enters `_enter_safe_mode` (dashboard up, conversation not started).
+- A successful start clears the counter, so a single transient crash won't
+  lock the robot into safe mode.
+
+### Presence detector
+
+`yrobot/presence.py` — `PresenceDetector` polls a frame provider (wired to
+`LatestCamera.take_latest`) at 1 Hz, runs OpenCV's bundled Haar cascade on
+320×240 grayscale, exposes hysteresis state (3 frames). Starts lazily the
+first time the silence gate goes to sleep; the moment a face is seen the
+uplink resumes.
+
 ### Stock name extraction (2026-08-06 afternoon)
 
 **Root fix: match known stock names first.** Model paraphrases are infinite
