@@ -972,20 +972,50 @@ class Yrobot(ReachyMiniApp):
 
                 rt = _a.ensure_future(recv())
                 try:
-                    # Auto mode: send audio continuously, cloud handles VAD
-                    await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"auto"}))
-                    sent_total = 0
+                    # Manual mode with local silence detection.
+                    # Only send audio to cloud when there's actual sound.
+                    import numpy as _np
+                    SILENCE_RMS = 500  # int16 silence threshold
                     while not stop_event.is_set():
-                        buf, _ = mic_stream.read(960)
-                        pcm16 = buf.tobytes()
-                        try:
-                            await ws.send(enc.encode(pcm16, 960))
-                            sent_total += 1
-                            if sent_total % 500 == 0:
-                                logger.info("xz sent %d opus frames (auto)", sent_total)
-                        except Exception:
-                            pass
-                        await _a.sleep(0.01)
+                        # Collect 1 second of audio, check if there's sound
+                        frames = []
+                        rms_max = 0
+                        for _ in range(16):  # 16 × 60ms ≈ 1s
+                            buf, _ = mic_stream.read(960)
+                            rms = float(_np.sqrt(_np.mean(_np.square(_np.frombuffer(buf, dtype=_np.int16).astype(_np.float64)))))
+                            if rms > rms_max:
+                                rms_max = rms
+                            frames.append(buf)
+                        if rms_max < SILENCE_RMS:
+                            continue  # skip silence
+                        # Send to cloud in manual mode
+                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
+                        sent = 0
+                        for buf in frames:
+                            try:
+                                await ws.send(enc.encode(buf.tobytes(), 960))
+                                sent += 1
+                            except Exception:
+                                pass
+                        # Keep sending for up to 4 more seconds while sound continues
+                        deadline = time.monotonic() + 4.0
+                        while time.monotonic() < deadline and not stop_event.is_set():
+                            buf, _ = mic_stream.read(960)
+                            rms = float(_np.sqrt(_np.mean(_np.square(_np.frombuffer(buf, dtype=_np.int16).astype(_np.float64)))))
+                            try:
+                                await ws.send(enc.encode(buf.tobytes(), 960))
+                                sent += 1
+                            except Exception:
+                                pass
+                            if rms < SILENCE_RMS * 0.8:  # sound dropped
+                                break
+                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
+                        if sent:
+                            logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
+                        for _ in range(20):
+                            if stop_event.is_set():
+                                break
+                            await _a.sleep(0.2)
                 finally:
                     rt.cancel()
 
