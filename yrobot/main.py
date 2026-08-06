@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from dotenv import load_dotenv
+import opuslib
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
@@ -44,6 +45,13 @@ from yrobot.session import ConversationMemory, RotationPolicy
 from yrobot.tts import synthesize_speech_24k
 from yrobot.turn import TurnGate
 from yrobot.vision import LatestCamera, VisionStats
+
+# ── Xiaozhi cloud device identity (read from network interface) ──────────────
+try:
+    with open("/sys/class/net/wlan0/address") as f:
+        XIAOZHI_DEVICE_ID = f.read().strip()
+except Exception:
+    XIAOZHI_DEVICE_ID = ""
 
 logger = logging.getLogger(__name__)
 
@@ -888,38 +896,87 @@ class Yrobot(ReachyMiniApp):
         reachy_mini: ReachyMini,
         stop_event: threading.Event,
     ) -> None:
-        """Run the conversation loop through Xiaozhi cloud."""
-        from yrobot.xiaozhi import XiaozhiConversation, CAPTURE_SAMPLES, FRAME_MS
-        from yrobot.realtime import RealtimeClient
-        import sounddevice as _sd
-
+        """Run conversation through Xiaozhi cloud with Conversation mic/speaker."""
+        import asyncio as _a
+        import json as _j
+        mic = Microphone(reachy_mini.media)
         speaker = Speaker(reachy_mini.media)
-        _sd.default.samplerate = 16000
-        _sd.default.channels = 1
-        _sd.default.dtype = "int16"
-        _sd.default.device = "reachymini_audio_src"
-
-        mic_stream = _sd.InputStream()
-        mic_stream.start()
-
-        def read_mic():
-            buf, _ = mic_stream.read(CAPTURE_SAMPLES)
-            return np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
-
-        def play_speaker(_epoch: int, pcm: np.ndarray) -> None:
-            speaker.play(0, pcm.astype(np.float32))
-
+        apply_audio_startup_config(reachy_mini)
         speaker.start()
+
+        enc = opuslib.Encoder(16000, 1, "voip")
+        dec = opuslib.Decoder(24000, 1)
+
+        XZ_URL = "wss://api.tenclass.net/xiaozhi/v1/"
+        XZ_HEADERS = {
+            "Authorization": "Bearer test-token",
+            "Device-Id": XIAOZHI_DEVICE_ID,
+            "Protocol-Version": "1",
+        }
+
+        async def recv_loop(ws, buf):
+            while not stop_event.is_set():
+                try:
+                    raw = await _a.wait_for(ws.recv(), timeout=0.5)
+                except _a.TimeoutError:
+                    continue
+                if isinstance(raw, bytes):
+                    buf.append(raw)
+                else:
+                    data = _j.loads(raw)
+                    t = data.get("type", "")
+                    if t == "stt":
+                        logger.info("xz stt: %s", data.get("text", ""))
+                    elif t == "llm":
+                        logger.info("xz llm: %s", data.get("text", "")[:60])
+                    elif t == "tts" and data.get("state") == "start":
+                        buf.clear()
+                    elif t == "tts" and data.get("state") == "stop":
+                        for pkt in buf:
+                            try:
+                                pcm = dec.decode(pkt, 1440)
+                                spk_pcm = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+                                speaker.play(0, spk_pcm)
+                            except Exception:
+                                pass
+                        buf.clear()
+
+        async def run():
+            import websockets as _ws
+            async with _ws.connect(XZ_URL, additional_headers=XZ_HEADERS, open_timeout=12) as ws:
+                await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
+                    "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
+                data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
+                sid = data.get("session_id", "")
+                logger.info("xiaozhi ready sid=%s", sid[:12])
+
+                tts_buf = []
+                rt = _a.ensure_future(recv_loop(ws, tts_buf))
+                try:
+                    while not stop_event.is_set():
+                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
+                        deadline = time.monotonic() + 5.0
+                        while time.monotonic() < deadline and not stop_event.is_set():
+                            frames = mic.read_frames()
+                            for f in frames:
+                                if len(f) < 320:
+                                    continue
+                                pcm16 = (np.clip(f, -1, 1) * 32767).astype("<i2").tobytes()
+                                try:
+                                    await ws.send(enc.encode(pcm16, len(pcm16)//2))
+                                except Exception:
+                                    pass
+                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
+                        for _ in range(30):
+                            if stop_event.is_set():
+                                break
+                            await _a.sleep(0.2)
+                finally:
+                    rt.cancel()
+
         try:
-            conv = XiaozhiConversation(
-                stop_event,
-                read_mic=read_mic,
-                play_speaker=play_speaker,
-            )
-            conv.run()
+            _a.run(run())
         finally:
-            mic_stream.stop()
-            mic_stream.close()
             speaker.close()
             speaker.join(timeout=2)
 
