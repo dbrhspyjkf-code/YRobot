@@ -193,6 +193,31 @@ def _format_stock_advice(data: dict[str, Any]) -> str:
     return first_line + "。"
 
 
+def _has_stock_code(text: str) -> bool:
+    """Return True if the text contains a 6-digit A-share stock code.
+
+    Uses negative lookaround (no ASCII \\b which breaks at Chinese chars) so the
+    code can sit anywhere in a Chinese sentence, e.g. '688018怎么样'.
+    """
+    import re as _re
+    return _re.search(r"(?<!\d)\d{6}(?!\d)", text) is not None
+
+
+def _is_portfolio_intent(text: str) -> bool:
+    """True only when the text expresses 'show my holdings' intent.
+
+    A bare mention of '股票' (the noun) is not portfolio intent — the model
+    often writes "想查询的股票" or "哪只股票" while clarifying a single-stock
+    query, and matching that fires the portfolio tool by mistake.
+    """
+    portfolio_phrases = (
+        "我的股票", "我的持仓", "我的自选", "持仓", "自选股",
+        "股票怎么样", "股票如何", "持有的股票", "全部股票",
+        "我关注的股票", "关注的股票", "我买的股票",
+    )
+    return any(p in text for p in portfolio_phrases)
+
+
 def _extract_stock_name(normalized: str) -> str:
     """Extract a stock name/code from the user's request text."""
     import re as _re
@@ -246,9 +271,14 @@ class ToolDef:
     mute_model_audio: bool = True
     skip_when: Callable[[str], bool] | None = None
     cooldown_s: float = 30.0
+    extra_matches: Callable[[str], bool] | None = None
 
     def matches(self, text: str) -> bool:
-        return any(phrase in text for phrase in self.phrases)
+        if any(phrase in text for phrase in self.phrases):
+            return True
+        if self.extra_matches is not None and self.extra_matches(text):
+            return True
+        return False
 
 
 TOOL_DEFS: tuple[ToolDef, ...] = (
@@ -260,10 +290,14 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="stock_price",
-        phrases=("多少钱", "股价", "行情", "价格多少", "股票价格", "多少钱一股"),
+        phrases=("多少钱", "股价", "行情", "价格", "价格多少", "股票价格", "多少钱一股", "现在多少"),
         call=lambda client, text: client.get_stock_price(_extract_stock_name(text) or ""),
         format=_format_stock_price,
         skip_when=lambda text: not _extract_stock_name(text),
+        extra_matches=lambda text: _has_stock_code(text) and any(
+            kw in text for kw in ("价格", "股价", "行情", "多少")
+        ),
+        cooldown_s=3.0,
     ),
     ToolDef(
         name="stock_advice",
@@ -271,6 +305,10 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         call=lambda client, text: client.get_stock_advice(_extract_stock_name(text) or None),
         format=_format_stock_advice,
         skip_when=lambda text: not _extract_stock_name(text),
+        extra_matches=lambda text: _has_stock_code(text) and any(
+            kw in text for kw in ("怎么样", "建议", "分析", "能买")
+        ),
+        cooldown_s=3.0,
     ),
     ToolDef(
         name="stocks_advice_all",
@@ -280,9 +318,14 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="stocks",
-        phrases=("我的股票", "股票怎么样", "股票"),
+        phrases=(
+            "我的股票", "我的持仓", "我的自选", "持仓", "自选股",
+            "股票怎么样", "股票如何", "持有的股票", "我关注的股票",
+            "我买的股票", "关注的股票", "全部股票",
+        ),
         call=lambda client, text: client.get_stocks_portfolio(),
         format=_format_stocks,
+        skip_when=lambda text: not _is_portfolio_intent(text),
     ),
     ToolDef(
         name="rate",
