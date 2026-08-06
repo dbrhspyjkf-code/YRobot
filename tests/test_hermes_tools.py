@@ -354,3 +354,20 @@ def test_validate_tools_reports_missing_discover_name():
     assert by_name["weather"].ok
     assert not by_name["stock_price"].ok
     assert "missing from /api/discover" in by_name["stock_price"].detail
+
+
+def test_extract_stock_name_model_paraphrase_cases():
+    """Model often rephrases the user's query; extraction must survive it."""
+    cases = {
+        "你问比亚迪怎么样，我来帮你": "比亚迪",
+        "我们来看一下比亚迪怎么样": "比亚迪",
+        "帮我分析一下平安银行怎么样": "平安银行",
+        "好的，我来帮您查询贵州茅台的股价": "贵州茅台",
+        "好的请稍等我为您查询贵州茅台受的价格": "贵州茅台",
+        "宁德时代现在多少钱": "宁德时代",
+        "我想买比亚迪能买吗": "比亚迪",
+        "让我查一下平安的股票多少钱": "平安",
+        "那帮我看一下茅台怎么样": "茅台",
+    }
+    for text, expected in cases.items():
+        assert _extract(text) == expected, f"{text!r} should extract {expected!r}, got {_extract(text)!r}"

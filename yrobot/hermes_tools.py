@@ -265,6 +265,29 @@ _CHINESE_DIGITS = "零一二三四五六七八九"
 _CHINESE_DIGIT_CODE_RE = None  # compiled lazily
 
 
+_NOISE_RUNS = {
+    "我们", "你们", "他们", "好的", "这个", "那个", "什么", "怎么", "为什么",
+    "我的", "我的股票", "自选", "自选股", "持仓", "它", "这", "那",
+    "股票", "请稍等", "我来", "帮我", "你问", "帮你", "我们", "来看", "去帮",
+    "一下", "那来", "们来", "方案", "方案目", "目",
+}
+
+
+def _looks_like_stock_name(candidate: str) -> bool:
+    """Best-effort check that a candidate run is a plausible stock name.
+
+    Rejects runs that are pure stop-word residues or end with a verb leftover.
+    """
+    if not candidate or not (2 <= len(candidate) <= 8):
+        return False
+    if candidate in _NOISE_RUNS:
+        return False
+    # Ends with a leading-verb leftover like 来/帮/查/看/买.
+    if candidate.endswith(("来", "帮", "查", "看", "买", "我", "你")) and len(candidate) > 3:
+        return False
+    return True
+
+
 def _chinese_digit_code(text: str) -> str | None:
     """Convert a 6-character Chinese digit reading to its Arabic form.
 
@@ -302,11 +325,13 @@ def _extract_stock_name(normalized: str) -> str:
 
     Strategy:
     1. If a 6-digit code is present anywhere, return it.
-    2. Otherwise strip a stop-word vocabulary (politeness, verbs, adverbs,
-       pronouns, common Chinese punctuation) and pick the longest remaining
-       2-8-character Chinese run. This is more robust than enumerating every
-       possible model paraphrase (让我, 帮您, 请稍等, 正在, etc.) because new
-       polite phrases appear faster than we can keep up.
+    2. Otherwise try the trigger-phrase cut: find a stock-intent keyword
+       (怎么样/如何/分析/建议/价格/股价/行情/多少钱 …) and take the
+       2-8 Chinese characters immediately before it. This is far more
+       accurate than stripping stop words, because model paraphrases vary
+       infinitely (“你问比亚迪怎么样，我来帮你” → “比亚迪”).
+    3. Fall back to strip-stop-words + longest-Han-run when no trigger
+       keyword is present.
     """
     import re as _re
     code_match = _re.search(r"(?<!\d)\d{6}(?!\d)", normalized)
@@ -315,12 +340,15 @@ def _extract_stock_name(normalized: str) -> str:
     chinese_code = _chinese_digit_code(normalized)
     if chinese_code is not None:
         return chinese_code
+
+    # --- Stop-word strip + longest Han run (primary fallback) ---
     # Strip stop words (longest alternatives first so e.g. 多少钱 wins over 多少).
     cleaned = _re.sub(
         r"查一下|查询|看看|看一下|帮忙|帮我|请帮我|请你|让我|我想|想买|能不能买|能买吗|"
         r"怎么样|怎样|如何|多少钱|多少|股价|股票价格|价格|行情|分析|建议|操盘|点评|表现|"
         r"现在|最近|这个|那|一下|查|呢|吗|的|了|好的|我来|我帮您|我来帮您|帮您|您|为|"
         r"正在|马上|稍等|请稍等|稍等一下|等待|在|受|好的|是|我|呀|啊|哈|嗯|那个|这个|"
+        r"你问|你说|帮我|帮你|我们|我来|来看|去帮|们来|的方案|这个方案|方案|"
         r"。|，|、|！|？|~|·|;",
         "",
         normalized,
@@ -331,6 +359,23 @@ def _extract_stock_name(normalized: str) -> str:
         "",
         cleaned,
     )
+
+    # --- Trigger-phrase cut on the cleaned text (covers short utterances) ---
+    # After stop words are removed, a stock-intent keyword directly follows the
+    # name (“比亚迪怎么样” → cleaned “比亚迪怎么样” → take chars before keyword).
+    trigger_match = _re.search(
+        r"(?P<name>[\u4e00-\u9fff]{2,4})[，,、\s]*(?:怎么样|怎样|如何|分析|建议|操盘|点评|表现|能买吗|能不能买|多少钱|价格多少|股价|行情|价格)",
+        cleaned,
+    )
+    if trigger_match:
+        raw_name = trigger_match.group("name")
+        raw_name = (
+            raw_name[:-2]
+            if raw_name.endswith("股票") and len(raw_name) > 2
+            else raw_name
+        )
+        if _looks_like_stock_name(raw_name):
+            return raw_name
     # Find the longest run of Chinese characters (Han script) of length 2-8.
     runs = _re.findall(r"[\u4e00-\u9fff]{2,8}", cleaned)
     # Remove trailing 股票 noun from each run.
