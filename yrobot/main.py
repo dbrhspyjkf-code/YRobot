@@ -34,7 +34,7 @@ from yrobot.app_config import (
 from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
 from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
-from yrobot.hermes_tools import HermesToolsController
+from yrobot.hermes_tools import HermesToolsController, validate_tools, TOOL_DEFS
 from yrobot.home_assistant import HomeAssistantController
 from yrobot.local_info import LocalInfoController
 from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
@@ -82,6 +82,7 @@ class Conversation:
         self._agc = UplinkGain()
         self._home_assistant = HomeAssistantController.from_settings(settings)
         self._hermes_tools = HermesToolsController.from_settings(settings)
+        self._probe_hermes_tools()
         self._local_info = LocalInfoController(enabled=settings.local_info_enabled)
         self._audio_input_enabled = audio_input_controller_singleton().enabled
         self._muted_response_ids: set[str] = set()
@@ -517,6 +518,26 @@ class Conversation:
     def _gate_latched(self) -> bool:
         with self._turn_lock:
             return self._gate.latched
+
+    def _probe_hermes_tools(self) -> None:
+        """Dry-run each Hermes tool at startup so config errors surface early.
+
+        Failures are logged but do not block startup; the operator can read
+        them in the systemd journal and fix the offending URL or whitelist.
+        """
+        if not self._hermes_tools._enabled:
+            return
+        try:
+            client = self._hermes_tools._client
+            report = validate_tools(client, enabled_tools=TOOL_DEFS, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            logger.warning("Hermes tools probe skipped: %s", exc)
+            return
+        for health in report:
+            if health.ok:
+                logger.info("Hermes tool %s reachable", health.name)
+            else:
+                logger.warning("Hermes tool %s UNREACHABLE: %s", health.name, health.detail)
 
     def _current_head_yaw(self) -> float:
         """Read the daemon's cached physical pose; fall back during startup."""

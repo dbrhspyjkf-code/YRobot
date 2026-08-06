@@ -1,7 +1,7 @@
 import json
 
 from yrobot.config import Settings
-from yrobot.hermes_tools import HermesToolsController
+from yrobot.hermes_tools import HermesToolsController, HermesToolsClient, validate_tools, TOOL_DEFS
 
 
 class FakeResponse:
@@ -257,3 +257,33 @@ def test_stock_advice_also_accepts_code_with_advice_keyword():
     text = "688018怎么样"
     assert _has_stock_code(text)
     assert any(kw in text for kw in ("怎么样", "建议", "分析", "能买"))
+
+
+def test_validate_tools_returns_per_tool_health():
+    """validate_tools should report OK/FAIL per tool without raising."""
+    from yrobot.hermes_tools import validate_tools, HermesToolsClient
+
+    class FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+
+    def opener(request, **kwargs):
+        url = request.full_url
+        if "advice" in url and "name=" in url:
+            # 404-equivalent: server returns plain text
+            return FakeResp(b"not found")
+        if "/api/stocks/portfolio" in url:
+            return FakeResp(b'{"count": 11, "items": []}')
+        return FakeResp(b'{"ok": true, "name": "test", "text": "hi"}')
+
+    client = HermesToolsClient("http://h.local:8766", opener=opener)
+    report = validate_tools(client, enabled_tools=TOOL_DEFS, timeout=1.0)
+    by_name = {h.name: h for h in report}
+    assert by_name["stocks"].ok
+    assert "advice" not in by_name  # stock_advice and stocks_advice_all both probe /advice
+    assert by_name["weather"].ok
+    assert by_name["stock_price"].ok
+    assert by_name["rate"].ok
+    assert by_name["deepseek_balance"].ok

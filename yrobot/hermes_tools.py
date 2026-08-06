@@ -64,6 +64,15 @@ class HermesToolsClient:
         params = {"name": name} if name else None
         return self._get_json("/api/stocks/advice", params=params)
 
+    def ping(self) -> dict[str, Any]:
+        """Lightweight server reachability probe (expects any 200 + JSON).
+
+        Many servers do not expose a dedicated health endpoint, so we just
+        hit the portfolio path which is cheap. Returns the parsed JSON so
+        callers can also validate the response shape.
+        """
+        return self._get_json("/api/stocks/portfolio")
+
 
 # ---------------------------------------------------------------------------
 # Tool registry: phrases that fire a tool, the call, and how to format the
@@ -481,3 +490,84 @@ class HermesToolsController:
                 return HermesToolResult(tool.name, False, str(exc), tool.mute_model_audio)
             return HermesToolResult(tool.name, True, message, tool.mute_model_audio)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Startup validation: dry-run probe each enabled tool to catch config errors
+# before the first user request. Failures are surfaced as warnings rather
+# than exceptions so a single broken tool does not block startup.
+# ---------------------------------------------------------------------------
+
+# Dry-run probes use a safe sentinel that hermes-mcp resolves as a real
+# stock so we exercise the same JSON shape without side-effects.
+_DRY_RUN_PROBES: dict[str, tuple[str, dict[str, str]]] = {
+    "stock_price": ("/api/stocks/price", {"name": "600600"}),
+    "stock_advice": ("/api/stocks/advice", {}),  # no name = aggregated advice
+    "stocks_advice_all": ("/api/stocks/advice", {}),
+    "stocks": ("/api/stocks/portfolio", {}),
+    "rate": ("/rate", {}),
+    "weather": ("/weather", {"city": "广州"}),
+    "deepseek_balance": ("/api/deepseek/balance", {}),
+}
+
+
+@dataclass(frozen=True)
+class ToolHealth:
+    name: str
+    ok: bool
+    detail: str = ""
+
+    def __str__(self) -> str:
+        return f"{self.name}: {'OK' if self.ok else 'FAIL'} ({self.detail})"
+
+
+def _looks_like_response(raw: object) -> bool:
+    """Loose response-shape check for Hermes endpoints.
+
+    Endpoints are not required to return {"ok": bool}; portfolio returns
+    {"count", "items"}, others may return {"name", "text"}. We only require
+    a JSON object that has at least one of the common keys so a 404 page
+    or non-JSON response is still flagged as broken.
+    """
+    if not isinstance(raw, dict):
+        return False
+    return any(k in raw for k in ("ok", "count", "items", "name", "text", "balance"))
+
+
+def validate_tools(
+    client: HermesToolsClient,
+    *,
+    enabled_tools: tuple[ToolDef, ...],
+    timeout: float | None = None,
+) -> list[ToolHealth]:
+    """Dry-run each enabled tool. Returns a health report per tool.
+
+    A successful probe requires:
+      * HTTP 200 + valid JSON object
+      * At least one of the common Hermes response keys present
+        (``ok``, ``count``, ``items``, ``name``, ``text``, ``balance``)
+
+    Failures do not raise; they are returned as ``ToolHealth(ok=False, ...)``.
+    """
+    results: list[ToolHealth] = []
+    for tool in enabled_tools:
+        probe = _DRY_RUN_PROBES.get(tool.name)
+        if probe is None:
+            results.append(ToolHealth(tool.name, True, "no probe defined"))
+            continue
+        path, params = probe
+        saved_timeout = client._timeout
+        if timeout is not None:
+            client._timeout = timeout
+        try:
+            raw = client._get_json(path, params=params)
+        except Exception as exc:  # noqa: BLE001 — surface any probe failure
+            results.append(ToolHealth(tool.name, False, f"{type(exc).__name__}: {exc}"))
+            continue
+        finally:
+            client._timeout = saved_timeout
+        if not _looks_like_response(raw):
+            results.append(ToolHealth(tool.name, False, f"unexpected shape: {raw!r:.80}"))
+            continue
+        results.append(ToolHealth(tool.name, True))
+    return results
