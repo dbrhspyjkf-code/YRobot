@@ -320,18 +320,42 @@ def _is_portfolio_intent(text: str) -> bool:
     return any(p in text for p in portfolio_phrases)
 
 
+# Known A-share stock names: hermes-mcp _resolve_secid.known + user portfolio.
+# Matching against this list first is far more robust than stripping arbitrary
+# stop words from free-form model paraphrases.
+KNOWN_STOCK_NAMES = frozenset({
+    "茅台", "贵州茅台", "腾讯", "腾讯控股", "比亚迪", "宁德时代",
+    "胜宏科技", "中际旭创", "乐鑫科技", "万华化学", "中国核电",
+    "福耀玻璃", "三花智控", "豪威集团", "芒果超媒", "宝钛股份", "迈瑞医疗",
+    "平安", "中国平安", "平安银行", "工商银行", "建设银行", "农业银行",
+    "招商银行", "万科A", "万科", "中国中免", "隆基绿能", "阳光电源",
+    "药明康德", "恒瑞医药", "京东方A", "中兴通讯", "海康威视",
+    "紫金矿业", "中国神华", "长江电力", "美的集团", "格力电器",
+    "立讯精密", "潍柴动力", "三一重工", "中远海控", "东方财富",
+    "同花顺", "中国移动", "中国电信", "中国联通", "工业富联",
+    "科大讯飞", "金山办公", "信息发展", "华信新材", "兆易创新", "北方华创", "中芯国际",
+})
+
+
+def _match_known_stock_name(text: str) -> str | None:
+    """Return the longest known stock name found in ``text``."""
+    best = None
+    for name in KNOWN_STOCK_NAMES:
+        if name in text and (best is None or len(name) > len(best)):
+            best = name
+    return best
+
+
 def _extract_stock_name(normalized: str) -> str:
     """Extract a stock name/code from the user's request text.
 
     Strategy:
     1. If a 6-digit code is present anywhere, return it.
-    2. Otherwise try the trigger-phrase cut: find a stock-intent keyword
-       (怎么样/如何/分析/建议/价格/股价/行情/多少钱 …) and take the
-       2-8 Chinese characters immediately before it. This is far more
-       accurate than stripping stop words, because model paraphrases vary
-       infinitely (“你问比亚迪怎么样，我来帮你” → “比亚迪”).
-    3. Fall back to strip-stop-words + longest-Han-run when no trigger
-       keyword is present.
+    2. Chinese-digit code (六零零六零零 → 600600).
+    3. Match against KNOWN_STOCK_NAMES (portfolio + famous A-shares). This
+       is the robust path: model paraphrases are infinite, but the set of
+       stocks the user actually asks about is small and mostly known.
+    4. Stop-word strip + longest-Han-run fallback.
     """
     import re as _re
     code_match = _re.search(r"(?<!\d)\d{6}(?!\d)", normalized)
@@ -340,6 +364,9 @@ def _extract_stock_name(normalized: str) -> str:
     chinese_code = _chinese_digit_code(normalized)
     if chinese_code is not None:
         return chinese_code
+    known = _match_known_stock_name(normalized)
+    if known is not None:
+        return known
 
     # --- Stop-word strip + longest Han run (primary fallback) ---
     # Strip stop words (longest alternatives first so e.g. 多少钱 wins over 多少).
@@ -349,7 +376,7 @@ def _extract_stock_name(normalized: str) -> str:
         r"现在|最近|这个|那|一下|查|呢|吗|的|了|好的|我来|我帮您|我来帮您|帮您|您|为|"
         r"正在|马上|稍等|请稍等|稍等一下|等待|在|受|好的|是|我|呀|啊|哈|嗯|那个|这个|"
         r"你问|你说|帮我|帮你|我们|我来|来看|去帮|们来|的方案|这个方案|方案|"
-        r"最新|信息|目前|目|行情信息|最新信息|"
+        r"随便|一个|最新|目前|目|行情信息|最新信息|"
         r"。|，|、|！|？|~|·|;",
         "",
         normalized,
