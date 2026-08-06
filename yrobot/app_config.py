@@ -41,6 +41,7 @@ FIELD_TO_ENV = {
     "proactive_enabled": "YROBOT_PROACTIVE",
     "persona": "YROBOT_PERSONA",
     "profile": "YROBOT_PROFILE",
+    "conversation_backend": "YROBOT_CONVERSATION_BACKEND",
 }
 REQUIRED_FIELDS = frozenset(FIELD_TO_ENV)
 STARTED_AT = time.monotonic()
@@ -170,6 +171,10 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
     except FileNotFoundError as exc:
         raise ValueError(str(exc)) from exc
 
+    backend = document.get("conversation_backend")
+    if not isinstance(backend, str) or backend not in ("minicpmo", "xiaozhi"):
+        raise ValueError("conversation_backend must be 'minicpmo' or 'xiaozhi'")
+
     url = normalize_url(raw_url.strip(), mode="video" if video else "audio")
     settings_env = {
         "YROBOT_REALTIME_URL": url,
@@ -178,6 +183,7 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
         "YROBOT_PROACTIVE": "1" if proactive and video else "0",
         "YROBOT_PERSONA": persona,
         "YROBOT_PROFILE": profile,
+        "YROBOT_CONVERSATION_BACKEND": backend,
     }
     # Exercise the same cross-field validation used by the actual app.
     Settings.from_env(settings_env)
@@ -188,6 +194,7 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
         "proactive_enabled": proactive and video,
         "persona": persona,
         "profile": profile,
+        "conversation_backend": backend,
     }
 
 
@@ -223,6 +230,7 @@ class AppConfig:
             "YROBOT_PROACTIVE": "1" if document["proactive_enabled"] else "0",
             "YROBOT_PERSONA": str(document["persona"]),
             "YROBOT_PROFILE": str(document["profile"]),
+            "YROBOT_CONVERSATION_BACKEND": str(document["conversation_backend"]),
         }
 
     def effective_environment(self, environ: Mapping[str, str]) -> dict[str, str]:
@@ -252,6 +260,7 @@ class AppConfig:
             "profile": profile,
             "profiles": profiles,
             "profile_instructions": settings._load_profile_instructions()[:200],
+            "conversation_backend": effective.get("YROBOT_CONVERSATION_BACKEND", "minicpmo"),
             "environment_overrides": overrides,
             "config_path": str(self.path),
         }

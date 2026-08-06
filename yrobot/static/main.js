@@ -12,6 +12,7 @@ const profile = document.getElementById("profile");
 const profileDesc = document.getElementById("profile-desc");
 const privacyConfirm = document.getElementById("privacy-confirm");
 const saveButton = document.getElementById("save-button");
+const conversationBackend = document.getElementById("conversation-backend");
 const saveStatus = document.getElementById("save-status");
 const configPath = document.getElementById("config-path");
 const statusPanel = document.getElementById("status-panel");
@@ -84,6 +85,7 @@ function showSettings(settings) {
   videoEnabled.checked = settings.video_enabled;
   proactiveEnabled.checked = settings.proactive_enabled;
   persona.value = settings.persona;
+  conversationBackend.value = settings.conversation_backend || "minicpmo";
   configPath.textContent = `保存位置：${settings.config_path}`;
 
   // Profile dropdown.
@@ -669,6 +671,7 @@ form.addEventListener("submit", async (event) => {
     proactive_enabled: proactiveEnabled.checked,
     persona: persona.value.trim(),
     profile: profile.value || "default",
+    conversation_backend: conversationBackend.value || "minicpmo",
   };
 
   saveButton.disabled = true;

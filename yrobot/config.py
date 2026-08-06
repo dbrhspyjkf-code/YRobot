@@ -149,6 +149,7 @@ class Settings:
     # Profile-driven tool whitelist and instructions override.
     profile_name: str = "default"
     profile_dir: str = ""  # empty ⇒ use shipped profiles; override at runtime
+    conversation_backend: str = "minicpmo"  # "minicpmo" | "xiaozhi"
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -286,4 +287,5 @@ class Settings:
             memory_path=env.get("YROBOT_MEMORY_PATH") or "~/.config/yrobot/memory.json",
             profile_name=env.get("YROBOT_PROFILE", "default").strip() or "default",
             profile_dir=env.get("YROBOT_PROFILE_DIR", "").strip(),
+            conversation_backend=env.get("YROBOT_CONVERSATION_BACKEND", "minicpmo").strip() or "minicpmo",
         )
