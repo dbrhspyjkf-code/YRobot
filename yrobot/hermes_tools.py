@@ -631,7 +631,7 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="stock_detail",
-        phrases=("详细分析", "资金流向", "十大股东", "财务数据", "基本面分析", "怎么样", "怎样", "如何", "分析一下", "研究一下"),
+        phrases=("详细分析", "资金流向", "十大股东", "财务数据", "基本面分析", "怎么样", "怎样", "如何", "分析一下", "研究一下", "分析", "表现", "走势", "行情怎么样"),
         call=lambda client, text: client.call_tool(
             "get_stock_detail", f"查询{_extract_stock_name(text)}的详细分析"
         ),
