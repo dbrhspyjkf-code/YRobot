@@ -910,6 +910,11 @@ class Yrobot(ReachyMiniApp):
         mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
 
+        # Shared output stream — write TTS audio continuously
+        spk_stream = _sd.OutputStream(samplerate=16000, channels=2, dtype="float32",
+                                       device="reachymini_audio_sink", blocksize=0)
+        spk_stream.start()
+
         # Output stream for TTS playback
         speaker = Speaker(reachy_mini.media)
         speaker.start()
@@ -936,6 +941,16 @@ class Yrobot(ReachyMiniApp):
                             continue
                         if isinstance(raw, bytes):
                             tts_buf.append(raw)
+                            # Write to output stream immediately
+                            try:
+                                pcm = dec.decode(raw, 1440)
+                                pcm_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)/32768
+                                idx = np.arange(0, len(pcm_f32), 1.5).astype(int)
+                                pcm_16k = pcm_f32[idx[:min(len(idx), len(pcm_f32))]]
+                                stereo = np.column_stack([pcm_16k, pcm_16k])
+                                spk_stream.write(stereo)
+                            except Exception:
+                                pass
                         else:
                             d = _j.loads(raw)
                             t = d.get("type","")
@@ -950,24 +965,6 @@ class Yrobot(ReachyMiniApp):
                                 logger.info("xz tts text: %s", d.get("text","")[:80])
                             elif t == "tts" and d.get("state")=="stop":
                                 logger.info("xz tts stop (%d pkts)", len(tts_buf))
-                                all_pcm = []
-                                for pkt in tts_buf:
-                                    try:
-                                        pcm = dec.decode(pkt, 1440)
-                                        all_pcm.append(np.frombuffer(pcm, dtype=np.int16).astype(np.float32)/32768)
-                                    except Exception:
-                                        pass
-                                if all_pcm:
-                                    merged = np.concatenate(all_pcm)
-                                    # Downsample 24000→16000 (sink only supports 16k)
-                                    idx = np.arange(0, len(merged), 1.5).astype(int)
-                                    merged_16k = merged[idx[: min(len(idx), len(merged))]]
-                                    # Convert to stereo (sink has 2 channels)
-                                    stereo = np.column_stack([merged_16k, merged_16k])
-                                    try:
-                                        _sd.play(stereo, 16000, blocking=False)
-                                    except Exception:
-                                        pass
                                 tts_buf.clear()
 
                 rt = _a.ensure_future(recv())
@@ -975,7 +972,7 @@ class Yrobot(ReachyMiniApp):
                     # Manual mode with local silence detection.
                     # Only send audio to cloud when there's actual sound.
                     import numpy as _np
-                    SILENCE_RMS = 500  # int16 silence threshold
+                    SILENCE_RMS = 5000  # int16 silence threshold
                     while not stop_event.is_set():
                         # Collect 1 second of audio, check if there's sound
                         frames = []
@@ -1024,6 +1021,8 @@ class Yrobot(ReachyMiniApp):
         except Exception as e:
             logger.info("xiaozhi ended: %s", e)
         finally:
+            spk_stream.stop()
+            spk_stream.close()
             mic_stream.stop()
             mic_stream.close()
             speaker.close()
