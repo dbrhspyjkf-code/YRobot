@@ -743,6 +743,7 @@ def build_status(
             "tls_verify": settings.tls_verify,
             "video_enabled": settings.send_video,
             "proactive_enabled": settings.proactive_enabled,
+            "backend": settings.conversation_backend,
         },
         "audio": {
             "volume_percent": volume_percent,

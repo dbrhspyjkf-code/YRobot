@@ -870,15 +870,58 @@ class Yrobot(ReachyMiniApp):
             self._media_holder.media = reachy_mini.media
             self._wake_up_if_needed(reachy_mini)
             environment = self._config.effective_environment(os.environ)
-            conversation = Conversation(
-                Settings.from_env(environment), reachy_mini, stop_event
-            )
+            settings = Settings.from_env(environment)
+            if settings.conversation_backend == "xiaozhi":
+                self._run_xiaozhi(settings, reachy_mini, stop_event)
+            else:
+                conversation = Conversation(settings, reachy_mini, stop_event)
+                conversation.run()
         except Exception as exc:  # noqa: BLE001 — convert any startup failure to safe mode
             logger.exception("YRobot startup failed: %s", exc)
             ROBOT_STATE.set("safe_mode")
             self._enter_safe_mode(exc, reachy_mini, stop_event)
             return
-        conversation.run()
+
+    def _run_xiaozhi(
+        self,
+        settings: Settings,
+        reachy_mini: ReachyMini,
+        stop_event: threading.Event,
+    ) -> None:
+        """Run the conversation loop through Xiaozhi cloud."""
+        from yrobot.xiaozhi import XiaozhiConversation, CAPTURE_SAMPLES, FRAME_MS
+
+        # We still need the Microphone and Speaker from Conversation's
+        # pipeline, but in a stripped-down form. Create a minimal audio bridge.
+        mic = Microphone(reachy_mini.media)
+        speaker = Speaker(reachy_mini.media)
+        detector = VoiceDetector(settings.vad_aggressiveness)
+        agc = UplinkGain()
+
+        def read_mic():
+            pcm = mic.read(FRAME_MS)
+            if pcm is None:
+                return np.zeros(CAPTURE_SAMPLES, dtype=np.float32)
+            return pcm
+
+        epoch = 0
+
+        def play_speaker(_epoch: int, pcm: np.ndarray) -> None:
+            speaker.play(0, pcm)
+
+        apply_audio_startup_config(reachy_mini)
+        mic.start()
+        speaker.start()
+        try:
+            conv = XiaozhiConversation(
+                stop_event,
+                read_mic=read_mic,
+                play_speaker=play_speaker,
+            )
+            conv.run()
+        finally:
+            mic.stop()
+            speaker.stop()
 
     def _enter_safe_mode(
         self,
