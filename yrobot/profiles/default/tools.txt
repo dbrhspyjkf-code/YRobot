@@ -14,8 +14,3 @@ web_search
 stock_detail
 margin_data
 ipo_info
-add_note
-add_reminder
-send_email
-taobao_orders
-chat_history

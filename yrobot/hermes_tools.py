@@ -501,46 +501,6 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         discover_name="get_ipo_info",
         discover_source="ios_api",
     ),
-    ToolDef(
-        name="add_note",
-        phrases=("记一下", "记下来", "帮我记", "备忘录"),
-        call=lambda client, text: client.call_tool("add_note", text),
-        format=_format_generic_tool,
-        discover_name="add_note",
-        discover_source="ios_api",
-    ),
-    ToolDef(
-        name="add_reminder",
-        phrases=("提醒我", "提醒一下", "待办", "稍后提醒"),
-        call=lambda client, text: client.call_tool("add_reminder", text),
-        format=_format_generic_tool,
-        discover_name="add_reminder",
-        discover_source="ios_api",
-    ),
-    ToolDef(
-        name="send_email",
-        phrases=("发邮件", "发一封邮件", "发送邮件", "写邮件"),
-        call=lambda client, text: client.call_tool("send_email", text),
-        format=_format_generic_tool,
-        discover_name="send_email",
-        discover_source="ios_api",
-    ),
-    ToolDef(
-        name="taobao_orders",
-        phrases=("淘宝订单", "淘宝物流", "快递到哪", "订单查询", "我的快递"),
-        call=lambda client, text: client.call_tool("query_taobao_orders", text),
-        format=_format_generic_tool,
-        discover_name="query_taobao_orders",
-        discover_source="ios_api",
-    ),
-    ToolDef(
-        name="chat_history",
-        phrases=("对话历史", "聊天记录", "查一下记录"),
-        call=lambda client, text: client.call_tool("query_chat_history", text),
-        format=_format_generic_tool,
-        discover_name="query_chat_history",
-        discover_source="ios_api",
-    ),
 )
 
 
