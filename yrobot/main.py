@@ -899,10 +899,10 @@ class Yrobot(ReachyMiniApp):
         agc = UplinkGain()
 
         def read_mic():
-            pcm = mic.read(FRAME_MS)
-            if pcm is None:
+            frames = mic.read_frames()
+            if not frames:
                 return np.zeros(CAPTURE_SAMPLES, dtype=np.float32)
-            return pcm
+            return frames[0]
 
         epoch = 0
 
@@ -910,8 +910,6 @@ class Yrobot(ReachyMiniApp):
             speaker.play(0, pcm)
 
         apply_audio_startup_config(reachy_mini)
-        mic.start()
-        speaker.start()
         try:
             conv = XiaozhiConversation(
                 stop_event,
@@ -920,8 +918,7 @@ class Yrobot(ReachyMiniApp):
             )
             conv.run()
         finally:
-            mic.stop()
-            speaker.stop()
+            pass
 
     def _enter_safe_mode(
         self,
