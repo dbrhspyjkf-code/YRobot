@@ -346,6 +346,23 @@ def _match_known_stock_name(text: str) -> str | None:
     return best
 
 
+def _margin_prompt(text: str) -> str:
+    """Build a hermes-friendly margin query.
+
+    hermes get_margin_data extracts a 6-digit code via regex; it does NOT
+    understand Chinese-digit readings (六八八零一八). Normalise any Chinese
+    digit code to Arabic and prefer the code so the search query is exact.
+    """
+    import re as _re
+    code = _re.search(r"(?<!\d)\d{6}(?!\d)", text)
+    if code:
+        return f"查询{code.group(0)}融资融券"
+    chinese_code = _chinese_digit_code(text)
+    if chinese_code is not None:
+        return f"查询{chinese_code}融资融券"
+    return text
+
+
 def _extract_stock_name(normalized: str) -> str:
     """Extract a stock name/code from the user's request text.
 
@@ -580,9 +597,14 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="margin_data",
-        phrases=("两融数据", "融资融券", "融资余额"),
-        call=lambda client, text: client.call_tool("get_margin_data", text),
+        phrases=("两融数据", "融资融券", "融资余额", "融券余额", "融资", "融券"),
+        call=lambda client, text: client.call_tool(
+            "get_margin_data", _margin_prompt(text)
+        ),
         format=_format_generic_tool,
+        extra_matches=lambda text: _has_stock_code(text) and any(
+            kw in text for kw in ("融资", "融券", "两融")
+        ),
         discover_name="get_margin_data",
         discover_source="ios_api",
     ),
