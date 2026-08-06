@@ -106,12 +106,31 @@ Tests: `tests/test_profile.py` (9 cases).
 
 ### Hermes dry-run probe (P2)
 
-`yrobot.hermes_tools.validate_tools(client, enabled_tools, timeout)` sends a
-safe sentinel request to each enabled tool's endpoint and verifies the
-response is a JSON object containing one of the common Hermes keys
-(`ok`, `count`, `items`, `name`, `text`, `balance`). Called from
-`Yrobot.__init__` via `_probe_hermes_tools`; per-tool result logged at INFO
-or WARNING. Failures do NOT block startup — they're for visibility only.
+`yrobot.hermes_tools.validate_tools(client, enabled_tools, timeout)` validates
+Hermes tools at startup. It prefers the real `/api/discover` endpoint and falls
+back to dry-run probes:
+
+1. Fetch `GET /api/discover` (server's self-reported tool list).
+2. For each `ToolDef` with a `discover_name`, cross-check it appears in the
+   discover index — missing entry ⇒ the client expects an endpoint the server
+   does not register (typo / version drift) ⇒ `FAIL` with a clear message.
+3. Tools without `discover_name` (or when discover is unavailable) fall back
+   to dry-run probes against hardcoded sentinel URLs.
+
+Called from `Yrobot.__init__` via `_probe_hermes_tools`; per-tool result logged
+at INFO or WARNING. Failures do NOT block startup — they're for visibility only.
+
+`/api/discover` is served by **hermes-mcp-xiaozhi** on `192.168.1.200:8766`
+(`hermes_mcp_server/main.py`, `handle_discover`). It lists 7 tools:
+`weather`, `rate`, `stocks_portfolio`, `stock_price`, `stock_advice`,
+`deepseek_balance`, `health`. **When adding a new tool to hermes-mcp, remember
+to add it to the discover payload too** — YRobot uses it to cross-validate.
+
+The hermes-mcp local checkout at `/Users/leenzhou/hermes-mcp-xiaozhi` is NOT a
+git repo on the 200 machine (deployed via copy). The deployed copy is newer
+and has `handle_stocks_price` / `handle_stocks_advice` that local once lacked;
+sync from deployed → local before editing (`scp root@192.168.1.200:...`, SSH
+password `orangepi`).
 
 ### Model behavior contracts (system prompt)
 
