@@ -972,25 +972,20 @@ class Yrobot(ReachyMiniApp):
 
                 rt = _a.ensure_future(recv())
                 try:
+                    # Auto mode: send audio continuously, cloud handles VAD
+                    await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"auto"}))
+                    sent_total = 0
                     while not stop_event.is_set():
-                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
-                        sent = 0
-                        deadline = time.monotonic() + 5.0
-                        while time.monotonic() < deadline and not stop_event.is_set():
-                            buf, _ = mic_stream.read(960)
-                            pcm16 = buf.tobytes()
-                            try:
-                                await ws.send(enc.encode(pcm16, 960))
-                                sent += 1
-                            except Exception:
-                                pass
-                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
-                        if sent:
-                            logger.info("xz sent %d opus frames", sent)
-                        for _ in range(30):
-                            if stop_event.is_set():
-                                break
-                            await _a.sleep(0.2)
+                        buf, _ = mic_stream.read(960)
+                        pcm16 = buf.tobytes()
+                        try:
+                            await ws.send(enc.encode(pcm16, 960))
+                            sent_total += 1
+                            if sent_total % 500 == 0:
+                                logger.info("xz sent %d opus frames (auto)", sent_total)
+                        except Exception:
+                            pass
+                        await _a.sleep(0.01)
                 finally:
                     rt.cancel()
 
