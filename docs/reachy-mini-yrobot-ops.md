@@ -150,6 +150,83 @@ expects, e.g.:
 - Volume slider / mute / mic level meter.
 - Log panel with auto-scroll, pause, level filter, jump-to-bottom.
 - Camera preview toggle (default off — saves resources).
+- Profile selector in the settings form (03B / PROFILE panel).
+
+### Stock name extraction (2026-08-06 afternoon)
+
+**Root fix: match known stock names first.** Model paraphrases are infinite
+("你问比亚迪怎么样", "查询比亚迪的最新行情信息。目前"), so enumerating stop
+words never keeps up. `_extract_stock_name` now:
+
+1. 6-digit code (Arabic or Chinese-digit `六零零六零零` → `600600`).
+2. Longest name found in `KNOWN_STOCK_NAMES` — the user's 11-stock portfolio
+   + ~50 famous A-shares (hermes `_resolve_secid.known` + large caps).
+3. Stop-word strip + longest-Han-run fallback.
+
+To add a stock the user may ask about, append one name to
+`KNOWN_STOCK_NAMES` in `yrobot/hermes_tools.py` — no new stop words needed.
+
+### Generic Hermes tools via the 8900 ios-api bridge
+
+hermes-mcp exposes 24 MCP tools; YRobot previously used only the 7 HTTP REST
+endpoints on **8766**. The remaining tools are dispatched by name through the
+**8900 ios-api bridge** (`POST /api/tools/call {name, arguments:{prompt}}`):
+
+- hermes-mcp `_ios_api.py` `_dispatch` was backfilled to cover all 24 tools;
+  `GET /api/tools` lists them (used for discovery/validation).
+- YRobot `HermesToolsClient.call_tool(name, prompt)` POSTs to
+  `ios_api_url` (default `http://192.168.1.200:8900`, env `YROBOT_IOS_API_URL`).
+- `ToolDef.discover_source` distinguishes `hermes` (8766 discover) from
+  `ios_api` (8900 `/api/tools`).
+- Reachy enables 12 tools: weather, stock_price, stock_advice,
+  stocks_advice_all, stocks, rate, deepseek_balance, cctv_news, web_search,
+  stock_detail, margin_data, ipo_info.
+- Deliberately excluded: add_note, add_reminder, send_email, taobao_orders,
+  chat_history (user decision).
+
+### Routing rules that matter
+
+- `stock_advice` fires only on explicit advice intent (建议/操盘/点评/能买).
+  Vague "怎么样/如何/分析" routes to `stock_detail` (covers non-portfolio
+  stocks like 比亚迪).
+- `margin_data` requires a stock code/name in the caption — a bare
+  "融资融券" echo does not fire (hermes would return encyclopedia text).
+- `stock_detail` / `stock_advice` / `margin_data` pass the *extracted* stock
+  name/code to hermes, not the raw caption.
+
+### Rate formatting (2026-08-06 afternoon)
+
+`_format_rate` filters by the currencies the user asked about:
+
+- 美元兑人民币 → only CNY
+- 美元兑日元 → only JPY
+- 汇率 (no currency named) → all five rates
+
+`ToolDef.format` now receives the normalized user text as a second argument;
+all format functions accept an optional `_text`.
+
+### Margin data precise query (2026-08-06 afternoon, hermes side)
+
+hermes `get_margin_data` previously used MX news search → broad sector lists
+("科创板股融资融券余额每日变动") burying the target stock. It now queries
+EastMoney datacenter `RPTA_WEB_RZRQ_GGMX` first when a 6-digit code is
+present:
+
+> 乐鑫科技（688018）2026-08-05融资融券，融资余额7.28亿，融券余额588.42万，融资融券合计7.34亿。
+
+Falls back to MX search on failure.
+
+### hermes-mcp sync reminder
+
+- Local dev repo: `/Users/leenzhou/hermes-mcp-xiaozhi` (git).
+- Deployed copy: `/home/orangepi/hermes-mcp-xiaozhi` on 192.168.1.200 (NOT a
+  git repo — deployed by `scp`).
+- The deployed copy was once NEWER than local (had `handle_stocks_price` /
+  `handle_stocks_advice`); sync deployed → local before editing, then scp back.
+- SSH to 200: `sshpass -p orangepi ssh root@192.168.1.200`.
+- Restart: `systemctl restart hermes-mcp-xiaozhi.service`.
+- After editing hermes, re-verify both ports: `8766 /api/discover` and
+  `8900 /api/tools`.
 
 ## Architecture
 
@@ -437,7 +514,7 @@ For code changes, run focused checks first:
     yrobot/profile.py yrobot/config.py
 .venv/bin/python -m pytest tests/test_main.py::test_home_assistant_action_without_response_suppresses_model_loop -q
 .venv/bin/python -m pytest tests/test_main.py::test_startup_wake_up_enables_motors_before_movement -q
-.venv/bin/python -m pytest tests/test_hermes_tools.py -k "extract_stock_name or stock_code or bare_stock or portfolio or stock_advice_also or validate_tools" -q
+.venv/bin/python -m pytest tests/test_hermes_tools.py -k "extract_stock_name or stock_code or bare_stock or portfolio or stock_advice_also or validate_tools or model_paraphrase" -q
 .venv/bin/python -m pytest tests/test_profile.py -q
 ```
 
