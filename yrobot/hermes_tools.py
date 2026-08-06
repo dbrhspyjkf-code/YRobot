@@ -374,6 +374,24 @@ def _match_known_stock_name(text: str) -> str | None:
     return best
 
 
+def _has_credible_stock_ref(text: str) -> bool:
+    """True iff the text mentions a *specific* stock: a 6-digit code (Arabic
+    or Chinese-digit) or a name from KNOWN_STOCK_NAMES.
+
+    A bare phrase like "查一下股票行情" / "这只股票的价格" has no stock
+    reference — the model is echoing intent without naming a target. In that
+    case we must NOT fire stock tools (the hermes fallback would guess a
+    name like "收到" and return a bogus quote).
+    """
+    if _has_stock_code(text):
+        return True
+    if _chinese_digit_code(text) is not None:
+        return True
+    if _match_known_stock_name(text) is not None:
+        return True
+    return False
+
+
 def _margin_prompt(text: str) -> str:
     """Build a hermes-friendly margin query.
 
@@ -535,7 +553,7 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         phrases=("多少钱", "股价", "行情", "价格", "价格多少", "股票价格", "多少钱一股", "现在多少"),
         call=lambda client, text: client.get_stock_price(_extract_stock_name(text) or ""),
         format=_format_stock_price,
-        skip_when=lambda text: not _extract_stock_name(text),
+        skip_when=lambda text: not _has_credible_stock_ref(text),
         extra_matches=lambda text: _has_stock_code(text) and any(
             kw in text for kw in ("价格", "股价", "行情", "多少")
         ),
@@ -618,7 +636,7 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
             "get_stock_detail", f"查询{_extract_stock_name(text)}的详细分析"
         ),
         format=_format_generic_tool,
-        skip_when=lambda text: not _extract_stock_name(text),
+        skip_when=lambda text: not _has_credible_stock_ref(text),
         cooldown_s=5.0,
         discover_name="get_stock_detail",
         discover_source="ios_api",
