@@ -907,6 +907,10 @@ class Yrobot(ReachyMiniApp):
         _sd.default.samplerate = 16000
         _sd.default.channels = 1
         _sd.default.dtype = "int16"
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
+        choreo = Choreographer(reachy_mini)
+        choreo.start()
+
         mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
 
@@ -956,15 +960,18 @@ class Yrobot(ReachyMiniApp):
                             t = d.get("type","")
                             if t == "stt":
                                 logger.info("xz stt: %s", d.get("text",""))
+                                choreo.set_mode(LISTEN)
                             elif t == "llm":
                                 logger.info("xz llm: emoji=%s", d.get("emotion","?"))
                             elif t == "tts" and d.get("state")=="start":
                                 logger.info("xz tts start")
+                                choreo.set_mode(SPEAK)
                                 tts_buf.clear()
                             elif t == "tts" and d.get("state")=="sentence_start":
                                 logger.info("xz tts text: %s", d.get("text","")[:80])
                             elif t == "tts" and d.get("state")=="stop":
                                 logger.info("xz tts stop (%d pkts)", len(tts_buf))
+                                choreo.set_mode(IDLE)
                                 tts_buf.clear()
 
                 rt = _a.ensure_future(recv())
@@ -1021,6 +1028,7 @@ class Yrobot(ReachyMiniApp):
         except Exception as e:
             logger.info("xiaozhi ended: %s", e)
         finally:
+            choreo.close()
             spk_stream.stop()
             spk_stream.close()
             mic_stream.stop()
