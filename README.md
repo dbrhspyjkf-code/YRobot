@@ -130,6 +130,10 @@ reachy-mini-app-assistant check .
 The automated checks do not replace the Wireless hardware acceptance gates in
 [`plan.md`](plan.md).
 
+Operational notes for this deployment, including Home Assistant, Hermes, VAD,
+Dashboard controls, startup motor recovery, and troubleshooting commands, are in
+[`docs/reachy-mini-yrobot-ops.md`](docs/reachy-mini-yrobot-ops.md).
+
 ## Layout
 
 ```
