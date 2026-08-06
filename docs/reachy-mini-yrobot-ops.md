@@ -265,6 +265,31 @@ Falls back to MX search on failure.
 - After editing hermes, re-verify both ports: `8766 /api/discover` and
   `8900 /api/tools`.
 
+### Xiaozhi 云对话接入（2026-08-06 下午，WIP）
+
+**目的**：让 Reachy 用小智云的 ASR/LLM/TTS 获得更好的对话质量。
+
+**激活流程**（scripts/xiaozhi_activate.py）：
+
+1. POST https://api.tenclass.net/xiaozhi/ota/ 带 Device-Id (MAC 地址) +
+   ESP32 风格 system-info JSON body。
+2. 服务器返回 6 位激活码 → 用户去 xiaozhi.me 输入绑定。
+3. 绑定后轮询 OTA 直到拿到真实 wsURL (wss://api.tenclass.net/xiaozhi/v1/)。
+
+**WebSocket 连接**：
+- URL: `wss://api.tenclass.net/xiaozhi/v1/`
+- 认证头: `Authorization: Bearer test-token`, `Device-Id: {wlan0 MAC}`,
+  `Protocol-Version: 1`
+- 协议: xiaozhi hello/listen/stt/llm/tts, 录制 16kHz→Opus, 播放 24kHz Opus
+
+**脚本**: scripts/xiaozhi_test.py — 独立测试，先停 YRobot 再跑。
+
+**当前状态**: WebSocket 连接 ✅, 协议交换 ✅, STT 识别 ✅, LLM 回复 ✅,
+TTS Opus 下行接收 ✅, TTS 播放 ⚠️ (Opus decode 需微调)。
+
+小智云不自带视觉；视觉通过 MCP 工具 analyze_image 调外部 VL 模型
+(Qwen-VL/GPT-4o/MiniCPM-o)。待用户选定 VL 模型后在 hermes-mcp 加该工具。
+
 ## Architecture
 
 YRobot runs as a Reachy Mini app and talks to three external systems:
