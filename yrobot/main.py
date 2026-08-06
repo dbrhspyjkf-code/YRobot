@@ -896,77 +896,80 @@ class Yrobot(ReachyMiniApp):
         reachy_mini: ReachyMini,
         stop_event: threading.Event,
     ) -> None:
-        """Run conversation through Xiaozhi cloud with Conversation mic/speaker."""
+        """Xiaozhi conversation via sounddevice + Reachy Speaker."""
         import asyncio as _a
         import json as _j
-        mic = Microphone(reachy_mini.media)
+        import sounddevice as _sd
+        import websockets as _ws
+
         speaker = Speaker(reachy_mini.media)
         apply_audio_startup_config(reachy_mini)
         speaker.start()
 
-        enc = opuslib.Encoder(16000, 1, "voip")
-        dec = opuslib.Decoder(24000, 1)
-
-        XZ_URL = "wss://api.tenclass.net/xiaozhi/v1/"
-        XZ_HEADERS = {
-            "Authorization": "Bearer test-token",
-            "Device-Id": XIAOZHI_DEVICE_ID,
-            "Protocol-Version": "1",
-        }
-
-        async def recv_loop(ws, buf):
-            while not stop_event.is_set():
-                try:
-                    raw = await _a.wait_for(ws.recv(), timeout=0.5)
-                except _a.TimeoutError:
-                    continue
-                if isinstance(raw, bytes):
-                    buf.append(raw)
-                else:
-                    data = _j.loads(raw)
-                    t = data.get("type", "")
-                    if t == "stt":
-                        logger.info("xz stt: %s", data.get("text", ""))
-                    elif t == "llm":
-                        logger.info("xz llm: %s", data.get("text", "")[:60])
-                    elif t == "tts" and data.get("state") == "start":
-                        buf.clear()
-                    elif t == "tts" and data.get("state") == "stop":
-                        for pkt in buf:
-                            try:
-                                pcm = dec.decode(pkt, 1440)
-                                spk_pcm = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
-                                speaker.play(0, spk_pcm)
-                            except Exception:
-                                pass
-                        buf.clear()
+        _sd.default.samplerate = 16000
+        _sd.default.channels = 1
+        _sd.default.dtype = "int16"
+        _sd.default.device = "reachymini_audio_src"
+        mic_stream = _sd.InputStream()
+        mic_stream.start()
 
         async def run():
-            import websockets as _ws
-            async with _ws.connect(XZ_URL, additional_headers=XZ_HEADERS, open_timeout=12) as ws:
+            enc = opuslib.Encoder(16000, 1, "voip")
+            dec = opuslib.Decoder(24000, 1)
+            hdrs = {"Authorization": "Bearer test-token", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
+            url = "wss://api.tenclass.net/xiaozhi/v1/"
+            async with _ws.connect(url, additional_headers=hdrs, open_timeout=12) as ws:
                 await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
                     "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
                 data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
-                sid = data.get("session_id", "")
+                sid = data.get("session_id","")
                 logger.info("xiaozhi ready sid=%s", sid[:12])
-
                 tts_buf = []
-                rt = _a.ensure_future(recv_loop(ws, tts_buf))
+
+                async def recv():
+                    nonlocal tts_buf
+                    while not stop_event.is_set():
+                        try:
+                            raw = await _a.wait_for(ws.recv(), timeout=0.5)
+                        except _a.TimeoutError:
+                            continue
+                        if isinstance(raw, bytes):
+                            tts_buf.append(raw)
+                        else:
+                            d = _j.loads(raw)
+                            t = d.get("type","")
+                            if t == "stt":
+                                logger.info("xz stt: %s", d.get("text",""))
+                            elif t == "llm":
+                                logger.info("xz llm: %s", d.get("text","")[:60])
+                            elif t == "tts" and d.get("state")=="start":
+                                tts_buf.clear()
+                            elif t == "tts" and d.get("state")=="stop":
+                                for pkt in tts_buf:
+                                    try:
+                                        pcm = dec.decode(pkt, 1440)
+                                        speaker.play(0, np.frombuffer(pcm, dtype=np.int16).astype(np.float32)/32768)
+                                    except Exception:
+                                        pass
+                                tts_buf.clear()
+
+                rt = _a.ensure_future(recv())
                 try:
                     while not stop_event.is_set():
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
+                        sent = 0
                         deadline = time.monotonic() + 5.0
                         while time.monotonic() < deadline and not stop_event.is_set():
-                            frames = mic.read_frames()
-                            for f in frames:
-                                if len(f) < 320:
-                                    continue
-                                pcm16 = (np.clip(f, -1, 1) * 32767).astype("<i2").tobytes()
-                                try:
-                                    await ws.send(enc.encode(pcm16, len(pcm16)//2))
-                                except Exception:
-                                    pass
+                            buf, _ = mic_stream.read(960)
+                            pcm16 = buf.tobytes()
+                            try:
+                                await ws.send(enc.encode(pcm16, 960))
+                                sent += 1
+                            except Exception:
+                                pass
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
+                        if sent:
+                            logger.info("xz sent %d opus frames", sent)
                         for _ in range(30):
                             if stop_event.is_set():
                                 break
@@ -977,6 +980,8 @@ class Yrobot(ReachyMiniApp):
         try:
             _a.run(run())
         finally:
+            mic_stream.stop()
+            mic_stream.close()
             speaker.close()
             speaker.join(timeout=2)
 
