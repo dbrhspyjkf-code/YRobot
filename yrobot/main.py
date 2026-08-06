@@ -902,16 +902,17 @@ class Yrobot(ReachyMiniApp):
         import sounddevice as _sd
         import websockets as _ws
 
-        speaker = Speaker(reachy_mini.media)
         apply_audio_startup_config(reachy_mini)
-        speaker.start()
 
         _sd.default.samplerate = 16000
         _sd.default.channels = 1
         _sd.default.dtype = "int16"
-        _sd.default.device = "reachymini_audio_src"
-        mic_stream = _sd.InputStream()
+        mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
+
+        # Output stream for TTS playback
+        speaker = Speaker(reachy_mini.media)
+        speaker.start()
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
@@ -949,10 +950,22 @@ class Yrobot(ReachyMiniApp):
                                 logger.info("xz tts text: %s", d.get("text","")[:80])
                             elif t == "tts" and d.get("state")=="stop":
                                 logger.info("xz tts stop (%d pkts)", len(tts_buf))
+                                all_pcm = []
                                 for pkt in tts_buf:
                                     try:
                                         pcm = dec.decode(pkt, 1440)
-                                        speaker.play(0, np.frombuffer(pcm, dtype=np.int16).astype(np.float32)/32768)
+                                        all_pcm.append(np.frombuffer(pcm, dtype=np.int16).astype(np.float32)/32768)
+                                    except Exception:
+                                        pass
+                                if all_pcm:
+                                    merged = np.concatenate(all_pcm)
+                                    # Downsample 24000→16000 (sink only supports 16k)
+                                    idx = np.arange(0, len(merged), 1.5).astype(int)
+                                    merged_16k = merged[idx[: min(len(idx), len(merged))]]
+                                    # Convert to stereo (sink has 2 channels)
+                                    stereo = np.column_stack([merged_16k, merged_16k])
+                                    try:
+                                        _sd.play(stereo, 16000, blocking=False)
                                     except Exception:
                                         pass
                                 tts_buf.clear()
