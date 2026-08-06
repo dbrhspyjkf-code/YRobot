@@ -243,6 +243,12 @@ def _extract_stock_name(normalized: str) -> str:
         "",
         normalized,
     )
+    # Strip greetings / family address words that the model often prepends.
+    cleaned = _re.sub(
+        r"嘿|喂|哎呀|哎|诶|好的呀|嗯|哈哈|爸爸|妈妈|爷爷|奶奶|朋友|哥们|你好|您好|好|呀",
+        "",
+        cleaned,
+    )
     # Find the longest run of Chinese characters (Han script) of length 2-8.
     runs = _re.findall(r"[\u4e00-\u9fff]{2,8}", cleaned)
     # Remove trailing 股票 noun from each run.
