@@ -138,7 +138,7 @@ def _extract_city(normalized: str) -> str:
     return WEATHER_DEFAULT_CITY
 
 
-def _format_weather(data: dict[str, Any]) -> str:
+def _format_weather(data: dict[str, Any], _text: str | None = None) -> str:
     if not data.get("ok"):
         error = data.get("error") or "天气服务暂不可用"
         return f"天气查询失败：{error}"
@@ -158,15 +158,43 @@ def _format_weather(data: dict[str, Any]) -> str:
     return "，".join(bits) + "。"
 
 
-def _format_rate(data: dict[str, Any]) -> str:
+RATE_CURRENCY_ALIASES: dict[str, str] = {
+    "人民币": "CNY", "cny": "CNY", "人民币元": "CNY", "RMB": "CNY", "rmb": "CNY",
+    "欧元": "EUR", "eur": "EUR",
+    "日元": "JPY", "日圆": "JPY", "jpy": "JPY",
+    "港币": "HKD", "港元": "HKD", "hkd": "HKD",
+    "英镑": "GBP", "gbp": "GBP",
+    "美元": "USD", "美金": "USD", "usd": "USD", "美刀": "USD",
+}
+
+
+def _rate_requested_codes(text: str) -> set[str] | None:
+    """Return the currency codes the user asked about, or None for all.
+
+    None means 'report everything' — used when no specific currency is
+    mentioned (e.g. just '汇率'). A set means filter to those codes.
+    """
+    if not text:
+        return None
+    codes: set[str] = set()
+    for alias, code in RATE_CURRENCY_ALIASES.items():
+        if alias in text:
+            codes.add(code)
+    return codes or None
+
+
+def _format_rate(data: dict[str, Any], _text: str | None = None) -> str:
     if not data.get("ok"):
         error = data.get("error") or "汇率服务暂不可用"
         return f"汇率查询失败：{error}"
     rates = data.get("rates") or {}
     base = data.get("base") or "USD"
+    requested = _rate_requested_codes(_text or "")
     pieces: list[str] = []
     for code in ("CNY", "EUR", "JPY", "HKD", "GBP"):
         if code not in rates:
+            continue
+        if requested is not None and code not in requested and code != base:
             continue
         try:
             v = float(rates[code])
@@ -184,7 +212,7 @@ def _format_rate(data: dict[str, Any]) -> str:
     return f"汇率参考：{'；'.join(pieces)}。" if pieces else "汇率服务暂不可用。"
 
 
-def _format_stocks(data: dict[str, Any]) -> str:
+def _format_stocks(data: dict[str, Any], _text: str | None = None) -> str:
     items = data.get("items") or []
     if not items:
         return "股票服务暂时没有返回任何持仓。"
@@ -229,7 +257,7 @@ def _format_stocks(data: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _format_stock_price(data: dict[str, Any]) -> str:
+def _format_stock_price(data: dict[str, Any], _text: str | None = None) -> str:
     if not data.get("ok"):
         error = data.get("error") or "股票行情查询失败"
         return f"行情查询失败：{error}"
@@ -237,7 +265,7 @@ def _format_stock_price(data: dict[str, Any]) -> str:
     return str(text).strip() or "暂无行情数据。"
 
 
-def _format_stock_advice(data: dict[str, Any]) -> str:
+def _format_stock_advice(data: dict[str, Any], _text: str | None = None) -> str:
     if not data.get("ok"):
         error = data.get("error") or "操盘建议查询失败"
         return f"操盘建议查询失败：{error}"
@@ -441,7 +469,7 @@ def _extract_stock_name(normalized: str) -> str:
     return candidates[0]
 
 
-def _format_deepseek(data: dict[str, Any]) -> str:
+def _format_deepseek(data: dict[str, Any], _text: str | None = None) -> str:
     if not data.get("ok"):
         error = data.get("error") or "DeepSeek 账户查询失败"
         return f"DeepSeek 余额查询失败：{error}"
@@ -450,7 +478,7 @@ def _format_deepseek(data: dict[str, Any]) -> str:
     return f"DeepSeek 余额：{balance} {currency}。"
 
 
-def _format_generic_tool(data: dict[str, Any]) -> str:
+def _format_generic_tool(data: dict[str, Any], _text: str | None = None) -> str:
     """Format the generic {ok, result} response from /api/tools/call."""
     if not data.get("ok"):
         error = data.get("error") or "工具调用失败"
@@ -473,7 +501,7 @@ class ToolDef:
     name: str
     phrases: tuple[str, ...]
     call: Callable[[HermesToolsClient, str], dict[str, Any]]
-    format: Callable[[dict[str, Any]], str]
+    format: Callable[[dict[str, Any], str | None], str]
     mute_model_audio: bool = True
     skip_when: Callable[[str], bool] | None = None
     cooldown_s: float = 30.0
@@ -720,7 +748,7 @@ class HermesToolsController:
             self._last_fired_at[tool.name] = now
             try:
                 raw = tool.call(self._client, normalized)
-                message = tool.format(raw)
+                message = tool.format(raw, normalized)
             except Exception as exc:  # noqa: BLE001 — external tools must not stop conversation
                 logger.warning("Hermes tool %s failed: %s", tool.name, exc)
                 return HermesToolResult(tool.name, False, str(exc), tool.mute_model_audio)
