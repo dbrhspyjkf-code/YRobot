@@ -19,6 +19,119 @@ Reachy Mini YRobot deployment used in this project.
 Do not print or commit secrets. The Home Assistant token is loaded from
 `/home/pollen/.config/yrobot/ha.env`.
 
+## Recent Changes (2026-08-05 / 2026-08-06)
+
+### Stock query flow (Hermes)
+
+YRobot routes stock-related queries to Hermes tools via regex matching on the
+model's streamed text. The pipeline is:
+
+1. `main.py: _on_delta` accumulates a `caption` from text fragments.
+2. `hermes_tools.py: HermesToolsController.handle_text` matches each tool by:
+   - `ToolDef.phrases` — substring check on the caption.
+   - `ToolDef.extra_matches` — code-aware: 6-digit stock code + price keyword
+     triggers `stock_price`; code + advice keyword triggers `stock_advice`.
+3. `ToolDef.skip_when` blocks the tool when intent is wrong (e.g. portfolio
+   intent missing for `stocks`).
+4. `_extract_stock_name(normalized)` extracts the stock code or company name.
+   Strategy: 6-digit code → return it directly. Otherwise strip a fixed
+   stop-word vocabulary, find all `[\u4e00-\u9fff]{2,8}` runs, drop trailing
+   `股票` noun and leading `买` verb, reject portfolio placeholders, return
+   the longest remaining run.
+5. `_chinese_digit_code(text)` converts Chinese digit readings
+   (`六零零六零零` → `600600`) so hermes-mcp gets the exact code even when
+   the gateway emits the spoken-form.
+
+### Hermes tool routing rules
+
+| User says | Tool | Notes |
+|---|---|---|
+| `688018的价格`、`六零零六零零`、`比亚迪怎么样` | `stock_price` / `stock_advice` | Code-aware match |
+| `我的股票`、`自选股`、`持仓`、`持有的股票` | `stocks` (portfolio) | Requires portfolio intent |
+| `天气`、`广州天气` | `weather` | Substring match |
+| `汇率`、`美元换人民币` | `rate` | |
+| `DeepSeek余额` | `deepseek_balance` | Exact phrase |
+
+Bare `股票` does NOT fire any tool — the model often writes `想查询的股票`
+while clarifying a single-stock query and matching that fires the wrong tool.
+Portfolio must use `_is_portfolio_intent(text)` which checks for explicit
+portfolio phrases.
+
+### Per-tool cooldowns
+
+- Hermes tools: `stock_price`/`stock_advice` 3 s (rapid multi-stock queries
+  allowed); portfolio 30 s default (full list, expensive).
+- Home Assistant: 5 s per `(entity_id, service)`. Earlier 30 s per `entity_id`
+  blocked normal toggle (e.g. user opens a light then closes it 9 s later).
+
+### HA self-loop defence
+
+Two layers, both required:
+
+1. **User-voice gate** in `main.py: _on_delta` — only run HA / Hermes /
+   `local_info` handlers if `_last_user_onset_at` was within the last 15 s.
+   This prevents the model's own words from triggering HA actions when wake
+   was caused by environmental noise or echo.
+2. **HA response suppression** — any successful HA action adds the current
+   `response_id` to `_muted_response_ids` so subsequent model text for the
+   same response is not spoken. This prevents the model from continuing to
+   describe the action it already executed (which used to loop).
+
+### Uplink silence gate
+
+`main.py` now keeps audio uplink live only while conversation is active:
+
+- Pause when 15 s of mutual silence (no user voice + no gateway audio).
+- Instant resume on any `_confirmed_user_active(now)`.
+
+Earlier wake-word gating required 2–3 s of sustained speech which was
+unreliable; the silence gate removes that friction while still breaking the
+echo loop. It does NOT stop a runaway speaker; for that, watch the journal
+for `first accepted audio` gaps or manually restart the service.
+
+### Profiles (P1)
+
+Tool whitelist and instructions override are now profile-driven.
+
+- Profiles ship in `yrobot/profiles/`: `default`, `family_safe`, `developer`.
+- `tools.txt` — allow-list, one tool name per line; `#` for comments; empty
+  file = allow all.
+- `instructions.txt` — text appended to the system prompt.
+- `YROBOT_PROFILE=name` selects a profile (default `default`).
+- `YROBOT_PROFILE_DIR=/path/to/profiles` overrides the shipped location.
+- User-level override dir takes precedence over the shipped one.
+
+Resolution helper: `yrobot.profile.load_profile(name, override_dir=...)`.
+Tests: `tests/test_profile.py` (9 cases).
+
+### Hermes dry-run probe (P2)
+
+`yrobot.hermes_tools.validate_tools(client, enabled_tools, timeout)` sends a
+safe sentinel request to each enabled tool's endpoint and verifies the
+response is a JSON object containing one of the common Hermes keys
+(`ok`, `count`, `items`, `name`, `text`, `balance`). Called from
+`Yrobot.__init__` via `_probe_hermes_tools`; per-tool result logged at INFO
+or WARNING. Failures do NOT block startup — they're for visibility only.
+
+### Model behavior contracts (system prompt)
+
+The system prompt now lists every Hermes tool with the trigger phrase it
+expects, e.g.:
+
+- 股票价格 — must contain `股价` / `价格` / `行情`
+- 股票分析建议 — must contain `怎么样` / `建议`
+- 6 位代码 — repeat verbatim (Arabic digits, NOT `六零零六零零` Chinese reading)
+- HA 控制 — only when user explicitly asks; do not echo `好的，X已关闭`
+
+### Dashboard additions
+
+- VAD RMS threshold slider (`/api/audio/vad`) — live updates `YROBOT_VAD_RMS_MIN`
+  in `ha.env`. Persisted value at last deployment: `0.081`.
+- Mic input enable/disable — runtime-only (defaults to enabled after restart).
+- Volume slider / mute / mic level meter.
+- Log panel with auto-scroll, pause, level filter, jump-to-bottom.
+- Camera preview toggle (default off — saves resources).
+
 ## Architecture
 
 YRobot runs as a Reachy Mini app and talks to three external systems:
@@ -299,10 +412,26 @@ Do not add these unless wake-word work is intentionally restarted.
 For code changes, run focused checks first:
 
 ```bash
-.venv/bin/python -m py_compile yrobot/main.py yrobot/audio.py yrobot/app_config.py
+.venv/bin/python -m py_compile \
+    yrobot/main.py yrobot/audio.py yrobot/app_config.py \
+    yrobot/hermes_tools.py yrobot/home_assistant.py \
+    yrobot/profile.py yrobot/config.py
 .venv/bin/python -m pytest tests/test_main.py::test_home_assistant_action_without_response_suppresses_model_loop -q
 .venv/bin/python -m pytest tests/test_main.py::test_startup_wake_up_enables_motors_before_movement -q
+.venv/bin/python -m pytest tests/test_hermes_tools.py -k "extract_stock_name or stock_code or bare_stock or portfolio or stock_advice_also or validate_tools" -q
+.venv/bin/python -m pytest tests/test_profile.py -q
 ```
+
+Smoke-test the Hermes probe against the live server:
+
+```bash
+ssh pollen@192.168.1.14
+journalctl -u yrobot.service --since "1 minute ago" --no-pager \
+    | grep -E "Hermes tool|UNREACHABLE"
+```
+
+Every `Hermes tool <name> reachable` line means the probe passed for that
+tool. `UNREACHABLE` lines indicate the endpoint URL or the server is broken.
 
 Full `pytest` and `ruff check .` have had unrelated failures from in-progress
 local changes. Treat focused hardware-relevant checks as the immediate gate, and
