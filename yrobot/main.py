@@ -1002,8 +1002,9 @@ class Yrobot(ReachyMiniApp):
                                 sent += 1
                             except Exception:
                                 pass
-                        # Keep sending for up to 4 more seconds while sound continues
-                        deadline = time.monotonic() + 4.0
+                        # Keep sending for at least 3s, up to 6s while sound continues
+                        deadline = time.monotonic() + 6.0
+                        min_deadline = time.monotonic() + 3.0
                         while time.monotonic() < deadline and not stop_event.is_set():
                             buf, _ = mic_stream.read(960)
                             rms = float(_np.sqrt(_np.mean(_np.square(_np.frombuffer(buf, dtype=_np.int16).astype(_np.float64)))))
@@ -1012,7 +1013,7 @@ class Yrobot(ReachyMiniApp):
                                 sent += 1
                             except Exception:
                                 pass
-                            if rms < SILENCE_RMS * 0.8:  # sound dropped
+                            if time.monotonic() > min_deadline and rms < SILENCE_RMS * 0.5:
                                 break
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
                         if sent:
