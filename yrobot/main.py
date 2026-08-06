@@ -941,10 +941,14 @@ class Yrobot(ReachyMiniApp):
                             if t == "stt":
                                 logger.info("xz stt: %s", d.get("text",""))
                             elif t == "llm":
-                                logger.info("xz llm: %s", d.get("text","")[:60])
+                                logger.info("xz llm: emoji=%s", d.get("emotion","?"))
                             elif t == "tts" and d.get("state")=="start":
+                                logger.info("xz tts start")
                                 tts_buf.clear()
+                            elif t == "tts" and d.get("state")=="sentence_start":
+                                logger.info("xz tts text: %s", d.get("text","")[:80])
                             elif t == "tts" and d.get("state")=="stop":
+                                logger.info("xz tts stop (%d pkts)", len(tts_buf))
                                 for pkt in tts_buf:
                                     try:
                                         pcm = dec.decode(pkt, 1440)
