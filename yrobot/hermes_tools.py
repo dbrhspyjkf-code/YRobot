@@ -198,9 +198,34 @@ def _has_stock_code(text: str) -> bool:
 
     Uses negative lookaround (no ASCII \\b which breaks at Chinese chars) so the
     code can sit anywhere in a Chinese sentence, e.g. '688018怎么样'.
+    Recognises both Arabic digits ('600600') and Chinese digit readings
+    ('六零零六零零') because the gateway sometimes emits the latter.
     """
     import re as _re
-    return _re.search(r"(?<!\d)\d{6}(?!\d)", text) is not None
+    if _re.search(r"(?<!\d)\d{6}(?!\d)", text) is not None:
+        return True
+    return _chinese_digit_code(text) is not None
+
+
+_CHINESE_DIGITS = "零一二三四五六七八九"
+_CHINESE_DIGIT_CODE_RE = None  # compiled lazily
+
+
+def _chinese_digit_code(text: str) -> str | None:
+    """Convert a 6-character Chinese digit reading to its Arabic form.
+
+    Examples: '六零零六零零' -> '600600', '六八八零一八' -> '688018'.
+    Returns None if no valid 6-character Chinese-digit run is present.
+    """
+    import re as _re
+    global _CHINESE_DIGIT_CODE_RE
+    if _CHINESE_DIGIT_CODE_RE is None:
+        _CHINESE_DIGIT_CODE_RE = _re.compile(r"[零一二三四五六七八九]{6}")
+    m = _CHINESE_DIGIT_CODE_RE.search(text)
+    if m is None:
+        return None
+    mapping = {c: str(i) for i, c in enumerate(_CHINESE_DIGITS)}
+    return "".join(mapping[c] for c in m.group(0))
 
 
 def _is_portfolio_intent(text: str) -> bool:
@@ -233,6 +258,9 @@ def _extract_stock_name(normalized: str) -> str:
     code_match = _re.search(r"(?<!\d)\d{6}(?!\d)", normalized)
     if code_match:
         return code_match.group(0)
+    chinese_code = _chinese_digit_code(normalized)
+    if chinese_code is not None:
+        return chinese_code
     # Strip stop words (longest alternatives first so e.g. 多少钱 wins over 多少).
     cleaned = _re.sub(
         r"查一下|查询|看看|看一下|帮忙|帮我|请帮我|请你|让我|我想|想买|能不能买|能买吗|"
