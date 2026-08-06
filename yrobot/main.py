@@ -914,10 +914,7 @@ class Yrobot(ReachyMiniApp):
         mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
 
-        # Shared output stream — write TTS audio continuously
-        spk_stream = _sd.OutputStream(samplerate=16000, channels=2, dtype="float32",
-                                       device="reachymini_audio_sink", blocksize=0)
-        spk_stream.start()
+
 
         # Output stream for TTS playback
         speaker = Speaker(reachy_mini.media)
@@ -1031,8 +1028,6 @@ class Yrobot(ReachyMiniApp):
             logger.info("xiaozhi ended: %s", e)
         finally:
             choreo.close()
-            spk_stream.stop()
-            spk_stream.close()
             mic_stream.stop()
             mic_stream.close()
             speaker.close()
