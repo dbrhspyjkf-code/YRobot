@@ -73,6 +73,14 @@ class HermesToolsClient:
         """
         return self._get_json("/api/stocks/portfolio")
 
+    def discover(self) -> dict[str, Any]:
+        """Fetch /api/discover — the server's self-reported tool list.
+
+        Returns the raw discover payload (``{"tools": [...]}``). Raises
+        on connection/parse failure; callers decide how to degrade.
+        """
+        return self._get_json("/api/discover")
+
 
 # ---------------------------------------------------------------------------
 # Tool registry: phrases that fire a tool, the call, and how to format the
@@ -326,6 +334,10 @@ class ToolDef:
     skip_when: Callable[[str], bool] | None = None
     cooldown_s: float = 30.0
     extra_matches: Callable[[str], bool] | None = None
+    # Optional mapping to the server-side discover name (GET /api/discover).
+    # When set, validate_tools cross-checks this tool against the discover
+    # payload; when absent, validate_tools falls back to the dry-run probe.
+    discover_name: str | None = None
 
     def matches(self, text: str) -> bool:
         if any(phrase in text for phrase in self.phrases):
@@ -341,6 +353,7 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         phrases=("天气",),
         call=lambda client, text: client.get_weather(_extract_city(text)),
         format=_format_weather,
+        discover_name="weather",
     ),
     ToolDef(
         name="stock_price",
@@ -352,6 +365,7 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
             kw in text for kw in ("价格", "股价", "行情", "多少")
         ),
         cooldown_s=3.0,
+        discover_name="stock_price",
     ),
     ToolDef(
         name="stock_advice",
@@ -363,12 +377,14 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
             kw in text for kw in ("怎么样", "建议", "分析", "能买")
         ),
         cooldown_s=3.0,
+        discover_name="stock_advice",
     ),
     ToolDef(
         name="stocks_advice_all",
         phrases=("股票建议", "操盘建议", "股票推荐", "建议汇总"),
         call=lambda client, text: client.get_stock_advice(),
         format=_format_stock_advice,
+        discover_name="stock_advice",
     ),
     ToolDef(
         name="stocks",
@@ -380,18 +396,21 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         call=lambda client, text: client.get_stocks_portfolio(),
         format=_format_stocks,
         skip_when=lambda text: not _is_portfolio_intent(text),
+        discover_name="stocks_portfolio",
     ),
     ToolDef(
         name="rate",
         phrases=("汇率", "美元换人民币", "汇率多少", "人民币汇率"),
         call=lambda client, text: client.get_rate(),
         format=_format_rate,
+        discover_name="rate",
     ),
     ToolDef(
         name="deepseek_balance",
         phrases=("deepseek余额", "deepseek还有多少钱", "deepseek余额多少"),
         call=lambda client, text: client.get_deepseek_balance(),
         format=_format_deepseek,
+        discover_name="deepseek_balance",
     ),
 )
 
@@ -540,17 +559,53 @@ def validate_tools(
     enabled_tools: tuple[ToolDef, ...],
     timeout: float | None = None,
 ) -> list[ToolHealth]:
-    """Dry-run each enabled tool. Returns a health report per tool.
+    """Validate each enabled tool, prefer /api/discover cross-check.
 
-    A successful probe requires:
-      * HTTP 200 + valid JSON object
-      * At least one of the common Hermes response keys present
-        (``ok``, ``count``, ``items``, ``name``, ``text``, ``balance``)
+    Strategy:
+      1. Fetch ``GET /api/discover``. If it succeeds, build an index of the
+         server's self-reported tools and cross-check every ToolDef that has
+         a ``discover_name``: a missing entry means the endpoint the client
+         expects is not registered server-side (typo or version drift).
+      2. Regardless of discover availability, run the dry-run probe for every
+         tool (real request with a safe sentinel) and verify the response is
+         a JSON object containing at least one of the common Hermes keys
+         (``ok``, ``count``, ``items``, ``name``, ``text``, ``balance``).
 
     Failures do not raise; they are returned as ``ToolHealth(ok=False, ...)``.
     """
     results: list[ToolHealth] = []
+    discover_index: dict[str, dict[str, Any]] = {}
+    discover_ok = False
+    try:
+        discovered = client.discover()
+        tools = discovered.get("tools")
+        if isinstance(tools, list):
+            discover_index = {
+                str(t.get("name")): t for t in tools if isinstance(t, dict) and t.get("name")
+            }
+            discover_ok = True
+    except Exception as exc:  # noqa: BLE001 — degrade to probe-only
+        results.append(ToolHealth("discover", False, f"{type(exc).__name__}: {exc}"))
+
     for tool in enabled_tools:
+        # Cross-check against the server's discover payload when we have one
+        # and the tool declares a discover_name.
+        if discover_ok and tool.discover_name:
+            if tool.discover_name not in discover_index:
+                results.append(
+                    ToolHealth(
+                        tool.name,
+                        False,
+                        f"discover_name {tool.discover_name!r} missing from /api/discover",
+                    )
+                )
+                continue
+            server_tool = discover_index[tool.discover_name]
+            endpoint = str(server_tool.get("endpoint", ""))
+            results.append(ToolHealth(tool.name, True, f"discover:{endpoint}"))
+            continue
+
+        # Dry-run probe fallback (also covers tools without discover_name).
         probe = _DRY_RUN_PROBES.get(tool.name)
         if probe is None:
             results.append(ToolHealth(tool.name, True, "no probe defined"))

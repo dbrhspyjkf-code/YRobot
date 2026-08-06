@@ -287,3 +287,68 @@ def test_validate_tools_returns_per_tool_health():
     assert by_name["stock_price"].ok
     assert by_name["rate"].ok
     assert by_name["deepseek_balance"].ok
+
+
+def test_validate_tools_uses_discover_when_available():
+    """validate_tools should cross-check discover_name against /api/discover."""
+    from yrobot.hermes_tools import validate_tools, HermesToolsClient
+
+    DISCOVER = {
+        "tools": [
+            {"name": "weather", "endpoint": "/weather", "method": "GET"},
+            {"name": "rate", "endpoint": "/rate", "method": "GET"},
+            {"name": "stocks_portfolio", "endpoint": "/api/stocks/portfolio", "method": "GET"},
+            {"name": "stock_price", "endpoint": "/api/stocks/price", "method": "GET"},
+            {"name": "stock_advice", "endpoint": "/api/stocks/advice", "method": "GET"},
+            {"name": "deepseek_balance", "endpoint": "/api/deepseek/balance", "method": "GET"},
+        ]
+    }
+
+    class FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+
+    def opener(request, **kwargs):
+        url = request.full_url
+        if "/api/discover" in url:
+            return FakeResp(json.dumps(DISCOVER).encode("utf-8"))
+        return FakeResp(b'{"ok": true}')
+
+    client = HermesToolsClient("http://h.local:8766", opener=opener)
+    report = validate_tools(client, enabled_tools=TOOL_DEFS, timeout=1.0)
+    by_name = {h.name: h for h in report}
+    # discover cross-check path: should be OK with the discover endpoint note
+    assert by_name["weather"].ok
+    assert by_name["weather"].detail.startswith("discover:")
+    assert by_name["stock_price"].ok
+    assert by_name["stocks"].ok
+    assert by_name["deepseek_balance"].ok
+    # discover itself should not be reported as a failure
+    assert "discover" not in by_name
+
+
+def test_validate_tools_reports_missing_discover_name():
+    """If discover lacks an expected tool, that tool is marked FAIL."""
+    from yrobot.hermes_tools import validate_tools, HermesToolsClient
+
+    DISCOVER = {"tools": [{"name": "weather", "endpoint": "/weather"}]}  # only weather
+
+    class FakeResp:
+        def __init__(self, body): self._body = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._body
+
+    def opener(request, **kwargs):
+        if "/api/discover" in request.full_url:
+            return FakeResp(json.dumps(DISCOVER).encode("utf-8"))
+        return FakeResp(b'{"ok": true}')
+
+    client = HermesToolsClient("http://h.local:8766", opener=opener)
+    report = validate_tools(client, enabled_tools=TOOL_DEFS, timeout=1.0)
+    by_name = {h.name: h for h in report}
+    assert by_name["weather"].ok
+    assert not by_name["stock_price"].ok
+    assert "missing from /api/discover" in by_name["stock_price"].detail
