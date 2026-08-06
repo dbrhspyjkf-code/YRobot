@@ -222,22 +222,20 @@ def _extract_stock_name(normalized: str) -> str:
     """Extract a stock name/code from the user's request text."""
     import re as _re
     # 6-digit code
-    match = _re.search(r"\d{6}", normalized)
+    match = _re.search(r"(?<!\d)\d{6}(?!\d)", normalized)
     if match:
         return match.group(0)
-    # Strip common verbs around a name: 查/看看/一下/怎么样/多少钱/价格/分析/建议 etc
-    cleaned = normalized
-    for w in (
-        "查一下", "查询", "看看", "帮我", "一下", "怎么样", "怎么", "多少钱", "多少", "价格",
-        "股价", "行情", "分析", "建议", "操盘", "点评", "表现", "怎样", "如何",
-        "我想", "想买", "能不能买", "能买吗", "现在", "最近", "呢", "吗", "的", "了",
-    ):
-        cleaned = cleaned.replace(w, "")
+    # Strip common verbs around a name. Longer phrases first so that e.g.
+    # "看一下" wins over the standalone "一下".
+    cleaned = _re.sub(
+        r"查一下|查询|看看|看一下|帮忙|帮我|请帮我|请你|让我|我想|想买|能不能买|能买吗|怎么样|怎样|如何|多少钱|多少|股价|股票价格|价格|行情|分析|建议|操盘|点评|表现|现在|最近|这个|那|一下|查|呢|吗|的|了",
+        "",
+        normalized,
+    )
     cleaned = cleaned.strip()
     # Strip the noun "股票" so "平安股票怎么样" → "平安".
     # Keep the prefix "我的" / "自选" so portfolio queries return "".
-    for noun in ("股票", "的股票"):
-        cleaned = cleaned.replace(noun, "")
+    cleaned = cleaned.replace("的股票", "").replace("股票", "")
     cleaned = cleaned.strip()
     # Strip leading verb remnants after the noun strip (e.g., "买比亚迪").
     if cleaned.startswith("买"):
@@ -246,7 +244,7 @@ def _extract_stock_name(normalized: str) -> str:
     # Reject obvious non-names.
     if not cleaned:
         return ""
-    if cleaned in ("我", "我的", "自选", "自选股", "持仓", "它"):
+    if cleaned in ("我", "我的", "自选", "自选股", "持仓", "它", "这", "那"):
         return ""
     if 2 <= len(cleaned) <= 8:
         return cleaned
