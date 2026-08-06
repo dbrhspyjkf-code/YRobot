@@ -141,6 +141,7 @@ class Settings:
     ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
     hermes_tools_enabled: bool = False
     hermes_tools_url: str = "http://192.168.1.200:8766"
+    hermes_ios_api_url: str = "http://192.168.1.200:8900"
     local_info_enabled: bool = True
     memory_enabled: bool = True
     memory_path: str = "~/.config/yrobot/memory.json"
@@ -275,6 +276,9 @@ class Settings:
             hermes_tools_enabled=_flag("YROBOT_HERMES_TOOLS_ENABLED", False, env),
             hermes_tools_url=(
                 env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
+            ).rstrip("/"),
+            hermes_ios_api_url=(
+                env.get("YROBOT_IOS_API_URL") or "http://192.168.1.200:8900"
             ).rstrip("/"),
             local_info_enabled=_flag("YROBOT_LOCAL_INFO_ENABLED", True, env),
             memory_enabled=_flag("YROBOT_MEMORY_ENABLED", True, env),

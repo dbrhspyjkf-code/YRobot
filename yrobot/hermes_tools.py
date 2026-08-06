@@ -34,8 +34,10 @@ class HermesToolsClient:
         *,
         opener: Callable = urllib.request.urlopen,
         timeout: float = 5.0,
+        ios_api_url: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
+        self._ios_api_url = (ios_api_url or "").rstrip("/")
         self._opener = opener
         self._timeout = timeout
 
@@ -60,13 +62,24 @@ class HermesToolsClient:
         """Call an arbitrary Hermes tool by name via /api/tools/call.
 
         All hermes-mcp tools accept a single natural-language ``prompt``
-        argument (see ``create_server``). Returns the raw dispatch response
-        ``{"ok": bool, "result": str}``.
+        argument (see ``create_server``). Generic tools are dispatched through
+        the ios-api bridge (8900) — not the 8766 REST server — so this method
+        posts to ``ios_api_url`` when configured.
+
+        Returns the raw dispatch response ``{"ok": bool, "result": str}``.
         """
-        return self._post_json(
-            "/api/tools/call",
-            {"name": name, "arguments": {"prompt": prompt}},
+        base = self._ios_api_url or self._base_url
+        payload = json.dumps(
+            {"name": name, "arguments": {"prompt": prompt}}
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{base}/api/tools/call",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
         )
+        with self._opener(request, timeout=self._timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
 
     def get_deepseek_balance(self) -> dict[str, Any]:
         return self._get_json("/api/deepseek/balance")
@@ -413,12 +426,17 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="stock_advice",
-        phrases=("怎么样", "怎样", "如何", "分析", "建议", "操盘", "点评", "表现", "能买吗", "能不能买"),
-        call=lambda client, text: client.get_stock_advice(_extract_stock_name(text) or None),
-        format=_format_stock_advice,
-        skip_when=lambda text: not _extract_stock_name(text),
+        phrases=("建议", "操盘", "点评", "能买吗", "能不能买", "推荐买"),
+        call=lambda client, text: client.call_tool(
+            "get_stock_advice", f"查询{_extract_stock_name(text)}的操盘建议"
+        ),
+        format=_format_generic_tool,
+        skip_when=lambda text: (
+            not _extract_stock_name(text)
+            or any(kw in text for kw in ("详细分析", "资金流向", "十大股东", "财务数据", "基本面分析"))
+        ),
         extra_matches=lambda text: _has_stock_code(text) and any(
-            kw in text for kw in ("怎么样", "建议", "分析", "能买")
+            kw in text for kw in ("建议", "能买")
         ),
         cooldown_s=3.0,
         discover_name="stock_advice",
@@ -477,8 +495,10 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
     ),
     ToolDef(
         name="stock_detail",
-        phrases=("详细分析", "资金流向", "十大股东", "财务数据", "基本面分析"),
-        call=lambda client, text: client.call_tool("get_stock_detail", text),
+        phrases=("详细分析", "资金流向", "十大股东", "财务数据", "基本面分析", "怎么样", "怎样", "如何", "分析一下", "研究一下"),
+        call=lambda client, text: client.call_tool(
+            "get_stock_detail", f"查询{_extract_stock_name(text)}的详细分析"
+        ),
         format=_format_generic_tool,
         skip_when=lambda text: not _extract_stock_name(text),
         cooldown_s=5.0,
@@ -558,7 +578,11 @@ class HermesToolsController:
         opener: Callable = urllib.request.urlopen,
         profile: Profile | None = None,
     ) -> HermesToolsController:
-        client = HermesToolsClient(settings.hermes_tools_url, opener=opener)
+        client = HermesToolsClient(
+            settings.hermes_tools_url,
+            opener=opener,
+            ios_api_url=settings.hermes_ios_api_url,
+        )
         return cls(
             client,
             bool(settings.hermes_tools_enabled),

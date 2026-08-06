@@ -196,13 +196,15 @@ def test_stock_code_with_price_keyword_routes_to_stock_price():
         "比亚迪怎么样",
         "688018能买吗",
     ]
+    allowed_names = ("stock_price", "stock_advice", "stock_detail")
+    allowed_paths = ("/api/stocks/price", "/api/stocks/advice", "/api/tools/call")
     for i, text in enumerate(cases):
         result = controller.handle_text(text, f"resp-stock-{i}")
         assert result is not None, f"{text!r} should fire a tool"
-        assert result.name in ("stock_price", "stock_advice"), (
-            f"{text!r} should fire stock_price or stock_advice, got {result.name}"
+        assert result.name in allowed_names, (
+            f"{text!r} should fire one of {allowed_names}, got {result.name}"
         )
-        assert captured[-1]["path"] in ("/api/stocks/price", "/api/stocks/advice"), (
+        assert captured[-1]["path"] in allowed_paths, (
             f"{text!r} hit wrong endpoint: {captured[-1]['path']}"
         )
         # Reset cooldown between cases so each call is independent.
