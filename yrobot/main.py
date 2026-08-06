@@ -891,25 +891,49 @@ class Yrobot(ReachyMiniApp):
         """Run the conversation loop through Xiaozhi cloud."""
         from yrobot.xiaozhi import XiaozhiConversation, CAPTURE_SAMPLES, FRAME_MS
 
-        # We still need the Microphone and Speaker from Conversation's
-        # pipeline, but in a stripped-down form. Create a minimal audio bridge.
+        import queue as _queue
         mic = Microphone(reachy_mini.media)
         speaker = Speaker(reachy_mini.media)
-        detector = VoiceDetector(settings.vad_aggressiveness)
-        agc = UplinkGain()
+
+        _mic_queue: _queue.Queue = _queue.Queue(maxsize=64)
+        _mic_done = threading.Event()
+
+        def _mic_thread():
+            for _ in range(20):  # warm-up
+                mic.read_frames()
+                time.sleep(0.01)
+            while not _mic_done.is_set():
+                frames = mic.read_frames()
+                for f in frames:
+                    try:
+                        _mic_queue.put_nowait(f)
+                    except _queue.Full:
+                        pass
+                time.sleep(0.005)
+
+        threading.Thread(target=_mic_thread, name="xz-mic", daemon=True).start()
 
         def read_mic():
-            frames = mic.read_frames()
-            if not frames:
+            all_parts = []
+            deadline = time.monotonic() + 0.065
+            while time.monotonic() < deadline:
+                try:
+                    f = _mic_queue.get(timeout=0.01)
+                    all_parts.append(f)
+                except _queue.Empty:
+                    break
+            if not all_parts:
                 return np.zeros(CAPTURE_SAMPLES, dtype=np.float32)
-            return frames[0]
-
-        epoch = 0
+            merged = np.concatenate(all_parts)
+            if len(merged) < CAPTURE_SAMPLES:
+                return np.zeros(CAPTURE_SAMPLES, dtype=np.float32)
+            return merged[:CAPTURE_SAMPLES]
 
         def play_speaker(_epoch: int, pcm: np.ndarray) -> None:
-            speaker.play(0, pcm)
+            speaker.play(0, pcm.astype(np.float32))
 
         apply_audio_startup_config(reachy_mini)
+        speaker.start()
         try:
             conv = XiaozhiConversation(
                 stop_event,
@@ -918,7 +942,9 @@ class Yrobot(ReachyMiniApp):
             )
             conv.run()
         finally:
-            pass
+            _mic_done.set()
+            speaker.close()
+            speaker.join(timeout=2)
 
     def _enter_safe_mode(
         self,

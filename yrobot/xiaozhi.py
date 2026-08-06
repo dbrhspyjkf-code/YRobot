@@ -50,8 +50,12 @@ class _OpusEncoder:
     def encode(self, pcm16: bytes) -> bytes:
         return self._enc.encode(pcm16, CAPTURE_SAMPLES)
 
-    def decode(self, opus_pkt: bytes) -> np.ndarray:
-        return self._dec.decode(opus_pkt, PLAYBACK_SAMPLES)
+    def decode(self, opus_pkt: bytes) -> np.ndarray | None:
+        try:
+            raw = self._dec.decode(opus_pkt, PLAYBACK_SAMPLES)
+            return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        except Exception:
+            return None
 
 
 class XiaozhiConversation:
@@ -143,7 +147,7 @@ class XiaozhiConversation:
                         }
                     )
                 )
-                for _ in range(50):  # 50 × 60ms = 3s
+                for _ in range(83):  # 83 × 60ms ≈ 5s
                     if self._stop.is_set():
                         break
                     pcm = self._read_mic()
@@ -163,7 +167,7 @@ class XiaozhiConversation:
                     )
                 )
                 # 等待服务器处理（stt → llm → tts），最长 8 秒
-                for _ in range(40):
+                for _ in range(30):
                     if self._stop.is_set():
                         break
                     if self._playback_queue:
@@ -185,14 +189,11 @@ class XiaozhiConversation:
             except asyncio.TimeoutError:
                 continue
             if isinstance(raw, bytes):
-                # TTS Opus 帧
-                try:
-                    pcm = self._codec.decode(raw)
-                except Exception:
-                    continue
-                self._playback_queue.append(pcm)
-                if len(self._playback_queue) > MAX_PLAYBACK_QUEUE:
-                    self._playback_queue.pop(0)
+                pcm = self._codec.decode(raw)
+                if pcm is not None:
+                    self._playback_queue.append(pcm)
+                    if len(self._playback_queue) > MAX_PLAYBACK_QUEUE:
+                        self._playback_queue.pop(0)
             else:
                 try:
                     data = json.loads(raw)
@@ -203,16 +204,23 @@ class XiaozhiConversation:
                     logger.info("xiaozhi stt: %s", data.get("text", ""))
                 elif mtype == "llm":
                     text = data.get("text", "")
+                    logger.info("xiaozhi llm: %s", text[:80])
                     if text and self._speak_text_cb:
                         self._speak_text_cb(text)
                 elif mtype == "tts":
-                    if data.get("state") == "stop":
+                    state = data.get("state", "")
+                    logger.info("xiaozhi tts state=%s", state)
+                    if state == "stop":
                         await self._drain_playback()
+                else:
+                    logger.debug("xiaozhi msg: %s", json.dumps(data, ensure_ascii=False)[:200])
 
     async def _drain_playback(self) -> None:
         while self._playback_queue:
             pcm = self._playback_queue.pop(0)
+            if len(pcm) == 0:
+                continue
             self._play_speaker(0, pcm)
-            await asyncio.sleep(0)
-            # 模拟播放时长
-            await asyncio.sleep(len(pcm) / PLAYBACK_RATE)
+            duration = len(pcm) / PLAYBACK_RATE
+            if duration > 0.001:
+                await asyncio.sleep(duration)
