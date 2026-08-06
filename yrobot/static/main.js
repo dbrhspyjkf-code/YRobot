@@ -8,6 +8,8 @@ const videoEnabled = document.getElementById("video-enabled");
 const proactiveEnabled = document.getElementById("proactive-enabled");
 const persona = document.getElementById("persona");
 const personaCount = document.getElementById("persona-count");
+const profile = document.getElementById("profile");
+const profileDesc = document.getElementById("profile-desc");
 const privacyConfirm = document.getElementById("privacy-confirm");
 const saveButton = document.getElementById("save-button");
 const saveStatus = document.getElementById("save-status");
@@ -83,6 +85,21 @@ function showSettings(settings) {
   proactiveEnabled.checked = settings.proactive_enabled;
   persona.value = settings.persona;
   configPath.textContent = `保存位置：${settings.config_path}`;
+
+  // Profile dropdown.
+  if (Array.isArray(settings.profiles) && settings.profiles.length) {
+    const current = settings.profile || "default";
+    profile.innerHTML = settings.profiles
+      .map((name) => `<option value="${name}"${name === current ? " selected" : ""}>${name}</option>`)
+      .join("");
+    profile.disabled = false;
+    if (settings.profile_instructions) {
+      profileDesc.textContent = `说明：${settings.profile_instructions}`;
+    } else {
+      profileDesc.textContent = "";
+    }
+  }
+
   updatePersonaCount();
   syncVideoControls();
 
@@ -651,6 +668,7 @@ form.addEventListener("submit", async (event) => {
     video_enabled: videoEnabled.checked,
     proactive_enabled: proactiveEnabled.checked,
     persona: persona.value.trim(),
+    profile: profile.value || "default",
   };
 
   saveButton.disabled = true;

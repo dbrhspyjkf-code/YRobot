@@ -189,6 +189,22 @@
           <div class="counter"><span id="persona-count">0</span> / 240</div>
         </section>
 
+        <section class="panel">
+          <div class="panel-heading">
+            <div><p class="step">03B / PROFILE</p><h2>工具 Profile</h2></div>
+            <span class="pill">重启生效</span>
+          </div>
+          <label for="profile">Profile 模式</label>
+          <select id="profile" name="profile">
+            <option value="">加载中…</option>
+          </select>
+          <p class="hint">
+            控制哪些 Hermes 工具可用：<b>default</b> 全部；<b>family_safe</b> 禁用持仓/余额；
+            <b>developer</b> 全部 + 附工具调用细节。保存后需重启 yrobot 生效。
+          </p>
+          <p id="profile-desc" class="hint muted"></p>
+        </section>
+
         <section class="privacy-card">
           <div class="privacy-mark">◎</div>
           <div>

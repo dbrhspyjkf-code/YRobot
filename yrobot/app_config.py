@@ -40,6 +40,7 @@ FIELD_TO_ENV = {
     "video_enabled": "YROBOT_SEND_VIDEO",
     "proactive_enabled": "YROBOT_PROACTIVE",
     "persona": "YROBOT_PERSONA",
+    "profile": "YROBOT_PROFILE",
 }
 REQUIRED_FIELDS = frozenset(FIELD_TO_ENV)
 STARTED_AT = time.monotonic()
@@ -152,6 +153,23 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
     if len(persona) > 240:
         raise ValueError("persona must be at most 240 characters")
 
+    profile = document.get("profile")
+    if not isinstance(profile, str) or not profile.strip():
+        raise ValueError("profile must be a non-empty string")
+    profile = profile.strip()
+    try:
+        from yrobot.profile import load_profile, list_profiles
+
+        available = list_profiles()
+        if profile not in available:
+            raise ValueError(
+                f"profile {profile!r} not found. Available: {', '.join(available)}"
+            )
+        # Validate the profile actually loads (tools.txt / instructions.txt parse).
+        load_profile(profile)
+    except FileNotFoundError as exc:
+        raise ValueError(str(exc)) from exc
+
     url = normalize_url(raw_url.strip(), mode="video" if video else "audio")
     settings_env = {
         "YROBOT_REALTIME_URL": url,
@@ -159,6 +177,7 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
         "YROBOT_SEND_VIDEO": "1" if video else "0",
         "YROBOT_PROACTIVE": "1" if proactive and video else "0",
         "YROBOT_PERSONA": persona,
+        "YROBOT_PROFILE": profile,
     }
     # Exercise the same cross-field validation used by the actual app.
     Settings.from_env(settings_env)
@@ -168,6 +187,7 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
         "video_enabled": video,
         "proactive_enabled": proactive and video,
         "persona": persona,
+        "profile": profile,
     }
 
 
@@ -202,6 +222,7 @@ class AppConfig:
             "YROBOT_SEND_VIDEO": "1" if document["video_enabled"] else "0",
             "YROBOT_PROACTIVE": "1" if document["proactive_enabled"] else "0",
             "YROBOT_PERSONA": str(document["persona"]),
+            "YROBOT_PROFILE": str(document["profile"]),
         }
 
     def effective_environment(self, environ: Mapping[str, str]) -> dict[str, str]:
@@ -214,13 +235,23 @@ class AppConfig:
         effective = self.effective_environment(environ)
         settings = Settings.from_env(effective)
         persona = effective.get("YROBOT_PERSONA", DEFAULT_PERSONA).strip()
+        profile = effective.get("YROBOT_PROFILE", "default").strip() or "default"
         overrides = [field for field, env_name in FIELD_TO_ENV.items() if env_name in environ]
+        try:
+            from yrobot.profile import list_profiles
+
+            profiles = list_profiles()
+        except Exception:  # noqa: BLE001 — profile listing must never break settings
+            profiles = []
         return {
             "gateway_url": settings.url,
             "tls_verify": settings.tls_verify,
             "video_enabled": settings.send_video,
             "proactive_enabled": settings.proactive_enabled,
             "persona": persona,
+            "profile": profile,
+            "profiles": profiles,
+            "profile_instructions": settings._load_profile_instructions()[:200],
             "environment_overrides": overrides,
             "config_path": str(self.path),
         }
