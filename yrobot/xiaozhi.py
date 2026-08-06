@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import opuslib
@@ -72,11 +72,13 @@ class XiaozhiConversation:
         *,
         read_mic: Callable[[], np.ndarray],
         play_speaker: Callable[[int, np.ndarray], None],
+        mic_poller: Callable[[], Any] | None = None,
         speak_text_cb: Callable[[str], None] | None = None,
     ) -> None:
         self._stop = stop
         self._read_mic = read_mic
         self._play_speaker = play_speaker
+        self._mic_poller = mic_poller
         self._speak_text_cb = speak_text_cb
         self._codec = _OpusEncoder()
         self._session_id = ""
@@ -102,6 +104,8 @@ class XiaozhiConversation:
             open_timeout=10,
             ping_interval=30,
         ) as ws:
+            if self._mic_poller:
+                asyncio.create_task(self._mic_poller())
             await self._handshake(ws)
             await self._conversation_loop(ws)
 

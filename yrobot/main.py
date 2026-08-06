@@ -898,20 +898,25 @@ class Yrobot(ReachyMiniApp):
         _mic_queue: _queue.Queue = _queue.Queue(maxsize=64)
         _mic_done = threading.Event()
 
-        def _mic_thread():
-            for _ in range(20):  # warm-up
-                mic.read_frames()
-                time.sleep(0.01)
-            while not _mic_done.is_set():
-                frames = mic.read_frames()
-                for f in frames:
-                    try:
-                        _mic_queue.put_nowait(f)
-                    except _queue.Full:
-                        pass
-                time.sleep(0.005)
+        def _poll_mic_once():
+            """Called from asyncio thread pool to satisfy Reachy SDK thread affinity."""
+            frames = mic.read_frames()
+            for f in frames:
+                try:
+                    _mic_queue.put_nowait(f)
+                except _queue.Full:
+                    pass
 
-        threading.Thread(target=_mic_thread, name="xz-mic", daemon=True).start()
+        async def _mic_poller():
+            loop = asyncio.get_event_loop()
+            while not _mic_done.is_set():
+                await loop.run_in_executor(None, _poll_mic_once)
+                await asyncio.sleep(0.01)
+
+        # Warm-up: drain initial empty audio
+        for _ in range(10):
+            mic.read_frames()
+            time.sleep(0.02)
 
         def read_mic():
             all_parts = []
@@ -939,6 +944,7 @@ class Yrobot(ReachyMiniApp):
                 stop_event,
                 read_mic=read_mic,
                 play_speaker=play_speaker,
+                mic_poller=_mic_poller,
             )
             conv.run()
         finally:
