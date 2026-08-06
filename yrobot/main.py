@@ -996,6 +996,8 @@ class Yrobot(ReachyMiniApp):
 
         try:
             _a.run(run())
+        except Exception as e:
+            logger.info("xiaozhi ended: %s", e)
         finally:
             mic_stream.stop()
             mic_stream.close()
