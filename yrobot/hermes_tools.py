@@ -45,6 +45,29 @@ class HermesToolsClient:
         with self._opener(request, timeout=self._timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _post_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        payload = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}{path}",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with self._opener(request, timeout=self._timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def call_tool(self, name: str, prompt: str) -> dict[str, Any]:
+        """Call an arbitrary Hermes tool by name via /api/tools/call.
+
+        All hermes-mcp tools accept a single natural-language ``prompt``
+        argument (see ``create_server``). Returns the raw dispatch response
+        ``{"ok": bool, "result": str}``.
+        """
+        return self._post_json(
+            "/api/tools/call",
+            {"name": name, "arguments": {"prompt": prompt}},
+        )
+
     def get_deepseek_balance(self) -> dict[str, Any]:
         return self._get_json("/api/deepseek/balance")
 
@@ -324,6 +347,24 @@ def _format_deepseek(data: dict[str, Any]) -> str:
     return f"DeepSeek 余额：{balance} {currency}。"
 
 
+def _format_generic_tool(data: dict[str, Any]) -> str:
+    """Format the generic {ok, result} response from /api/tools/call."""
+    if not data.get("ok"):
+        error = data.get("error") or "工具调用失败"
+        return f"工具调用失败：{error}"
+    result = data.get("result")
+    if not result:
+        return "完成。"
+    text = str(result).strip()
+    # Keep the first few lines for TTS (many tools return multi-line tables).
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return "完成。"
+    # Some tools return many lines; speak the first 1-3 meaningful lines.
+    summary = "，".join(lines[:3])
+    return summary[:300] + ("。" if not summary.endswith(("。", "！", "？", "。", "！", "？")) else "")
+
+
 @dataclass(frozen=True)
 class ToolDef:
     name: str
@@ -334,10 +375,13 @@ class ToolDef:
     skip_when: Callable[[str], bool] | None = None
     cooldown_s: float = 30.0
     extra_matches: Callable[[str], bool] | None = None
-    # Optional mapping to the server-side discover name (GET /api/discover).
-    # When set, validate_tools cross-checks this tool against the discover
-    # payload; when absent, validate_tools falls back to the dry-run probe.
+    # Optional mapping to the server-side discover name (GET /api/discover
+    # on 8766, or GET /api/tools on the ios-api 8900 bridge when
+    # discover_source="ios_api"). When set, validate_tools cross-checks this
+    # tool against the matching discover payload; when absent, validate_tools
+    # falls back to the dry-run probe.
     discover_name: str | None = None
+    discover_source: str = "hermes"  # "hermes" (8766) or "ios_api" (8900)
 
     def matches(self, text: str) -> bool:
         if any(phrase in text for phrase in self.phrases):
@@ -411,6 +455,91 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         call=lambda client, text: client.get_deepseek_balance(),
         format=_format_deepseek,
         discover_name="deepseek_balance",
+    ),
+    # --- Generic tools: dispatch by name to hermes-mcp /api/tools/call ---
+    # Each receives the full caption as its natural-language prompt.
+    ToolDef(
+        name="cctv_news",
+        phrases=("新闻联播", "今日新闻", "新闻摘要", "联播摘要"),
+        call=lambda client, text: client.call_tool("get_cctv_news", text),
+        format=_format_generic_tool,
+        discover_name="get_cctv_news",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="web_search",
+        phrases=("搜索一下", "帮我搜", "网上查", "搜索", "查一下新闻", "最新消息"),
+        call=lambda client, text: client.call_tool("web_search", text),
+        format=_format_generic_tool,
+        discover_name="web_search",
+        discover_source="ios_api",
+        cooldown_s=10.0,
+    ),
+    ToolDef(
+        name="stock_detail",
+        phrases=("详细分析", "资金流向", "十大股东", "财务数据", "基本面分析"),
+        call=lambda client, text: client.call_tool("get_stock_detail", text),
+        format=_format_generic_tool,
+        skip_when=lambda text: not _extract_stock_name(text),
+        cooldown_s=5.0,
+        discover_name="get_stock_detail",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="margin_data",
+        phrases=("两融数据", "融资融券", "融资余额"),
+        call=lambda client, text: client.call_tool("get_margin_data", text),
+        format=_format_generic_tool,
+        discover_name="get_margin_data",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="ipo_info",
+        phrases=("新股申购", "新股信息", "打新"),
+        call=lambda client, text: client.call_tool("get_ipo_info", text),
+        format=_format_generic_tool,
+        discover_name="get_ipo_info",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="add_note",
+        phrases=("记一下", "记下来", "帮我记", "备忘录"),
+        call=lambda client, text: client.call_tool("add_note", text),
+        format=_format_generic_tool,
+        discover_name="add_note",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="add_reminder",
+        phrases=("提醒我", "提醒一下", "待办", "稍后提醒"),
+        call=lambda client, text: client.call_tool("add_reminder", text),
+        format=_format_generic_tool,
+        discover_name="add_reminder",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="send_email",
+        phrases=("发邮件", "发一封邮件", "发送邮件", "写邮件"),
+        call=lambda client, text: client.call_tool("send_email", text),
+        format=_format_generic_tool,
+        discover_name="send_email",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="taobao_orders",
+        phrases=("淘宝订单", "淘宝物流", "快递到哪", "订单查询", "我的快递"),
+        call=lambda client, text: client.call_tool("query_taobao_orders", text),
+        format=_format_generic_tool,
+        discover_name="query_taobao_orders",
+        discover_source="ios_api",
+    ),
+    ToolDef(
+        name="chat_history",
+        phrases=("对话历史", "聊天记录", "查一下记录"),
+        call=lambda client, text: client.call_tool("query_chat_history", text),
+        format=_format_generic_tool,
+        discover_name="query_chat_history",
+        discover_source="ios_api",
     ),
 )
 
@@ -553,23 +682,49 @@ def _looks_like_response(raw: object) -> bool:
     return any(k in raw for k in ("ok", "count", "items", "name", "text", "balance"))
 
 
+def _probe_generic_tool(
+    client: HermesToolsClient,
+    tool: ToolDef,
+    timeout: float | None,
+) -> bool:
+    """Dry-run a generic (ios_api) tool by calling it with a sentinel prompt.
+
+    Uses a no-op prompt that should be safe for read-only tools; write tools
+    (add_note/add_reminder/send_email) are NOT probed here to avoid side
+    effects — they're only validated via the ios /api/tools list.
+    """
+    if tool.name in ("add_note", "add_reminder", "send_email"):
+        return True  # skip side-effecting probes
+    saved_timeout = client._timeout
+    if timeout is not None:
+        client._timeout = timeout
+    try:
+        raw = client.call_tool(tool.discover_name or tool.name, "ping")
+        return bool(raw.get("ok"))
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        client._timeout = saved_timeout
+
+
 def validate_tools(
     client: HermesToolsClient,
     *,
     enabled_tools: tuple[ToolDef, ...],
     timeout: float | None = None,
+    ios_api_url: str | None = None,
 ) -> list[ToolHealth]:
-    """Validate each enabled tool, prefer /api/discover cross-check.
+    """Validate each enabled tool, prefer discover cross-check.
 
     Strategy:
-      1. Fetch ``GET /api/discover``. If it succeeds, build an index of the
-         server's self-reported tools and cross-check every ToolDef that has
-         a ``discover_name``: a missing entry means the endpoint the client
-         expects is not registered server-side (typo or version drift).
-      2. Regardless of discover availability, run the dry-run probe for every
-         tool (real request with a safe sentinel) and verify the response is
-         a JSON object containing at least one of the common Hermes keys
-         (``ok``, ``count``, ``items``, ``name``, ``text``, ``balance``).
+      1. Fetch ``GET /api/discover`` (8766) for tools whose
+         ``discover_source == "hermes"``. If it succeeds, build an index of
+         the server's self-reported tools and cross-check every such ToolDef.
+      2. For tools with ``discover_source == "ios_api"`` (dispatched via the
+         generic 8900 bridge), fetch ``GET /api/tools`` on ``ios_api_url`` and
+         cross-check the name is present.
+      3. Tools without a discover_name (or when discover is unavailable) fall
+         back to the dry-run probe.
 
     Failures do not raise; they are returned as ``ToolHealth(ok=False, ...)``.
     """
@@ -587,8 +742,43 @@ def validate_tools(
     except Exception as exc:  # noqa: BLE001 — degrade to probe-only
         results.append(ToolHealth("discover", False, f"{type(exc).__name__}: {exc}"))
 
+    # ios_api (8900) tool list for the generic dispatch bridge.
+    ios_tools: set[str] = set()
+    ios_ok = False
+    if ios_api_url:
+        try:
+            ios_client = HermesToolsClient(ios_api_url, opener=client._opener)
+            raw = ios_client._get_json("/api/tools")
+            tools_list = raw.get("tools")
+            if isinstance(tools_list, list):
+                ios_tools = {str(t) for t in tools_list}
+                ios_ok = True
+        except Exception as exc:  # noqa: BLE001 — degrade to probe-only
+            results.append(ToolHealth("ios_api", False, f"{type(exc).__name__}: {exc}"))
+
     for tool in enabled_tools:
-        # Cross-check against the server's discover payload when we have one
+        # ios_api tools: cross-check against the 8900 /api/tools list.
+        if tool.discover_source == "ios_api":
+            if ios_ok and tool.discover_name:
+                if tool.discover_name not in ios_tools:
+                    results.append(
+                        ToolHealth(
+                            tool.name,
+                            False,
+                            f"{tool.discover_name!r} missing from ios /api/tools",
+                        )
+                    )
+                    continue
+                results.append(ToolHealth(tool.name, True, f"ios_api:{tool.discover_name}"))
+                continue
+            # ios discover unavailable: probe dry-run via call_tool.
+            probe_ok = _probe_generic_tool(client, tool, timeout)
+            results.append(
+                ToolHealth(tool.name, probe_ok, "ios probe" if probe_ok else "ios probe failed")
+            )
+            continue
+
+        # Cross-check against the 8766 discover payload when we have one
         # and the tool declares a discover_name.
         if discover_ok and tool.discover_name:
             if tool.discover_name not in discover_index:

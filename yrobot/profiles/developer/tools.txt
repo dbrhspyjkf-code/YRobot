@@ -1,4 +1,5 @@
-# Developer profile: every tool enabled, including portfolio and balance.
+# Developer profile: every tool enabled, including portfolio, balance and
+# write/side-effecting tools (notes, reminders, email).
 
 weather
 stock_price
@@ -7,3 +8,13 @@ stocks_advice_all
 stocks
 rate
 deepseek_balance
+cctv_news
+web_search
+stock_detail
+margin_data
+ipo_info
+add_note
+add_reminder
+send_email
+taobao_orders
+chat_history

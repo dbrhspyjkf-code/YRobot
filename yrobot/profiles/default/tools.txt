@@ -9,3 +9,13 @@ stocks_advice_all
 stocks
 rate
 deepseek_balance
+cctv_news
+web_search
+stock_detail
+margin_data
+ipo_info
+add_note
+add_reminder
+send_email
+taobao_orders
+chat_history

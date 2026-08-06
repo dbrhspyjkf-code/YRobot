@@ -529,7 +529,12 @@ class Conversation:
             return
         try:
             client = self._hermes_tools._client
-            report = validate_tools(client, enabled_tools=TOOL_DEFS, timeout=10.0)
+            report = validate_tools(
+                client,
+                enabled_tools=TOOL_DEFS,
+                timeout=10.0,
+                ios_api_url=self._ios_api_url(),
+            )
         except Exception as exc:  # noqa: BLE001 — never block startup
             logger.warning("Hermes tools probe skipped: %s", exc)
             return
@@ -538,6 +543,11 @@ class Conversation:
                 logger.info("Hermes tool %s reachable", health.name)
             else:
                 logger.warning("Hermes tool %s UNREACHABLE: %s", health.name, health.detail)
+
+    @staticmethod
+    def _ios_api_url() -> str:
+        """The generic tool-dispatch bridge URL (hermes-mcp 8900 ios api)."""
+        return os.environ.get("YROBOT_IOS_API_URL", "http://192.168.1.200:8900")
 
     def _current_head_yaw(self) -> float:
         """Read the daemon's cached physical pose; fall back during startup."""
