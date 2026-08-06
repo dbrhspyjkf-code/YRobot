@@ -1,0 +1,11 @@
+# Default profile: all tools enabled.
+# This file is the allow-list for Hermes tools. One tool name per line.
+# Lines starting with '#' are comments. Empty file = allow all.
+
+weather
+stock_price
+stock_advice
+stocks_advice_all
+stocks
+rate
+deepseek_balance

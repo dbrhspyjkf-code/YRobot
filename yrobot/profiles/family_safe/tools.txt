@@ -1,0 +1,7 @@
+# Family-safe profile: only read-only information tools.
+# No stock portfolio (avoids leakage of holdings) and no deepseek_balance.
+
+weather
+stock_price
+stock_advice
+rate

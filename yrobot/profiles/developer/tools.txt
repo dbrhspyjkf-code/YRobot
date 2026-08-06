@@ -1,0 +1,9 @@
+# Developer profile: every tool enabled, including portfolio and balance.
+
+weather
+stock_price
+stock_advice
+stocks_advice_all
+stocks
+rate
+deepseek_balance

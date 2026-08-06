@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 # The duplex template was trained with this exact first line; keep persona and
@@ -143,6 +144,9 @@ class Settings:
     local_info_enabled: bool = True
     memory_enabled: bool = True
     memory_path: str = "~/.config/yrobot/memory.json"
+    # Profile-driven tool whitelist and instructions override.
+    profile_name: str = "default"
+    profile_dir: str = ""  # empty ⇒ use shipped profiles; override at runtime
 
     def __post_init__(self) -> None:
         if self.chunk_ms != 1000:
@@ -185,7 +189,31 @@ class Settings:
             parts.append(HERMES_TOOLS_POLICY)
         if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
             parts.append(LOCAL_INFO_POLICY)
+        # Profile-specific instructions override (appended last so they take
+        # priority over the generic policies above when both apply).
+        profile_instructions = self._load_profile_instructions()
+        if profile_instructions:
+            parts.append(profile_instructions)
         return "\n".join(parts)
+
+    def _load_profile_instructions(self) -> str:
+        """Read the active profile's instructions.txt, if any.
+
+        Defers imports to avoid a circular dependency with yrobot.profile.
+        Returns "" when the profile does not load or has no instructions.
+        """
+        try:
+            from yrobot.profile import load_profile
+        except Exception:  # noqa: BLE001 — never let profile IO break settings
+            return ""
+        try:
+            override = self.profile_dir or None
+            profile = load_profile(
+                self.profile_name, override_dir=override
+            )
+        except FileNotFoundError:
+            return ""
+        return profile.instructions
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
@@ -251,4 +279,6 @@ class Settings:
             local_info_enabled=_flag("YROBOT_LOCAL_INFO_ENABLED", True, env),
             memory_enabled=_flag("YROBOT_MEMORY_ENABLED", True, env),
             memory_path=env.get("YROBOT_MEMORY_PATH") or "~/.config/yrobot/memory.json",
+            profile_name=env.get("YROBOT_PROFILE", "default").strip() or "default",
+            profile_dir=env.get("YROBOT_PROFILE_DIR", "").strip(),
         )

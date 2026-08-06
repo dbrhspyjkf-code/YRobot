@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from yrobot.config import Settings
+from yrobot.profile import Profile, load_profile as _load_profile_default
 
 logger = logging.getLogger(__name__)
 
@@ -417,9 +418,16 @@ _validate_tool_defs(TOOL_DEFS)
 
 
 class HermesToolsController:
-    def __init__(self, client: HermesToolsClient, enabled: bool) -> None:
+    def __init__(
+        self,
+        client: HermesToolsClient,
+        enabled: bool,
+        *,
+        profile: Profile | None = None,
+    ) -> None:
         self._client = client
         self._enabled = enabled
+        self._profile = profile
         self._fired: set[tuple[str, str]] = set()
         self._last_fired_at: dict[str, float] = {}
         self._buffer_response_id = ""
@@ -431,9 +439,14 @@ class HermesToolsController:
         settings: Settings,
         *,
         opener: Callable = urllib.request.urlopen,
+        profile: Profile | None = None,
     ) -> HermesToolsController:
         client = HermesToolsClient(settings.hermes_tools_url, opener=opener)
-        return cls(client, bool(settings.hermes_tools_enabled))
+        return cls(
+            client,
+            bool(settings.hermes_tools_enabled),
+            profile=profile,
+        )
 
     def handle_text(self, text: str, response_id: str) -> HermesToolResult | None:
         if not self._enabled:
@@ -444,6 +457,8 @@ class HermesToolsController:
         self._buffer_text += text
         normalized = _normalize(self._buffer_text)
         for tool in TOOL_DEFS:
+            if self._profile is not None and not self._profile.allows(tool.name):
+                continue
             if not tool.matches(normalized):
                 continue
             if tool.skip_when and tool.skip_when(normalized):
