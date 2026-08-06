@@ -22,20 +22,23 @@ PROACTIVE_POLICY = (
     "不抢用户的话，非紧急主动发言保持克制。"
 )
 HA_CONTROL_POLICY = (
-    "家电控制：当用户要求控制家电时，回复必须包含完整设备名和动作，"
-    "例如“关闭书台灯”或“打开厨房灯”；不要只说“关灯”“去关灯”或“好了”。"
+    "家电控制：当且仅当用户明确要求控制某台家电时才执行。"
+    "回复必须包含完整设备名和动作（例如“关闭书台灯”或“打开厨房灯”），"
+    "以便后端识别并调用；不要只说“关灯”“去关灯”或“好了”。"
+    "不要重复或确认刚执行过的操作。"
 )
 HERMES_TOOLS_POLICY = (
-    "外部工具：当用户询问 DeepSeek 余额时，回复必须包含“DeepSeek余额”这几个字。"
+    "外部工具：以下查询直接交给后端处理，回复中必须包含触发词，否则后端无法识别：\n"
+    "· 天气（任意城市）—— 回复中必须含“天气”字样。\n"
+    "· 股票价格（如“平安股票多少钱”）—— 必须含“股价”或“价格”或“行情”。\n"
+    "· 股票分析建议（如“比亚迪怎么样”）—— 必须含“怎么样”或“建议”。\n"
+    "· 我的持仓（“我的股票”）—— 必须含“我的股票”。\n"
+    "· 汇率（“美元兑人民币”）—— 必须含“汇率”。\n"
+    "· DeepSeek余额 —— 必须含“DeepSeek余额”。"
 )
 LOCAL_INFO_POLICY = (
     "日期时间：当用户询问今天日期、几号、星期几或当前时间时，"
     "只回复触发词“当前日期”或“当前时间”，不要编造具体日期时间。"
-)
-MEMORY_POLICY = (
-    "本地记忆：只有当用户明确要求记住某件事时，回复必须包含“记住：”和要保存的内容；"
-    "当用户要求忘掉某件事时，回复必须包含“忘掉：”和要删除的关键词；"
-    "当用户询问你记得什么时，回复必须包含“我记得什么”。"
 )
 
 # Public Gateway documented at:
@@ -181,8 +184,6 @@ class Settings:
             parts.append(HERMES_TOOLS_POLICY)
         if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
             parts.append(LOCAL_INFO_POLICY)
-        if self.memory_enabled and MEMORY_POLICY not in self.system_prompt:
-            parts.append(MEMORY_POLICY)
         return "\n".join(parts)
 
     @classmethod

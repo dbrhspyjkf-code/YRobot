@@ -203,14 +203,25 @@ def _extract_stock_name(normalized: str) -> str:
     # Strip common verbs around a name: 查/看看/一下/怎么样/多少钱/价格/分析/建议 etc
     cleaned = normalized
     for w in (
-        "查一下", "查询", "看看", "帮我", "一下", "怎么样", "怎么", "多少钱", "价格",
+        "查一下", "查询", "看看", "帮我", "一下", "怎么样", "怎么", "多少钱", "多少", "价格",
         "股价", "行情", "分析", "建议", "操盘", "点评", "表现", "怎样", "如何",
-        "能不能买", "能买吗", "呢", "吗", "的", "了",
+        "我想", "想买", "能不能买", "能买吗", "现在", "最近", "呢", "吗", "的", "了",
     ):
         cleaned = cleaned.replace(w, "")
     cleaned = cleaned.strip()
-    # Reject generic stock phrases and keep only a plausible name/code.
-    if cleaned in ("股票", "我的股票", "自选股", "持仓") or "股票" in cleaned:
+    # Strip the noun "股票" so "平安股票怎么样" → "平安".
+    # Keep the prefix "我的" / "自选" so portfolio queries return "".
+    for noun in ("股票", "的股票"):
+        cleaned = cleaned.replace(noun, "")
+    cleaned = cleaned.strip()
+    # Strip leading verb remnants after the noun strip (e.g., "买比亚迪").
+    if cleaned.startswith("买"):
+        cleaned = cleaned[1:]
+    cleaned = cleaned.strip()
+    # Reject obvious non-names.
+    if not cleaned:
+        return ""
+    if cleaned in ("我", "我的", "自选", "自选股", "持仓", "它"):
         return ""
     if 2 <= len(cleaned) <= 8:
         return cleaned
@@ -286,6 +297,36 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
         format=_format_deepseek,
     ),
 )
+
+
+def _validate_tool_defs(defs: tuple[ToolDef, ...]) -> None:
+    """Fail fast on duplicate tool names or empty phrases."""
+    seen_names: dict[str, str] = {}
+    seen_phrases: dict[str, str] = {}
+    for tool in defs:
+        if tool.name in seen_names:
+            raise RuntimeError(
+                f"Duplicate Hermes tool name {tool.name!r}: also defined as "
+                f"{seen_names[tool.name]!r}. Two ToolDef entries would silently "
+                "share a cooldown/dedup slot."
+            )
+        seen_names[tool.name] = str(tool.phrases[0]) if tool.phrases else ""
+        for phrase in tool.phrases:
+            if not phrase:
+                raise RuntimeError(
+                    f"Hermes tool {tool.name!r} has an empty phrase."
+                )
+            if phrase in seen_phrases:
+                logger.warning(
+                    "Hermes tool phrase %r is shared by %s and %s; "
+                    "only the first match wins per response_id.",
+                    phrase, seen_phrases[phrase], tool.name,
+                )
+            else:
+                seen_phrases[phrase] = tool.name
+
+
+_validate_tool_defs(TOOL_DEFS)
 
 
 class HermesToolsController:
