@@ -154,13 +154,10 @@ class XiaozhiConversation:
                 for _ in range(83):  # 83 × 60ms ≈ 5s
                     if self._stop.is_set():
                         break
-                    pcm = self._read_mic()
-                    if pcm is None:
-                        await asyncio.sleep(0.06)
-                        continue
+                    pcm = await asyncio.get_event_loop().run_in_executor(None, self._read_mic)
                     pkt = self._codec.encode(pcm[:CAPTURE_SAMPLES].tobytes())
                     await ws.send(pkt)
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(0.05)
                 await ws.send(
                     json.dumps(
                         {

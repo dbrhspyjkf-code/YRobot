@@ -890,65 +890,36 @@ class Yrobot(ReachyMiniApp):
     ) -> None:
         """Run the conversation loop through Xiaozhi cloud."""
         from yrobot.xiaozhi import XiaozhiConversation, CAPTURE_SAMPLES, FRAME_MS
+        from yrobot.realtime import RealtimeClient
+        import sounddevice as _sd
 
-        import queue as _queue
-        mic = Microphone(reachy_mini.media)
         speaker = Speaker(reachy_mini.media)
+        _sd.default.samplerate = 16000
+        _sd.default.channels = 1
+        _sd.default.dtype = "int16"
+        _sd.default.device = "reachymini_audio_src"
 
-        _mic_queue: _queue.Queue = _queue.Queue(maxsize=64)
-        _mic_done = threading.Event()
-
-        def _poll_mic_once():
-            """Called from asyncio thread pool to satisfy Reachy SDK thread affinity."""
-            frames = mic.read_frames()
-            for f in frames:
-                try:
-                    _mic_queue.put_nowait(f)
-                except _queue.Full:
-                    pass
-
-        async def _mic_poller():
-            loop = asyncio.get_event_loop()
-            while not _mic_done.is_set():
-                await loop.run_in_executor(None, _poll_mic_once)
-                await asyncio.sleep(0.01)
-
-        # Warm-up: drain initial empty audio
-        for _ in range(10):
-            mic.read_frames()
-            time.sleep(0.02)
+        mic_stream = _sd.InputStream()
+        mic_stream.start()
 
         def read_mic():
-            all_parts = []
-            deadline = time.monotonic() + 0.065
-            while time.monotonic() < deadline:
-                try:
-                    f = _mic_queue.get(timeout=0.01)
-                    all_parts.append(f)
-                except _queue.Empty:
-                    break
-            if not all_parts:
-                return np.zeros(CAPTURE_SAMPLES, dtype=np.float32)
-            merged = np.concatenate(all_parts)
-            if len(merged) < CAPTURE_SAMPLES:
-                return np.zeros(CAPTURE_SAMPLES, dtype=np.float32)
-            return merged[:CAPTURE_SAMPLES]
+            buf, _ = mic_stream.read(CAPTURE_SAMPLES)
+            return np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768.0
 
         def play_speaker(_epoch: int, pcm: np.ndarray) -> None:
             speaker.play(0, pcm.astype(np.float32))
 
-        apply_audio_startup_config(reachy_mini)
         speaker.start()
         try:
             conv = XiaozhiConversation(
                 stop_event,
                 read_mic=read_mic,
                 play_speaker=play_speaker,
-                mic_poller=_mic_poller,
             )
             conv.run()
         finally:
-            _mic_done.set()
+            mic_stream.stop()
+            mic_stream.close()
             speaker.close()
             speaker.join(timeout=2)
 
