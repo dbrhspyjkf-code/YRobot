@@ -602,9 +602,18 @@ TOOL_DEFS: tuple[ToolDef, ...] = (
             "get_margin_data", _margin_prompt(text)
         ),
         format=_format_generic_tool,
+        # Require a stock code/name in the text. Without it the model is just
+        # echoing '融资融券' (or asking generally) and hermes would return a
+        # generic encyclopedia answer instead of per-stock data.
+        skip_when=lambda text: (
+            not _has_stock_code(text)
+            and _chinese_digit_code(text) is None
+            and _match_known_stock_name(text) is None
+        ),
         extra_matches=lambda text: _has_stock_code(text) and any(
             kw in text for kw in ("融资", "融券", "两融")
         ),
+        cooldown_s=5.0,
         discover_name="get_margin_data",
         discover_source="ios_api",
     ),
