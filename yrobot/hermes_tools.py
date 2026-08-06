@@ -219,36 +219,48 @@ def _is_portfolio_intent(text: str) -> bool:
 
 
 def _extract_stock_name(normalized: str) -> str:
-    """Extract a stock name/code from the user's request text."""
+    """Extract a stock name/code from the user's request text.
+
+    Strategy:
+    1. If a 6-digit code is present anywhere, return it.
+    2. Otherwise strip a stop-word vocabulary (politeness, verbs, adverbs,
+       pronouns, common Chinese punctuation) and pick the longest remaining
+       2-8-character Chinese run. This is more robust than enumerating every
+       possible model paraphrase (让我, 帮您, 请稍等, 正在, etc.) because new
+       polite phrases appear faster than we can keep up.
+    """
     import re as _re
-    # 6-digit code
-    match = _re.search(r"(?<!\d)\d{6}(?!\d)", normalized)
-    if match:
-        return match.group(0)
-    # Strip common verbs around a name. Longer phrases first so that e.g.
-    # "看一下" wins over the standalone "一下".
+    code_match = _re.search(r"(?<!\d)\d{6}(?!\d)", normalized)
+    if code_match:
+        return code_match.group(0)
+    # Strip stop words (longest alternatives first so e.g. 多少钱 wins over 多少).
     cleaned = _re.sub(
-        r"查一下|查询|看看|看一下|帮忙|帮我|请帮我|请你|让我|我想|想买|能不能买|能买吗|怎么样|怎样|如何|多少钱|多少|股价|股票价格|价格|行情|分析|建议|操盘|点评|表现|现在|最近|这个|那|一下|查|呢|吗|的|了|好的|我来|我帮您|我来帮您|帮您|您|为|正在|我|。|，|、|！|？",
+        r"查一下|查询|看看|看一下|帮忙|帮我|请帮我|请你|让我|我想|想买|能不能买|能买吗|"
+        r"怎么样|怎样|如何|多少钱|多少|股价|股票价格|价格|行情|分析|建议|操盘|点评|表现|"
+        r"现在|最近|这个|那|一下|查|呢|吗|的|了|好的|我来|我帮您|我来帮您|帮您|您|为|"
+        r"正在|马上|稍等|请稍等|稍等一下|等待|在|受|好的|是|我|呀|啊|哈|嗯|那个|这个|"
+        r"。|，|、|！|？|~|·|;",
         "",
         normalized,
     )
-    cleaned = cleaned.strip()
-    # Strip the noun "股票" so "平安股票怎么样" → "平安".
-    # Keep the prefix "我的" / "自选" so portfolio queries return "".
-    cleaned = cleaned.replace("的股票", "").replace("股票", "")
-    cleaned = cleaned.strip()
-    # Strip leading verb remnants after the noun strip (e.g., "买比亚迪").
-    if cleaned.startswith("买"):
-        cleaned = cleaned[1:]
-    cleaned = cleaned.strip()
-    # Reject obvious non-names.
-    if not cleaned:
+    # Find the longest run of Chinese characters (Han script) of length 2-8.
+    runs = _re.findall(r"[\u4e00-\u9fff]{2,8}", cleaned)
+    # Remove trailing 股票 noun from each run.
+    runs = [r[:-2] if r.endswith("股票") and len(r) > 2 else r for r in runs]
+    # Strip a leading "买" (buy) verb remnant after the noun strip.
+    runs = [r[1:] if r.startswith("买") and len(r) > 3 else r for r in runs]
+    # Reject runs that look like stop-word residues or portfolio placeholders.
+    REJECT_RUNS = {
+        "我们", "你们", "他们", "好的", "这个", "那个", "什么", "怎么", "为什么",
+        "我的", "我的股票", "自选", "自选股", "持仓", "它", "这", "那",
+        "股票", "请稍等",
+    }
+    candidates = [r for r in runs if r and r not in REJECT_RUNS]
+    if not candidates:
         return ""
-    if cleaned in ("我", "我的", "自选", "自选股", "持仓", "它", "这", "那"):
-        return ""
-    if 2 <= len(cleaned) <= 8:
-        return cleaned
-    return ""
+    # Prefer the longest; ties → earliest in text.
+    candidates.sort(key=lambda r: (-len(r), cleaned.index(r)))
+    return candidates[0]
 
 
 def _format_deepseek(data: dict[str, Any]) -> str:
