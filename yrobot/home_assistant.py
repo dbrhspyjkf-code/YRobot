@@ -155,8 +155,8 @@ class HomeAssistantController:
         self._caller = caller
         self._enabled = enabled
         self._fired: set[tuple[str, str]] = set()
-        self._last_fired: dict[str, float] = {}  # entity_id → timestamp
-        self._cooldown_s = 30.0
+        self._last_fired: dict[tuple[str, str], float] = {}  # (entity_id, service) → timestamp
+        self._cooldown_s = 5.0
         self._buffer_response_id = ""
         self._buffer_text = ""
 
@@ -199,8 +199,12 @@ class HomeAssistantController:
             key = (response_id, action.service, action.entity_id)
             if key in self._fired:
                 continue
-            # cooldown: don't fire the same entity again within cooldown window
-            last = self._last_fired.get(action.entity_id, 0.0)
+            # cooldown: don't fire the same (entity, service) again within cooldown window.
+            # Tracking per-service means a user can toggle a light immediately
+            # after turning it on, but the same action (e.g. turn_on) won't
+            # re-fire from an echo loop within 5 s.
+            service_key = (action.entity_id, action.service)
+            last = self._last_fired.get(service_key, 0.0)
             if now - last < self._cooldown_s:
                 logger.info(
                     "Home Assistant cooldown skipped %s/%s (%.0fs ago)",
@@ -209,7 +213,7 @@ class HomeAssistantController:
                 continue
             pending.append(action)
             self._fired.add(key)
-            self._last_fired[action.entity_id] = now
+            self._last_fired[service_key] = now
         if not pending:
             return None
         try:
