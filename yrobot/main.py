@@ -1231,7 +1231,12 @@ class Yrobot(ReachyMiniApp):
 
                 rt = _a.ensure_future(recv())
                 try:
-                    SILENCE_RMS = 2000
+                    # Silence floor for the Xiaozhi uplink gate.  Higher =
+                    # louder speech required to trigger; normalized 0..1 value
+                    # from the shared config (default 2000/32768 ≈ 0.061).
+                    from yrobot.audio import get_vad_rms_min as _get_vad_min
+                    SILENCE_RMS = max(500, int(_get_vad_min() * 32768))
+                    logger.info("xz silence floor rms=%.0f", SILENCE_RMS)
                     while not stop_event.is_set():
                         if tts_active:
                             # Safety: if the server sent tts/start but no audio
