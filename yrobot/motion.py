@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 IDLE, LISTEN, SPEAK = "idle", "listen", "speak"
 
 # One-shot expressive moves (played on top of the current mode, then fade out).
-SHAKE, NOD, TILT, SURPRISE, THINK, YAWN = (
-    "shake", "nod", "tilt", "surprise", "think", "yawn")
-MOVES = (SHAKE, NOD, TILT, SURPRISE, THINK, YAWN)
+SHAKE, NOD, TILT, SURPRISE, THINK, YAWN, SAD, ANGRY = (
+    "shake", "nod", "tilt", "surprise", "think", "yawn", "sad", "angry")
+MOVES = (SHAKE, NOD, TILT, SURPRISE, THINK, YAWN, SAD, ANGRY)
 
 # name -> (duration_s, roll_amp, pitch_amp, yaw_amp, antenna_delta)
 # Amplitudes are radians; antenna_delta is added to the antenna neutral.
@@ -44,6 +44,19 @@ MOVE_SPECS = {
     SURPRISE: (1.1,  0.00, -0.10,  0.00,  0.45),   # antenna up + head up
     THINK:    (2.5,  0.02,  0.10,  0.05, -0.20),   # head down, slow sway
     YAWN:     (2.8,  0.02,  0.12,  0.00, -0.55),   # head down then up, antenna droop
+    SAD:      (2.2,  0.00,  0.12, -0.03, -0.35),   # droop: head down, antennas down
+    ANGRY:    (1.2,  0.00, -0.08,  0.16,  0.30),   # raised head + fast shake, antenna up
+}
+
+# Xiaozhi protocol emotion -> Reachy move name (see xiaozhi.tech websocket doc).
+EMOTION_TO_MOVE = {
+    "happy": NOD, "laughing": NOD, "funny": NOD, "winking": TILT,
+    "surprised": SURPRISE, "shocked": SURPRISE,
+    "thinking": THINK, "confused": THINK,
+    "sleepy": YAWN, "tired": YAWN,
+    "sad": SAD, "crying": SAD, "downcast": SAD,
+    "angry": ANGRY, "furious": ANGRY, "irritated": ANGRY,
+    "loving": TILT, "kissy": TILT, "confident": NOD,
 }
 
 

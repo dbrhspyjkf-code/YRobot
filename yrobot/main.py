@@ -1132,6 +1132,18 @@ class Yrobot(ReachyMiniApp):
                         else:
                             d = _j.loads(raw)
                             t = d.get("type","")
+                            if t == "llm":
+                                # Xiaozhi sends the model's emotion/expression here
+                                # (e.g. {"type":"llm","emotion":"happy","text":"😀"});
+                                # map it to a Reachy one-shot move.
+                                emo = (d.get("emotion") or "").strip().lower()
+                                from yrobot.motion import EMOTION_TO_MOVE
+                                mv = EMOTION_TO_MOVE.get(emo)
+                                if mv:
+                                    choreo.play_move(mv)
+                                    logger.info("xz emotion %s -> move %s", emo, mv)
+                                else:
+                                    logger.info("xz emotion %s (no move)", emo or "?")
                             if t == "stt":
                                 logger.info("xz stt: %s", d.get("text",""))
                                 choreo.set_mode(LISTEN)
