@@ -25,6 +25,10 @@ import time
 from collections.abc import Callable
 
 import numpy as np
+try:
+    from scipy.spatial.transform import Rotation as R
+except ImportError:  # pragma: no cover - scipy is a hard dep of the SDK
+    R = None
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,29 @@ def rpy_pose(roll: float, pitch: float, yaw: float, z: float) -> np.ndarray:
     )
     pose[2, 3] = z
     return pose
+
+
+def _blend_pose(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
+    """Lerp two 4x4 poses by alpha (0 -> a, 1 -> b).
+
+    Translation is lerped linearly; the rotation is lerped in SO(3) via
+    slerp on the quaternions so the blend never skews or flips.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    out = np.eye(4)
+    out[:3, 3] = a[:3, 3] * (1.0 - alpha) + b[:3, 3] * alpha
+    if R is None:
+        out[:3, :3] = a[:3, :3] * (1.0 - alpha) + b[:3, :3] * alpha
+    else:
+        try:
+            from scipy.spatial.transform import Slerp
+            qa = R.from_matrix(a[:3, :3])
+            qb = R.from_matrix(b[:3, :3])
+            out[:3, :3] = Slerp([0.0, 1.0], R.concatenate([qa, qb]))(alpha).as_matrix()
+        except Exception:  # pragma: no cover - fall back to matrix lerp
+            out[:3, :3] = a[:3, :3] * (1.0 - alpha) + b[:3, :3] * alpha
+    return out
 
 
 def doa_to_yaw_delta(angle: float) -> float:
@@ -232,6 +259,11 @@ class Choreographer(threading.Thread):
         self._move_start = -1e9
         self._move_freqs = {SHAKE: 5.0, NOD: 4.0, TILT: 1.0, SURPRISE: 1.0,
                             THINK: 0.4, YAWN: 0.5}
+        # Recorded move (official emotion library) state.
+        self._recorded_move = None
+        self._recorded_name = None
+        self._recorded_start = -1e9
+        self._recorded_duration = 0.0
 
     # -- thread-safe inputs -------------------------------------------------
 
@@ -251,8 +283,31 @@ class Choreographer(threading.Thread):
         self._move_start = time.monotonic() if now is None else now
         return True
 
+    def play_recorded(self, name: str, recorded_moves: Any = None) -> bool:
+        """Play a recorded move from the official emotion library.
+
+        The recorded trajectory takes over the head/antenna pose for its full
+        duration with a 300 ms blend in/out.  ``recorded_moves`` is a lazily
+        created ``RecordedMoves`` instance (shared singleton in main.py); if
+        the name is unknown or the library is unavailable, returns False.
+        """
+        if recorded_moves is None:
+            return False
+        try:
+            move = recorded_moves.get(name)
+        except Exception:
+            return False
+        self._recorded_move = move
+        self._recorded_name = name
+        self._recorded_start = time.monotonic()
+        self._recorded_duration = float(move.duration)
+        return True
+
     def current_move(self) -> str | None:
         return self._move_name
+
+    def current_recorded(self) -> str | None:
+        return getattr(self, "_recorded_name", None) if self._recorded_move is not None else None
 
     def _move_offsets(
         self, now: float, dt: float
@@ -392,6 +447,27 @@ class Choreographer(threading.Thread):
             pose = rpy_pose(roll, pitch + sac_pitch, yaw, z)
         else:
             m_ant = 0.0
+
+        # Recorded move (official emotion library) takes over the pose
+        # entirely while playing, with a 300 ms blend in/out so neither
+        # start nor end ever steps.
+        rmv = self._recorded_move
+        if rmv is not None:
+            rel = now - self._recorded_start
+            dur = self._recorded_duration
+            if rel >= dur:
+                self._recorded_move = None
+            else:
+                try:
+                    rec_pose, rec_ant, _ = rmv.evaluate(rel)
+                    blend = min(1.0, rel / 0.3, (dur - rel) / 0.3)
+                    # Interpolate pose elements (position + rotation matrix)
+                    # between the composed pose and the recorded pose.
+                    pose = _blend_pose(pose, np.asarray(rec_pose, dtype=np.float64), blend)
+                    ra = np.asarray(rec_ant, dtype=np.float64)
+                    m_ant = float((ra[0] + ra[1]) / 2.0)
+                except Exception:
+                    self._recorded_move = None
 
         # Antennas: perked and still when listening, dancing when speaking.
         target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen) + m_ant

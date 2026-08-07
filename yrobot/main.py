@@ -913,6 +913,19 @@ class Yrobot(ReachyMiniApp):
         choreo._gaze._omega = 4.0     # softer spring (was 6.0)
         from yrobot.app_config import motion_controller_singleton
         motion_controller_singleton().set(choreo)
+        # Official emotion library (85 recorded moves) — lazy singleton so
+        # playback works even if the library is slow to load on first use.
+        _recorded_moves = [None]
+        def _get_recorded():
+            if _recorded_moves[0] is None:
+                try:
+                    from reachy_mini.motion.recorded_move import RecordedMoves
+                    _recorded_moves[0] = RecordedMoves(
+                        "pollen-robotics/reachy-mini-emotions-library")
+                except Exception as exc:
+                    logger.warning("emotion library unavailable: %s", exc)
+            return _recorded_moves[0]
+        motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
 
         # SoundCompass: track speaker direction via XVF3800 DoA

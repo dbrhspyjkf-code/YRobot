@@ -70,11 +70,16 @@ class MotionController:
 
     def __init__(self) -> None:
         self._choreo: Any = None
+        self._recorded_provider: Any = None
         self._lock = threading.Lock()
 
     def set(self, choreo: Any) -> None:
         with self._lock:
             self._choreo = choreo
+
+    def set_recorded_provider(self, provider: Any) -> None:
+        with self._lock:
+            self._recorded_provider = provider
 
     def get(self) -> Any | None:
         with self._lock:
@@ -86,11 +91,30 @@ class MotionController:
             return False, "机器人动作系统尚未就绪"
         if choreo.play_move(name):
             return True, f"动作 {name} 开始播放"
+        # Try the official recorded-emotion library.
+        provider = self._recorded_provider
+        recorded = provider() if callable(provider) else None
+        if recorded is not None and choreo.play_recorded(name, recorded):
+            return True, f"情绪 {name} 开始播放"
         return False, f"未知动作: {name}"
 
     def current(self) -> str | None:
         choreo = self.get()
-        return choreo.current_move() if choreo is not None else None
+        if choreo is None:
+            return None
+        return choreo.current_move() or choreo.current_recorded()
+
+    def list_moves(self) -> list[str]:
+        from yrobot.motion import MOVES
+        names = list(MOVES)
+        provider = self._recorded_provider
+        recorded = provider() if callable(provider) else None
+        if recorded is not None:
+            try:
+                names.extend(sorted(recorded.list_moves()))
+            except Exception:
+                pass
+        return names
 
 
 def motion_controller_singleton() -> MotionController:
@@ -886,8 +910,7 @@ def register_settings_routes(
 
     @app.get("/api/motion")
     def get_motion() -> dict[str, Any]:
-        from yrobot.motion import MOVES
-        return {"ok": True, "moves": list(MOVES), "current": motion.current()}
+        return {"ok": True, "moves": motion.list_moves(), "current": motion.current()}
 
     @app.post("/api/motion")
     def post_motion(document: dict[str, Any]) -> dict[str, Any]:
