@@ -987,7 +987,7 @@ class Yrobot(ReachyMiniApp):
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
             hdrs = {"Authorization": "Bearer test-token", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
-            async with _ws.connect("wss://api.tenclass.net/xiaozhi/v1/", additional_headers=hdrs, open_timeout=12) as ws:
+            async with _ws.connect("wss://api.tenclass.net/xiaozhi/v1/", additional_headers=hdrs, open_timeout=12, ping_interval=20, ping_timeout=10) as ws:
                 await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
                     "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
                 data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
@@ -1006,7 +1006,7 @@ class Yrobot(ReachyMiniApp):
                     nonlocal tts_active
                     while not stop_event.is_set():
                         try:
-                            raw = await _a.wait_for(ws.recv(), timeout=3.0)
+                            raw = await _a.wait_for(ws.recv(), timeout=25.0)
                         except _a.TimeoutError:
                             continue
                         if isinstance(raw, bytes):
