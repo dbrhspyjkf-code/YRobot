@@ -284,8 +284,14 @@ Falls back to MX search on failure.
 
 **脚本**: scripts/xiaozhi_test.py — 独立测试，先停 YRobot 再跑。
 
-**当前状态**: WebSocket 连接 ✅, 协议交换 ✅, STT 识别 ✅, LLM 回复 ✅,
-TTS Opus 下行接收 ✅, TTS 播放 ⚠️ (Opus decode 需微调)。
+**当前状态**：WebSocket 连接、协议交换、STT、LLM 回复和长句 TTS 播放均已验证。
+
+**TTS 实现与排查（2026-08-07）**：
+- 下行 Opus 参数必须采用 server hello 协商的 `sample_rate` 和 `frame_duration`。
+- aplay 写入必须在独立线程中进行，不能阻塞 WebSocket 接收协程。
+- 收到 `tts.start` 后禁止新的 `listen.start` 和上行音频；仅 `tts.stop` 才结束 speaking。`sentence_end` 是句间事件，不能视为整段 TTS 结束。
+- 麦克风读取使用 `asyncio.to_thread()`，每个上行音频包发送后让出事件循环；否则下行音频会积压，长句可能中断，TCP 会表现为 `CLOSE-WAIT`。
+- 验证日志：在 `xz tts start` 和 `xz tts stop` 之间应持续出现 `xz audio packets=...`，期间不应有 `xz sent ...`。
 
 小智云不自带视觉；视觉通过 MCP 工具 analyze_image 调外部 VL 模型
 (Qwen-VL/GPT-4o/MiniCPM-o)。待用户选定 VL 模型后在 hermes-mcp 加该工具。
