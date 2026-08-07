@@ -1006,7 +1006,7 @@ class Yrobot(ReachyMiniApp):
                     nonlocal tts_active
                     while not stop_event.is_set():
                         try:
-                            raw = await _a.wait_for(ws.recv(), timeout=25.0)
+                            raw = await ws.recv()
                         except _a.TimeoutError:
                             continue
                         if isinstance(raw, bytes):
