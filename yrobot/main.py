@@ -1282,15 +1282,20 @@ class Yrobot(ReachyMiniApp):
 
     @staticmethod
     def _wake_up_if_needed(reachy_mini: ReachyMini) -> None:
-        """Wake the robot head if it is still in the sleep pose at startup.
+        """Rise the head slowly to neutral if it is off-neutral at startup.
 
-        Mirrors the official conversation app lifecycle: after a cold boot the
-        head may stay lowered in the sleep pose, and the choreographer then
-        fights a dead/depowered pose. A short wake_up() brings it back to the
-        neutral position so speech/look animations have a valid baseline.
+        After a cold boot the head may be lowered in the sleep pose (or any
+        dropped pose). If we let the choreographer start directly, its first
+        50 Hz ``set_target`` would snap the head to neutral instantly and
+        startle people. The SDK ``wake_up()`` is also avoided: besides the
+        2 s rise it snaps a 20° roll in 0.2 s. Instead we drive a gentle
+        6 s interpolation to the initial pose, blocking until it completes.
         """
         try:
-            from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
+            from reachy_mini.reachy_mini import (
+                INIT_ANTENNAS_JOINT_POSITIONS,
+                INIT_HEAD_POSE,
+            )
             from reachy_mini.utils.interpolation import distance_between_poses
 
             try:
@@ -1306,12 +1311,21 @@ class Yrobot(ReachyMiniApp):
             if pose.shape != (4, 4):
                 logger.warning("unexpected head pose shape %s; skipping wake-up", pose.shape)
                 return
-            t_dist, r_dist, _ = distance_between_poses(pose, SLEEP_HEAD_POSE)
-            if t_dist <= 0.05 and r_dist <= 0.35:
-                logger.info("head in sleep pose; running wake-up movement")
-                reachy_mini.wake_up()
+            t_dist, r_dist, _ = distance_between_poses(pose, INIT_HEAD_POSE)
+            if t_dist > 0.05 or r_dist > 0.35:
+                logger.info(
+                    "head off neutral (t=%.3f r=%.3f); rising slowly over 6s",
+                    t_dist,
+                    r_dist,
+                )
+                reachy_mini.goto_target(
+                    INIT_HEAD_POSE,
+                    antennas=INIT_ANTENNAS_JOINT_POSITIONS,
+                    duration=6.0,
+                )
+                logger.info("head reached neutral after slow rise")
             else:
-                logger.info("head not in sleep pose; skipping wake-up")
+                logger.info("head already near neutral; skipping wake-up")
         except Exception as exc:  # noqa: BLE001 - startup wake-up is best effort
             logger.warning("wake-up check failed: %s", exc)
 
