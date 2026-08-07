@@ -942,6 +942,7 @@ class Yrobot(ReachyMiniApp):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
+        _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
         _vis_stop = _th_face.Event()
 
         def _face_tracker():
@@ -1135,13 +1136,20 @@ class Yrobot(ReachyMiniApp):
                             if t == "llm":
                                 # Xiaozhi sends the model's emotion/expression here
                                 # (e.g. {"type":"llm","emotion":"happy","text":"😀"});
-                                # map it to a Reachy one-shot move.
+                                # map it to a Reachy one-shot move.  Per-move
+                                # cooldown prevents the default 'happy' nod from
+                                # firing on every reply (manual API calls bypass).
                                 emo = (d.get("emotion") or "").strip().lower()
                                 from yrobot.motion import EMOTION_TO_MOVE
                                 mv = EMOTION_TO_MOVE.get(emo)
                                 if mv:
-                                    choreo.play_move(mv)
-                                    logger.info("xz emotion %s -> move %s", emo, mv)
+                                    now = time.monotonic()
+                                    if now - _last_emotion_move.get(mv, -1e9) >= 5.0:
+                                        _last_emotion_move[mv] = now
+                                        choreo.play_move(mv)
+                                        logger.info("xz emotion %s -> move %s", emo, mv)
+                                    else:
+                                        logger.info("xz emotion %s -> move %s (cooldown)", emo, mv)
                                 else:
                                     logger.info("xz emotion %s (no move)", emo or "?")
                             if t == "stt":
