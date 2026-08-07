@@ -1137,6 +1137,7 @@ class Yrobot(ReachyMiniApp):
                 dec = opuslib.Decoder(tts_rate, 1)
                 tts_packets = 0
                 tts_decode_errors = 0
+                _tts_start_at = 0.0
                 logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
                 tts_active = False
 
@@ -1190,6 +1191,7 @@ class Yrobot(ReachyMiniApp):
                             elif t == "tts" and d.get("state")=="start":
                                 logger.info("xz tts start")
                                 tts_active = True
+                                _tts_start_at = time.time()
                                 _user_speaking[0] = False
                                 tts_packets = 0
                                 tts_decode_errors = 0
@@ -1224,6 +1226,15 @@ class Yrobot(ReachyMiniApp):
                     SILENCE_RMS = 2000
                     while not stop_event.is_set():
                         if tts_active:
+                            # Safety: if the server sent tts/start but no audio
+                            # ever arrives (cloud hiccup / lost stop), recover
+                            # listening after TTS_STALL_TIMEOUT so the robot is
+                            # not deaf forever.
+                            if tts_packets == 0 and time.time() - _tts_start_at > 30.0:
+                                tts_active = False
+                                logger.warning("tts stall: no audio for 30s, forcing listen")
+                                _aplay_flush()
+                                choreo.set_mode(IDLE)
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0)
                             continue
