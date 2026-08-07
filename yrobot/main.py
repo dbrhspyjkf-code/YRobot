@@ -896,142 +896,242 @@ class Yrobot(ReachyMiniApp):
         reachy_mini: ReachyMini,
         stop_event: threading.Event,
     ) -> None:
-        """Xiaozhi conversation via sounddevice + Reachy Speaker."""
+        """Xiaozhi — sounddevice mic + OutputStream TTS."""
         import asyncio as _a
         import json as _j
         import sounddevice as _sd
+        import subprocess as _sp
         import websockets as _ws
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
 
-        apply_audio_startup_config(reachy_mini)
+        choreo = Choreographer(reachy_mini)
+        choreo.start()
 
         _sd.default.samplerate = 16000
         _sd.default.channels = 1
         _sd.default.dtype = "int16"
-        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
-        choreo = Choreographer(reachy_mini)
-        choreo.start()
+        # Release the Reachy SDK's output stream so aplay can open
+        # /dev/snd/pcmC0D0p (the SDK held it via Speaker class).
+        try:
+            reachy_mini.media.stop_playing()
+            logger.info("released SDK speaker for aplay")
+        except Exception as e:
+            logger.warning("stop_playing failed: %s", e)
 
         mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
 
 
+        # Playback is intentionally isolated from the WebSocket event loop.
+        # aplay writes can block on ALSA; the receive coroutine must never wait
+        # on that pipe or it will stall incoming TTS packets.
+        import queue as _pq
+        import threading as _th
+        _audio_q = _pq.Queue()
+        _writer_stop = _th.Event()
+        _audio_stats = {"enqueued": 0, "written": 0, "restarts": 0}
 
-        # Output stream for TTS playback
-        speaker = Speaker(reachy_mini.media)
-        speaker.start()
+        def _open_aplay():
+            return _sp.Popen(
+                ["/usr/bin/aplay", "-r", "16000", "-f", "S16_LE", "-c", "2", "-q"],
+                stdin=_sp.PIPE,
+                stderr=_sp.DEVNULL,
+            )
+
+        def _audio_writer():
+            proc = None
+            while not _writer_stop.is_set():
+                try:
+                    chunk = _audio_q.get(timeout=0.5)
+                except _pq.Empty:
+                    continue
+                if chunk is None:
+                    break
+                for attempt in range(2):
+                    try:
+                        if proc is None or proc.poll() is not None:
+                            proc = _open_aplay()
+                            _audio_stats["restarts"] += 1
+                            logger.info("audio-out: started aplay (%d)", _audio_stats["restarts"])
+                        proc.stdin.write(chunk)
+                        _audio_stats["written"] += 1
+                        break
+                    except (BrokenPipeError, OSError) as exc:
+                        logger.warning("audio-out: aplay write failed: %s", exc)
+                        if proc is not None:
+                            try:
+                                proc.kill()
+                            except OSError:
+                                pass
+                        proc = None
+                else:
+                    logger.error("audio-out: dropped chunk after aplay restart failure")
+            if proc is not None:
+                try:
+                    proc.stdin.close()
+                    proc.terminate()
+                except OSError:
+                    pass
+
+        _audio_thread = _th.Thread(target=_audio_writer, name="aplay-writer", daemon=True)
+        _audio_thread.start()
+
+        def _aplay_add(stereo_f32):
+            pcm = (np.clip(stereo_f32, -1, 1) * 32767).astype("<i2").tobytes()
+            _audio_q.put_nowait(pcm)
+            _audio_stats["enqueued"] += 1
+
+        def _aplay_flush():
+            pass
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
-            dec = opuslib.Decoder(24000, 1)
             hdrs = {"Authorization": "Bearer test-token", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
-            url = "wss://api.tenclass.net/xiaozhi/v1/"
-            async with _ws.connect(url, additional_headers=hdrs, open_timeout=12) as ws:
+            async with _ws.connect("wss://api.tenclass.net/xiaozhi/v1/", additional_headers=hdrs, open_timeout=12) as ws:
                 await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
                     "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
                 data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
                 sid = data.get("session_id","")
-                logger.info("xiaozhi ready sid=%s", sid[:12])
-                tts_buf = []
+                params = data.get("audio_params", {})
+                tts_rate = int(params.get("sample_rate", 24000))
+                tts_duration = int(params.get("frame_duration", 60))
+                tts_frame_size = tts_rate * tts_duration // 1000
+                dec = opuslib.Decoder(tts_rate, 1)
+                tts_packets = 0
+                tts_decode_errors = 0
+                logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
+                tts_active = False
 
                 async def recv():
-                    nonlocal tts_buf
+                    nonlocal tts_active
                     while not stop_event.is_set():
                         try:
-                            raw = await _a.wait_for(ws.recv(), timeout=0.5)
+                            raw = await _a.wait_for(ws.recv(), timeout=3.0)
                         except _a.TimeoutError:
                             continue
                         if isinstance(raw, bytes):
-                            tts_buf.append(raw)
-                            # Write to output stream immediately
+                            tts_packets += 1
+                            if not hasattr(_aplay_add, "_count"):
+                                _aplay_add._count = 0
+                            _aplay_add._count += 1
                             try:
-                                pcm = dec.decode(raw, 1440)
-                                pcm_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)/32768
-                                idx = np.arange(0, len(pcm_f32), 1.5).astype(int)
+                                pcm = dec.decode(raw, tts_frame_size)
+                                pcm_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+                                ratio = tts_rate / 16000
+                                idx = np.arange(0, len(pcm_f32), ratio).astype(int)
                                 pcm_16k = pcm_f32[idx[:min(len(idx), len(pcm_f32))]]
                                 stereo = np.column_stack([pcm_16k, pcm_16k])
-                                spk_stream.write(stereo)
-                            except Exception:
-                                pass
+                                _aplay_add(stereo)
+                                if tts_packets % 10 == 0:
+                                    logger.info("xz audio packets=%d latest=%dB", tts_packets, len(raw))
+                            except Exception as exc:
+                                tts_decode_errors += 1
+                                logger.warning(
+                                    "xz opus decode failed packet=%d bytes=%d error=%s",
+                                    tts_packets, len(raw), exc,
+                                )
                         else:
                             d = _j.loads(raw)
                             t = d.get("type","")
                             if t == "stt":
                                 logger.info("xz stt: %s", d.get("text",""))
                                 choreo.set_mode(LISTEN)
-                            elif t == "llm":
-                                logger.info("xz llm: emoji=%s", d.get("emotion","?"))
                             elif t == "tts" and d.get("state")=="start":
                                 logger.info("xz tts start")
+                                tts_active = True
+                                tts_packets = 0
+                                tts_decode_errors = 0
+                                _aplay_add._count = 0
                                 choreo.set_mode(SPEAK)
                                 choreo.release_still()
-                                tts_buf.clear()
                             elif t == "tts" and d.get("state")=="sentence_start":
                                 logger.info("xz tts text: %s", d.get("text","")[:80])
-                            elif t == "tts" and d.get("state")=="stop":
-                                logger.info("xz tts stop (%d pkts)", len(tts_buf))
+                            elif t == "tts" and d.get("state") == "sentence_end":
+                                logger.info(
+                                    "xz tts sentence_end packets=%d audio(enqueued=%d written=%d pending=%d)",
+                                    getattr(_aplay_add, "_count", 0),
+                                    _audio_stats["enqueued"],
+                                    _audio_stats["written"],
+                                    _audio_q.qsize(),
+                                )
+                            elif t == "tts" and d.get("state") == "stop":
+                                tts_active = False
+                                logger.info(
+                                    "xz tts stop packets=%d audio(enqueued=%d written=%d pending=%d)",
+                                    getattr(_aplay_add, "_count", 0),
+                                    _audio_stats["enqueued"],
+                                    _audio_stats["written"],
+                                    _audio_q.qsize(),
+                                )
+                                logger.info("xz audio summary packets=%d decode_errors=%d", tts_packets, tts_decode_errors)
+                                _aplay_flush()
                                 choreo.set_mode(IDLE)
-                                tts_buf.clear()
 
                 rt = _a.ensure_future(recv())
                 try:
-                    # Manual mode with local silence detection.
-                    # Only send audio to cloud when there's actual sound.
-                    import numpy as _np
-                    SILENCE_RMS = 5000  # int16 silence threshold
+                    SILENCE_RMS = 2000
                     while not stop_event.is_set():
-                        # Collect 1 second of audio, check if there's sound
+                        if tts_active:
+                            await _a.to_thread(mic_stream.read, 960)
+                            await _a.sleep(0)
+                            continue
                         frames = []
                         rms_max = 0
-                        for _ in range(16):  # 16 × 60ms ≈ 1s
-                            buf, _ = mic_stream.read(960)
-                            rms = float(_np.sqrt(_np.mean(_np.square(_np.frombuffer(buf, dtype=_np.int16).astype(_np.float64)))))
-                            if rms > rms_max:
-                                rms_max = rms
+                        for _ in range(16):
+                            buf, _ = await _a.to_thread(mic_stream.read, 960)
+                            rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            if rms > rms_max: rms_max = rms
                             frames.append(buf)
                         if rms_max < SILENCE_RMS:
-                            continue  # skip silence
-                        # Send to cloud in manual mode
+                            continue
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
                         sent = 0
                         for buf in frames:
                             try:
                                 await ws.send(enc.encode(buf.tobytes(), 960))
                                 sent += 1
-                            except Exception:
-                                pass
-                        # Keep sending for at least 3s, up to 6s while sound continues
+                                await _a.sleep(0)
+                            except Exception: pass
                         deadline = time.monotonic() + 6.0
                         min_deadline = time.monotonic() + 3.0
                         while time.monotonic() < deadline and not stop_event.is_set():
-                            buf, _ = mic_stream.read(960)
-                            rms = float(_np.sqrt(_np.mean(_np.square(_np.frombuffer(buf, dtype=_np.int16).astype(_np.float64)))))
+                            buf, _ = await _a.to_thread(mic_stream.read, 960)
+                            rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
                             try:
                                 await ws.send(enc.encode(buf.tobytes(), 960))
                                 sent += 1
-                            except Exception:
-                                pass
-                            if time.monotonic() > min_deadline and rms < SILENCE_RMS * 0.5:
+                                await _a.sleep(0)
+                            except Exception: pass
+                            if time.monotonic() > min_deadline and rms < 1000:
                                 break
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
                         if sent:
                             logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
                         for _ in range(20):
-                            if stop_event.is_set():
-                                break
+                            if stop_event.is_set(): break
                             await _a.sleep(0.2)
                 finally:
                     rt.cancel()
 
         try:
-            _a.run(run())
+            while not stop_event.is_set():
+                try:
+                    _a.run(run())
+                except Exception as e:
+                    logger.info("xiaozhi ended: %s", e)
+                if not stop_event.is_set():
+                    logger.info("xiaozhi reconnecting in 3s...")
+                    stop_event.wait(3)
         except Exception as e:
             logger.info("xiaozhi ended: %s", e)
         finally:
-            choreo.close()
+            _writer_stop.set()
+            _audio_q.put(None)
+            _audio_thread.join(timeout=2)
             mic_stream.stop()
             mic_stream.close()
-            speaker.close()
-            speaker.join(timeout=2)
+            choreo.close()
+            choreo.join(timeout=2)
 
     def _enter_safe_mode(
         self,
