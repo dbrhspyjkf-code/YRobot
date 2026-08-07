@@ -145,6 +145,7 @@ function showStatus(status) {
   statusPrivacy.textContent = status.privacy.video_uploaded_to_gateway ? "音频 + 摄像头" : "仅音频";
   statusRefreshTime.textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
   statusPanel.classList.remove("hidden");
+  if (status.system) renderSystem(status.system);
 }
 
 async function loadStatus() {
@@ -157,6 +158,7 @@ async function loadStatus() {
     showAudio(result.status.audio);
   } catch (error) {
     statusPanel.classList.remove("hidden");
+  if (status.system) renderSystem(status.system);
     statusService.textContent = "读取失败";
     statusUptime.textContent = error.message;
   } finally {
@@ -727,3 +729,15 @@ loadCameraState();
 loadLogs({ fullReplace: true });
 scheduleLogPoll();
 setInterval(loadStatus, 10000);
+
+function renderSystem(sys) {
+  const cpu = document.getElementById("status-sys-cpu");
+  const mem = document.getElementById("status-sys-mem");
+  const disk = document.getElementById("status-sys-disk");
+  const temp = document.getElementById("status-sys-temp");
+  if (!cpu) return;
+  cpu.textContent = `CPU ${sys.cpu_percent}%`;
+  mem.textContent = `内存 ${sys.memory_percent}%`;
+  disk.textContent = `磁盘 ${sys.disk_percent}%`;
+  temp.textContent = `CPU ${sys.temperature_c}°C`;
+}

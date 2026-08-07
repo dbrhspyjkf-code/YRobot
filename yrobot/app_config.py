@@ -709,6 +709,51 @@ def _robot_state_read() -> str:
         return "unknown"
 
 
+def _read_system_metrics() -> dict[str, Any]:
+    """Read lightweight system metrics (CPU, memory, disk, temperature)."""
+    try:
+        with open("/proc/loadavg") as f:
+            load = f.read().split()
+            cpu_pct = float(load[0]) / os.cpu_count() * 100 if os.cpu_count() else 0
+    except Exception:
+        cpu_pct = 0.0
+    try:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if "MemTotal" in line:
+                    mem["total_kb"] = int(line.split()[1])
+                elif "MemAvailable" in line:
+                    mem["available_kb"] = int(line.split()[1])
+                if len(mem) == 2:
+                    break
+        mem_used_pct = (1 - mem.get("available_kb", 0) / max(mem.get("total_kb", 1), 1)) * 100
+    except Exception:
+        mem_used_pct = 0.0
+    try:
+        stat = os.statvfs("/")
+        disk_pct = (1 - stat.f_bavail / max(stat.f_blocks, 1)) * 100
+    except Exception:
+        disk_pct = 0.0
+    temp_c = 0.0
+    try:
+        for p in ["/sys/class/thermal/thermal_zone0/temp",
+                  "/sys/class/thermal/thermal_zone1/temp"]:
+            try:
+                with open(p) as f:
+                    temp_c = float(f.read().strip()) / 1000.0
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {
+        "cpu_percent": round(cpu_pct, 1),
+        "memory_percent": round(mem_used_pct, 1),
+        "disk_percent": round(disk_pct, 1),
+        "temperature_c": round(temp_c, 1),
+    }
+
 def build_status(
     store: AppConfig,
     environ: Mapping[str, str],
@@ -730,13 +775,11 @@ def build_status(
     return {
         "service": {
             "name": "YRobot",
-            # Robot state mirrors yrobot.state.ROBOT_STATE
-            # (active / sleeping / safe_mode). The dashboard polls this every
-            # few seconds, so it lives in its own thread-safe module.
             "state": _robot_state_read(),
             "pid": os.getpid(),
             "uptime_s": max(0, int(time.monotonic() - STARTED_AT)),
         },
+        "system": _read_system_metrics(),
         "conversation": {
             "gateway_url": settings.url,
             "realtime_mode": settings.realtime_mode,
