@@ -903,6 +903,8 @@ class Yrobot(ReachyMiniApp):
         import subprocess as _sp
         import websockets as _ws
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
+        from yrobot.app_config import audio_input_controller_singleton
+        from yrobot.audio import _publish_dashboard_mic
 
         choreo = Choreographer(reachy_mini)
         choreo.start()
@@ -1075,11 +1077,18 @@ class Yrobot(ReachyMiniApp):
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0)
                             continue
+                        if not audio_input_controller_singleton().enabled():
+                            # Drain one chunk so PortAudio doesn't overflow,
+                            # then yield the loop — no uplink when muted.
+                            await _a.to_thread(mic_stream.read, 960)
+                            await _a.sleep(0.1)
+                            continue
                         frames = []
                         rms_max = 0
                         for _ in range(16):
                             buf, _ = await _a.to_thread(mic_stream.read, 960)
                             rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            _publish_dashboard_mic(float(rms) / 32768.0)
                             if rms > rms_max: rms_max = rms
                             frames.append(buf)
                         if rms_max < SILENCE_RMS:
@@ -1097,6 +1106,7 @@ class Yrobot(ReachyMiniApp):
                         while time.monotonic() < deadline and not stop_event.is_set():
                             buf, _ = await _a.to_thread(mic_stream.read, 960)
                             rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            _publish_dashboard_mic(float(rms) / 32768.0)
                             try:
                                 await ws.send(enc.encode(buf.tobytes(), 960))
                                 sent += 1
