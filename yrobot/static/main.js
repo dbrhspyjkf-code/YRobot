@@ -751,6 +751,36 @@ const MOTION_DANCE = new Set(["simple_nod", "head_tilt_roll", "side_to_side_sway
   "grid_snap", "pendulum_swing", "jackson_square"]);
 let motionAll = [];
 
+// 动作英文名 → 中文显示名（按钮显示中文，data-move 仍用英文调用）
+const MOTION_CN = {
+  // 基础动作
+  shake: "摇头", nod: "点头", tilt: "歪头", surprise: "惊喜",
+  think: "思考", yawn: "打哈欠", sad: "伤心", angry: "生气",
+  // 常用情绪（官方录制）
+  cheerful1: "愉快", laughing1: "大笑", laughing2: "轻笑",
+  surprised1: "惊讶", surprised2: "惊讶2", amazed1: "惊叹",
+  thoughtful1: "思考中", thoughtful2: "思考2", confused1: "困惑",
+  sad1: "悲伤", sad2: "悲伤2", downcast1: "沮丧", crying: "哭泣",
+  rage1: "愤怒", furious1: "暴怒", reprimand1: "训斥", irritated1: "烦躁",
+  loving1: "喜爱", shy1: "害羞", embarrassed: "尴尬",
+  dance1: "跳舞(短)", dance2: "跳舞(长)", dance3: "跳舞(活力)",
+  happy: "开心", yes1: "好的", no1: "不要", come1: "过来",
+  welcome1: "欢迎", welcoming1: "欢迎1", go_away1: "走开",
+  // 舞蹈
+  simple_nod: "点头舞", head_tilt_roll: "歪头滚", side_to_side_sway: "左右摆",
+  dizzy_spin: "转圈舞", stumble_and_recover: "踉跄恢复", headbanger_combo: "甩头舞",
+  interwoven_spirals: "螺旋舞", sharp_side_tilt: "侧倾舞", side_peekaboo: "躲猫猫",
+  yeah_nod: "耶点头", uh_huh_tilt: "嗯哼歪头", neck_recoil: "缩脖舞",
+  chin_lead: "下巴领舞", groovy_sway_and_roll: "律动摇摆", chicken_peck: "啄木鸟",
+  side_glance_flick: "侧瞥舞", polyrhythm_combo: "复节奏舞", grid_snap: "机械定格",
+  pendulum_swing: "钟摆舞", jackson_square: "杰克逊方步",
+};
+
+function motionLabel(m) {
+  return MOTION_CN[m] || m;
+}
+
+
 async function loadMotions() {
   const grid = document.getElementById("motion-grid");
   const status = document.getElementById("motion-status");
@@ -782,7 +812,7 @@ function renderMotionTab(cat) {
     grid.innerHTML = `<p class="muted">此分类暂无动作</p>`;
     return;
   }
-  grid.innerHTML = moves.map((m) => `<button class="motion-btn" data-move="${m}">${m}</button>`).join("");
+  grid.innerHTML = moves.map((m) => `<button class="motion-btn" data-move="${m}" title="${m}">${motionLabel(m)}</button>`).join("");
   grid.querySelectorAll(".motion-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
