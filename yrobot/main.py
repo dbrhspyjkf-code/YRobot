@@ -902,6 +902,7 @@ class Yrobot(ReachyMiniApp):
         import sounddevice as _sd
         import subprocess as _sp
         import websockets as _ws
+        import cv2
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
@@ -917,6 +918,9 @@ class Yrobot(ReachyMiniApp):
                 return head_yaw_of(np.asarray(reachy_mini.get_current_head_pose()))
             except Exception:
                 return choreo.current_yaw()
+        SoundCompass.WINDOW_S = 2.0       # 2s smoothing window (was 1.0)
+        SoundCompass.MIN_CONFIDENCE = 6.0  # need 6+ confidence (was 3.0)
+        SoundCompass.DEADBAND_RAD = 0.20   # ~11° deadband (was 0.12)
         compass = SoundCompass(
             reachy_mini.media,
             current_head_yaw=_current_head_yaw,
@@ -924,6 +928,60 @@ class Yrobot(ReachyMiniApp):
             on_target=choreo.set_gaze_target,
         )
         compass.start()
+
+        # ── PersonTracker: fuse camera face detection with audio DoA ──────
+        # Runs at ~5 fps; when a face is confidently detected the visual
+        # yaw overrides the audio-only DoA estimate.
+        import threading as _th_face
+        _face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
+        _vis_stop = _th_face.Event()
+
+        def _face_tracker():
+            import urllib.request as _ur
+            frame_url = "http://127.0.0.1:8042/api/camera/frame"
+            while not _vis_stop.is_set():
+                try:
+                    req = _ur.Request(frame_url)
+                    with _ur.urlopen(req, timeout=2) as resp:
+                        jpeg = resp.read()
+                    arr = np.frombuffer(jpeg, dtype=np.uint8)
+                    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if bgr is None:
+                        _vis_stop.wait(0.15)
+                        continue
+                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    faces = _face_cascade.detectMultiScale(
+                        gray, scaleFactor=1.1, minNeighbors=3,
+                        minSize=(40, 40),
+                    )
+                    if len(faces) == 0:
+                        # No face seen this frame; let audio DoA dominate.
+                        _visual_gaze[0] = None
+                        _vis_stop.wait(0.2)
+                        continue
+                    # Use the largest face.
+                    x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
+                    cx = x + w / 2
+                    # Map horizontal pixel to camera-relative angle.
+                    # Assume ~80° HFOV at 640 px → 0.125°/px, center at 320.
+                    cam_angle = (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1])
+                    cam_rad = math.radians(cam_angle)
+                    # Convert to world yaw using head pose.
+                    try:
+                        head_yaw = _current_head_yaw()
+                    except Exception:
+                        head_yaw = choreo.current_yaw()
+                    _visual_gaze[0] = (head_yaw + cam_rad, time.time())
+                except Exception:
+                    _vis_stop.wait(0.5)
+        _vis_thread = _th_face.Thread(target=_face_tracker, name="face-tracker", daemon=True)
+        _vis_thread.start()
+
+        # Reduce SoundCompass jitter: log raw angles, use longer window
+        _compass_log = [0.0]  # last logged angle to avoid spam
 
         _sd.default.samplerate = 16000
         _sd.default.channels = 1
@@ -1095,11 +1153,14 @@ class Yrobot(ReachyMiniApp):
                             await _a.sleep(0)
                             continue
                         if not audio_input_controller_singleton().enabled():
-                            # Drain one chunk so PortAudio doesn't overflow,
-                            # then yield the loop — no uplink when muted.
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0.1)
                             continue
+                        # Feed latest visual gaze if available (face detected)
+                        if _visual_gaze[0] is not None:
+                            vy, vt = _visual_gaze[0]
+                            if time.time() - vt < 0.5:
+                                choreo.set_gaze_target(vy)
                         frames = []
                         rms_max = 0
                         for _ in range(16):
@@ -1159,6 +1220,8 @@ class Yrobot(ReachyMiniApp):
             _audio_thread.join(timeout=2)
             mic_stream.stop()
             mic_stream.close()
+            _vis_stop.set()
+            _vis_thread.join(timeout=2)
             compass.close()
             compass.join(timeout=2)
             choreo.close()
