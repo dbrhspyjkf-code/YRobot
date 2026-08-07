@@ -958,6 +958,31 @@ class Yrobot(ReachyMiniApp):
         _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
         _vis_stop = _th_face.Event()
 
+        def _handle_emotion(choreo: Any, emo: str, last: dict[str, float], rec_provider: Any) -> None:
+            """Map a Xiaozhi emotion to a move with per-move cooldown."""
+            from yrobot.motion import (
+                EMOTION_FALLBACK_MOVE, EMOTION_TO_MOVE)
+            rec_name = EMOTION_TO_MOVE.get(emo)
+            fb_name = EMOTION_FALLBACK_MOVE.get(emo)
+            target = rec_name or fb_name
+            now = time.monotonic()
+            if not target:
+                logger.info("xz emotion %s (no move)", emo or "?")
+                return
+            if now - last.get(target, -1e9) < 5.0:
+                logger.info("xz emotion %s -> %s (cooldown)", emo, target)
+                return
+            last[target] = now
+            if rec_name:
+                rec = rec_provider()
+                if rec is not None and choreo.play_recorded(rec_name, rec):
+                    logger.info("xz emotion %s -> recorded %s", emo, rec_name)
+                    return
+            if fb_name:
+                choreo.play_move(fb_name)
+                logger.info("xz emotion %s -> move %s", emo, fb_name)
+
+
         def _face_tracker():
             import json as _json, urllib.request as _ur
             frame_url = "http://127.0.0.1:8042/api/camera/frame"
@@ -1152,29 +1177,13 @@ class Yrobot(ReachyMiniApp):
                                 # Prefer the official recorded emotion; fall back to a
                                 # programmatic move.  Per-move cooldown prevents the
                                 # default 'happy' emotion from firing on every reply.
+                                # If a manual/MCP move is playing, emotions are ignored
+                                # so a tool-triggered dance is never cut short.
                                 emo = (d.get("emotion") or "").strip().lower()
-                                from yrobot.motion import (
-                                    EMOTION_FALLBACK_MOVE, EMOTION_TO_MOVE)
-                                rec_name = EMOTION_TO_MOVE.get(emo)
-                                fb_name = EMOTION_FALLBACK_MOVE.get(emo)
-                                now = time.monotonic()
-                                target = rec_name or fb_name
-                                if target:
-                                    if now - _last_emotion_move.get(target, -1e9) >= 5.0:
-                                        _last_emotion_move[target] = now
-                                        played = False
-                                        if rec_name:
-                                            rec = _get_recorded()
-                                            if rec is not None and choreo.play_recorded(rec_name, rec):
-                                                played = True
-                                                logger.info("xz emotion %s -> recorded %s", emo, rec_name)
-                                        if not played and fb_name:
-                                            choreo.play_move(fb_name)
-                                            logger.info("xz emotion %s -> move %s", emo, fb_name)
-                                    else:
-                                        logger.info("xz emotion %s -> %s (cooldown)", emo, target)
+                                if choreo.current_move() is not None or choreo.current_recorded() is not None:
+                                    logger.info("xz emotion %s ignored (move in progress)", emo)
                                 else:
-                                    logger.info("xz emotion %s (no move)", emo or "?")
+                                    self._handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
                             if t == "stt":
                                 logger.info("xz stt: %s", d.get("text",""))
                                 choreo.set_mode(LISTEN)
