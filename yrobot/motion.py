@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 IDLE, LISTEN, SPEAK = "idle", "listen", "speak"
 
+# One-shot expressive moves (played on top of the current mode, then fade out).
+SHAKE, NOD, TILT, SURPRISE, THINK, YAWN = (
+    "shake", "nod", "tilt", "surprise", "think", "yawn")
+MOVES = (SHAKE, NOD, TILT, SURPRISE, THINK, YAWN)
+
+# name -> (duration_s, roll_amp, pitch_amp, yaw_amp, antenna_delta)
+# Amplitudes are radians; antenna_delta is added to the antenna neutral.
+MOVE_SPECS = {
+    SHAKE:    (1.0,  0.00,  0.00,  0.14,  0.00),   # fast left-right no
+    NOD:      (1.0,  0.00,  0.12,  0.00,  0.00),   # clear yes
+    TILT:     (1.2,  0.16,  0.00,  0.00,  0.00),   # curious tilt
+    SURPRISE: (1.1,  0.00, -0.10,  0.00,  0.45),   # antenna up + head up
+    THINK:    (2.5,  0.02,  0.10,  0.05, -0.20),   # head down, slow sway
+    YAWN:     (2.8,  0.02,  0.12,  0.00, -0.55),   # head down then up, antenna droop
+}
+
 
 def head_yaw_of(pose: np.ndarray) -> float:
     """Extract world yaw from a 4x4 head pose."""
@@ -198,11 +214,59 @@ class Choreographer(threading.Thread):
         self._antennas = np.array([self.ANTENNA_NEUTRAL, self.ANTENNA_NEUTRAL])
         self._still_until = 0.0
         self._still = 0.0  # blended stillness scalar, continuous like modes
+        # One-shot move state (mutated only by play_move / the 50 Hz loop).
+        self._move_name = None
+        self._move_start = -1e9
+        self._move_freqs = {SHAKE: 5.0, NOD: 4.0, TILT: 1.0, SURPRISE: 1.0,
+                            THINK: 0.4, YAWN: 0.5}
 
     # -- thread-safe inputs -------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
+
+    def play_move(self, name: str, now: float | None = None) -> bool:
+        """Start a one-shot expressive move; returns True if accepted.
+
+        The move is layered on top of the current idle/listen/speak pose and
+        fades out by itself; a move already playing is replaced. Unknown names
+        are rejected (returns False) so the HTTP/MCP layer can surface errors.
+        """
+        if name not in MOVE_SPECS:
+            return False
+        self._move_name = name
+        self._move_start = time.monotonic() if now is None else now
+        return True
+
+    def current_move(self) -> str | None:
+        return self._move_name
+
+    def _move_offsets(
+        self, now: float, dt: float
+    ) -> tuple[float, float, float, float] | None:
+        """Return (roll, pitch, yaw, antenna_delta) for the active move, or
+        None once the move has finished.  A fade envelope keeps the first and
+        last ~200 ms smooth so starting/ending a move never steps the pose.
+        """
+        name = self._move_name
+        if name is None:
+            return None
+        elapsed = now - self._move_start
+        dur, roll_amp, pitch_amp, yaw_amp, ant_delta = MOVE_SPECS[name]
+        if elapsed >= dur:
+            self._move_name = None  # expired
+            return None
+        fade = min(1.0, elapsed / 0.2, (dur - elapsed) / 0.2)
+        freq = self._move_freqs.get(name, 1.0)
+        w = 2.0 * math.pi * freq * elapsed
+        # First cycle of a sine starts at 0 and returns to 0; the fade envelope
+        # guarantees the pose is continuous at both boundaries.
+        roll = roll_amp * math.sin(w) * fade
+        pitch = pitch_amp * math.sin(w) * fade
+        yaw = yaw_amp * math.sin(w) * fade
+        # Antennas: ease the delta in/out with the same fade (bounded).
+        ant = ant_delta * fade
+        return roll, pitch, yaw, ant
 
     def set_gaze_target(self, world_yaw: float, now: float | None = None) -> None:
         self._gaze.target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
@@ -305,8 +369,19 @@ class Choreographer(threading.Thread):
         yaw = self._gaze.step(dt, freeze=self._still) + sac_yaw
         pose = rpy_pose(roll, pitch + sac_pitch, yaw, z)
 
+        # One-shot expressive move layered on top of the composed pose.
+        moffs = self._move_offsets(now, dt)
+        if moffs is not None:
+            m_roll, m_pitch, m_yaw, m_ant = moffs
+            roll += m_roll
+            pitch += m_pitch
+            yaw += m_yaw
+            pose = rpy_pose(roll, pitch + sac_pitch, yaw, z)
+        else:
+            m_ant = 0.0
+
         # Antennas: perked and still when listening, dancing when speaking.
-        target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen)
+        target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen) + m_ant
         sway = 0.05 * idle * math.sin(2 * math.pi * 0.3 * t) + 0.10 * speak * math.sin(
             2 * math.pi * 1.4 * t
         )

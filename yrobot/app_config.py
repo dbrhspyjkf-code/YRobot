@@ -50,6 +50,7 @@ STARTED_AT = time.monotonic()
 # any particular request handler so the volume singleton survives reloads.
 _volume_controller_instance: VolumeController | None = None
 _audio_input_controller_instance: AudioInputController | None = None
+_motion_controller_instance: "MotionController | None" = None
 
 
 def volume_controller_singleton() -> VolumeController:
@@ -58,6 +59,45 @@ def volume_controller_singleton() -> VolumeController:
     if _volume_controller_instance is None:
         _volume_controller_instance = VolumeController()
     return _volume_controller_instance
+
+
+class MotionController:
+    """Runtime-only bridge to the active Choreographer for one-shot moves.
+
+    The Choreographer registers itself at startup (``motion_controller.set(choreo)``);
+    until then the API answers gracefully instead of crashing.
+    """
+
+    def __init__(self) -> None:
+        self._choreo: Any = None
+        self._lock = threading.Lock()
+
+    def set(self, choreo: Any) -> None:
+        with self._lock:
+            self._choreo = choreo
+
+    def get(self) -> Any | None:
+        with self._lock:
+            return self._choreo
+
+    def play(self, name: str) -> tuple[bool, str]:
+        choreo = self.get()
+        if choreo is None:
+            return False, "机器人动作系统尚未就绪"
+        if choreo.play_move(name):
+            return True, f"动作 {name} 开始播放"
+        return False, f"未知动作: {name}"
+
+    def current(self) -> str | None:
+        choreo = self.get()
+        return choreo.current_move() if choreo is not None else None
+
+
+def motion_controller_singleton() -> MotionController:
+    global _motion_controller_instance
+    if _motion_controller_instance is None:
+        _motion_controller_instance = MotionController()
+    return _motion_controller_instance
 
 
 class AudioInputController:
@@ -841,6 +881,23 @@ def register_settings_routes(
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         return {"settings": store.view(get_environment())}
+
+    motion = motion_controller_singleton()
+
+    @app.get("/api/motion")
+    def get_motion() -> dict[str, Any]:
+        from yrobot.motion import MOVES
+        return {"ok": True, "moves": list(MOVES), "current": motion.current()}
+
+    @app.post("/api/motion")
+    def post_motion(document: dict[str, Any]) -> dict[str, Any]:
+        name = str(document.get("move") or document.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="missing 'move'")
+        ok, msg = motion.play(name)
+        if not ok:
+            raise HTTPException(status_code=422, detail=msg)
+        return {"ok": True, "message": msg, "current": motion.current()}
 
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:

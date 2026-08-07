@@ -911,6 +911,8 @@ class Yrobot(ReachyMiniApp):
         # Slow the gaze spring so turns are smooth, never a snap.
         choreo._gaze._max_vel = 1.5   # rad/s (was 3.0)
         choreo._gaze._omega = 4.0     # softer spring (was 6.0)
+        from yrobot.app_config import motion_controller_singleton
+        motion_controller_singleton().set(choreo)
         choreo.start()
 
         # SoundCompass: track speaker direction via XVF3800 DoA
