@@ -902,12 +902,28 @@ class Yrobot(ReachyMiniApp):
         import sounddevice as _sd
         import subprocess as _sp
         import websockets as _ws
-        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
 
         choreo = Choreographer(reachy_mini)
         choreo.start()
+
+        # SoundCompass: track speaker direction via XVF3800 DoA
+        _user_speaking = [False]
+        def _current_head_yaw():
+            try:
+                import numpy as np
+                return head_yaw_of(np.asarray(reachy_mini.get_current_head_pose()))
+            except Exception:
+                return choreo.current_yaw()
+        compass = SoundCompass(
+            reachy_mini.media,
+            current_head_yaw=_current_head_yaw,
+            user_active=lambda: _user_speaking[0],
+            on_target=choreo.set_gaze_target,
+        )
+        compass.start()
 
         _sd.default.samplerate = 16000
         _sd.default.channels = 1
@@ -1041,6 +1057,7 @@ class Yrobot(ReachyMiniApp):
                             elif t == "tts" and d.get("state")=="start":
                                 logger.info("xz tts start")
                                 tts_active = True
+                                _user_speaking[0] = False
                                 tts_packets = 0
                                 tts_decode_errors = 0
                                 _aplay_add._count = 0
@@ -1093,6 +1110,7 @@ class Yrobot(ReachyMiniApp):
                             frames.append(buf)
                         if rms_max < SILENCE_RMS:
                             continue
+                        _user_speaking[0] = True
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
                         sent = 0
                         for buf in frames:
@@ -1115,6 +1133,7 @@ class Yrobot(ReachyMiniApp):
                             if time.monotonic() > min_deadline and rms < 1000:
                                 break
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
+                        _user_speaking[0] = False
                         if sent:
                             logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
                         for _ in range(20):
@@ -1140,6 +1159,8 @@ class Yrobot(ReachyMiniApp):
             _audio_thread.join(timeout=2)
             mic_stream.stop()
             mic_stream.close()
+            compass.close()
+            compass.join(timeout=2)
             choreo.close()
             choreo.join(timeout=2)
 
