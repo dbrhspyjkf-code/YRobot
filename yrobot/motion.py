@@ -287,9 +287,16 @@ class Choreographer(threading.Thread):
         sac_yaw = self._saccade_yaw.step(dt, freeze=self._still) * idle * calm
         sac_pitch = self._saccade_pitch.step(dt, freeze=self._still) * idle * calm
 
-        # Conversation posture.
+        # Conversation posture. Speaking gets an obvious but bounded nod so the
+        # robot reads as actively talking rather than merely holding a pose.
         pitch += 0.06 * listen - 0.03 * speak  # lean in to listen, lift to speak
         roll += 0.05 * listen * calm * math.sin(2 * math.pi * 0.05 * t)  # curious tilt
+        speak_nod = speak * calm * (
+            0.075 * math.sin(2 * math.pi * 1.15 * t)
+            + 0.018 * math.sin(2 * math.pi * 2.3 * t + 0.8)
+        )
+        pitch += speak_nod
+        roll += 0.018 * speak * calm * math.sin(2 * math.pi * 0.58 * t + 0.4)
 
         # After long silence, drift the gaze home.
         if now - self._last_voice_at > 45.0:
