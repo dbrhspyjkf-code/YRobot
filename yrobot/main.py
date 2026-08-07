@@ -1011,21 +1011,29 @@ class Yrobot(ReachyMiniApp):
                     arr = np.frombuffer(jpeg, dtype=np.uint8)
                     bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                     if bgr is None:
-                        _vis_stop.wait(0.2)
+                        _vis_stop.wait(0.5)
                         continue
-                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    # Downscale to 320px wide: Haar detection cost scales with
+                    # pixels; 320 keeps ~2-3 fps on the low-power board while
+                    # still tracking a face across the ~80° FOV.
+                    scale = bgr.shape[1] / 320.0
+                    if scale > 1.0:
+                        small = cv2.resize(bgr, (320, int(bgr.shape[0] / scale)))
+                    else:
+                        small = bgr
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                     faces = _face_cascade.detectMultiScale(
-                        gray, scaleFactor=1.1, minNeighbors=3,
-                        minSize=(40, 40),
+                        gray, scaleFactor=1.15, minNeighbors=4,
+                        minSize=(24, 24),
                     )
                     if len(faces) == 0:
                         # No face seen this frame; let audio DoA dominate.
                         _visual_gaze[0] = None
-                        _vis_stop.wait(0.2)
+                        _vis_stop.wait(0.5)
                         continue
                     # Use the largest face.
                     x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
-                    cx = x + w / 2
+                    cx = (x + w / 2) * scale
                     # Map horizontal pixel to camera-relative angle.
                     # Assume ~80° HFOV at 640 px → 0.125°/px, center at 320.
                     cam_angle = (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1])
@@ -1036,7 +1044,7 @@ class Yrobot(ReachyMiniApp):
                     except Exception:
                         head_yaw = choreo.current_yaw()
                     _visual_gaze[0] = (head_yaw + cam_rad, time.time())
-                    _vis_stop.wait(0.2)   # ~5 fps
+                    _vis_stop.wait(0.5)   # ~2 fps, keep CPU low
                 except Exception:
                     _vis_stop.wait(0.5)
         _vis_thread = _th_face.Thread(target=_face_tracker, name="face-tracker", daemon=True)
@@ -1142,7 +1150,7 @@ class Yrobot(ReachyMiniApp):
                 tts_active = False
 
                 async def recv():
-                    nonlocal tts_active
+                    nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
                     while not stop_event.is_set():
                         try:
                             raw = await ws.recv()
