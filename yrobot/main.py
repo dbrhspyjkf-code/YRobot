@@ -1192,7 +1192,7 @@ class Yrobot(ReachyMiniApp):
                                 if choreo.current_move() is not None or choreo.current_recorded() is not None:
                                     logger.info("xz emotion %s ignored (move in progress)", emo)
                                 else:
-                                    self._handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
+                                    _handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
                             if t == "stt":
                                 logger.info("xz stt: %s", d.get("text",""))
                                 choreo.set_mode(LISTEN)
