@@ -908,6 +908,9 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic
 
         choreo = Choreographer(reachy_mini)
+        # Slow the gaze spring so turns are smooth, never a snap.
+        choreo._gaze._max_vel = 1.5   # rad/s (was 3.0)
+        choreo._gaze._omega = 4.0     # softer spring (was 6.0)
         choreo.start()
 
         # SoundCompass: track speaker direction via XVF3800 DoA
@@ -943,15 +946,23 @@ class Yrobot(ReachyMiniApp):
             import json as _json, urllib.request as _ur
             frame_url = "http://127.0.0.1:8042/api/camera/frame"
             state_url = "http://127.0.0.1:8042/api/camera/state"
-            # Turn camera on at tracker start (survives YRobot restarts)
-            try:
-                _r = _ur.Request(state_url, method="PUT",
-                    data=_json.dumps({"running": True}).encode(),
-                    headers={"Content-Type": "application/json"})
-                _ur.urlopen(_r, timeout=3)
-            except Exception:
-                pass
+            _last_cam_check = 0.0
+            def _ensure_camera():
+                """Re-enable camera via HTTP; called at startup then every 30s."""
+                nonlocal _last_cam_check
+                now = time.time()
+                if now - _last_cam_check < 30:
+                    return
+                _last_cam_check = now
+                try:
+                    _r = _ur.Request(state_url, method="PUT",
+                        data=_json.dumps({"running": True}).encode(),
+                        headers={"Content-Type": "application/json"})
+                    _ur.urlopen(_r, timeout=3)
+                except Exception:
+                    pass
             while not _vis_stop.is_set():
+                _ensure_camera()
                 try:
                     req = _ur.Request(frame_url)
                     with _ur.urlopen(req, timeout=2) as resp:
@@ -1166,11 +1177,13 @@ class Yrobot(ReachyMiniApp):
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0.1)
                             continue
-                        # Feed latest visual gaze if available (face detected)
+                        # Feed latest visual gaze if available (rate-limited)
                         if _visual_gaze[0] is not None:
                             vy, vt = _visual_gaze[0]
-                            if time.time() - vt < 0.5:
+                            _vg = getattr(choreo, "_last_vis_gaze_at", 0)
+                            if time.time() - vt < 0.5 and time.time() - _vg > 0.5:
                                 choreo.set_gaze_target(vy)
+                                choreo._last_vis_gaze_at = time.time()
                         frames = []
                         rms_max = 0
                         for _ in range(16):
