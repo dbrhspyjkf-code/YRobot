@@ -959,7 +959,7 @@ class Yrobot(ReachyMiniApp):
                     arr = np.frombuffer(jpeg, dtype=np.uint8)
                     bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                     if bgr is None:
-                        _vis_stop.wait(0.15)
+                        _vis_stop.wait(0.2)
                         continue
                     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
                     faces = _face_cascade.detectMultiScale(
@@ -984,6 +984,7 @@ class Yrobot(ReachyMiniApp):
                     except Exception:
                         head_yaw = choreo.current_yaw()
                     _visual_gaze[0] = (head_yaw + cam_rad, time.time())
+                    _vis_stop.wait(0.2)   # ~5 fps
                 except Exception:
                     _vis_stop.wait(0.5)
         _vis_thread = _th_face.Thread(target=_face_tracker, name="face-tracker", daemon=True)
