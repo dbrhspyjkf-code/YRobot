@@ -940,8 +940,17 @@ class Yrobot(ReachyMiniApp):
         _vis_stop = _th_face.Event()
 
         def _face_tracker():
-            import urllib.request as _ur
+            import json as _json, urllib.request as _ur
             frame_url = "http://127.0.0.1:8042/api/camera/frame"
+            state_url = "http://127.0.0.1:8042/api/camera/state"
+            # Turn camera on at tracker start (survives YRobot restarts)
+            try:
+                _r = _ur.Request(state_url, method="PUT",
+                    data=_json.dumps({"running": True}).encode(),
+                    headers={"Content-Type": "application/json"})
+                _ur.urlopen(_r, timeout=3)
+            except Exception:
+                pass
             while not _vis_stop.is_set():
                 try:
                     req = _ur.Request(frame_url)
