@@ -91,11 +91,14 @@ class MotionController:
             return False, "机器人动作系统尚未就绪"
         if choreo.play_move(name):
             return True, f"动作 {name} 开始播放"
-        # Try the official recorded-emotion library.
+        # Official recorded-emotion library.
         provider = self._recorded_provider
         recorded = provider() if callable(provider) else None
         if recorded is not None and choreo.play_recorded(name, recorded):
             return True, f"情绪 {name} 开始播放"
+        # Official dances library.
+        if choreo.play_dance(name):
+            return True, f"舞蹈 {name} 开始播放"
         return False, f"未知动作: {name}"
 
     def current(self) -> str | None:
@@ -114,6 +117,11 @@ class MotionController:
                 names.extend(sorted(recorded.list_moves()))
             except Exception:
                 pass
+        try:
+            from reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
+            names.extend(sorted(AVAILABLE_MOVES.keys()))
+        except Exception:
+            pass
         return names
 
 

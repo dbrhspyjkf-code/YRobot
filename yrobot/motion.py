@@ -53,14 +53,29 @@ MOVE_SPECS = {
 }
 
 # Xiaozhi protocol emotion -> Reachy move name (see xiaozhi.tech websocket doc).
+# Prefer official recorded-emotion moves for vividness; the programmatic moves
+# (shake/nod/...) are fallbacks used when the emotion library is unavailable.
 EMOTION_TO_MOVE = {
+    "happy": "cheerful1", "laughing": "laughing1", "funny": "laughing2",
+    "winking": "welcoming1", "confident": "proud2",
+    "surprised": "surprised1", "shocked": "amazed1",
+    "thinking": "thoughtful1", "confused": "confused1",
+    "sleepy": "sleep1", "tired": "tired1",
+    "sad": "sad1", "crying": "sad2", "downcast": "downcast1",
+    "angry": "reprimand1", "furious": "rage1", "irritated": "irritated1",
+    "loving": "loving1", "kissy": "loving1",
+}
+# Fallback: if the recorded move above can't be played, use a programmatic
+# move that conveys the same idea.
+EMOTION_FALLBACK_MOVE = {
     "happy": NOD, "laughing": NOD, "funny": NOD, "winking": TILT,
+    "confident": NOD,
     "surprised": SURPRISE, "shocked": SURPRISE,
     "thinking": THINK, "confused": THINK,
     "sleepy": YAWN, "tired": YAWN,
     "sad": SAD, "crying": SAD, "downcast": SAD,
     "angry": ANGRY, "furious": ANGRY, "irritated": ANGRY,
-    "loving": TILT, "kissy": TILT, "confident": NOD,
+    "loving": TILT, "kissy": TILT,
 }
 
 
@@ -295,6 +310,24 @@ class Choreographer(threading.Thread):
             return False
         try:
             move = recorded_moves.get(name)
+        except Exception:
+            return False
+        self._recorded_move = move
+        self._recorded_name = name
+        self._recorded_start = time.monotonic()
+        self._recorded_duration = float(move.duration)
+        return True
+
+    def play_dance(self, name: str) -> bool:
+        """Play a dance move from the official dances library.
+
+        Same take-over semantics as ``play_recorded``; the dance library is
+        imported lazily so the server works even when the extra package is
+        not installed.
+        """
+        try:
+            from reachy_mini_dances_library.dance_move import DanceMove
+            move = DanceMove(name)
         except Exception:
             return False
         self._recorded_move = move

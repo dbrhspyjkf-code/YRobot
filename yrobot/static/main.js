@@ -741,3 +741,69 @@ function renderSystem(sys) {
   disk.textContent = `磁盘 ${sys.disk_percent}%`;
   temp.textContent = `CPU ${sys.temperature_c}°C`;
 }
+
+// ── Motion panel ────────────────────────────────────────────────────────────
+const MOTION_BASIC = new Set(["shake", "nod", "tilt", "surprise", "think", "yawn", "sad", "angry"]);
+const MOTION_DANCE = new Set(["simple_nod", "head_tilt_roll", "side_to_side_sway", "dizzy_spin",
+  "stumble_and_recover", "headbanger_combo", "interwoven_spirals", "sharp_side_tilt",
+  "side_peekaboo", "yeah_nod", "uh_huh_tilt", "neck_recoil", "chin_lead",
+  "groovy_sway_and_roll", "chicken_peck", "side_glance_flick", "polyrhythm_combo",
+  "grid_snap", "pendulum_swing", "jackson_square"]);
+let motionAll = [];
+
+async function loadMotions() {
+  const grid = document.getElementById("motion-grid");
+  const status = document.getElementById("motion-status");
+  try {
+    const response = await fetch("/api/motion", { cache: "no-store" });
+    const data = await response.json();
+    motionAll = data.moves || [];
+    status.textContent = `${motionAll.length} 个动作`;
+    renderMotionTab(currentMotionTab());
+  } catch (error) {
+    status.textContent = "加载失败";
+    grid.innerHTML = `<p class="muted">无法加载动作：${error.message}</p>`;
+  }
+}
+
+function currentMotionTab() {
+  const active = document.querySelector(".motion-tab.active");
+  return active ? active.dataset.cat : "basic";
+}
+
+function renderMotionTab(cat) {
+  const grid = document.getElementById("motion-grid");
+  const moves = motionAll.filter((m) => {
+    if (cat === "basic") return MOTION_BASIC.has(m);
+    if (cat === "dance") return MOTION_DANCE.has(m);
+    return !MOTION_BASIC.has(m) && !MOTION_DANCE.has(m);
+  });
+  if (moves.length === 0) {
+    grid.innerHTML = `<p class="muted">此分类暂无动作</p>`;
+    return;
+  }
+  grid.innerHTML = moves.map((m) => `<button class="motion-btn" data-move="${m}">${m}</button>`).join("");
+  grid.querySelectorAll(".motion-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await fetch("/api/motion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ move: btn.dataset.move }),
+        });
+      } catch (_) { /* ignore */ }
+      setTimeout(() => { btn.disabled = false; }, 600);
+    });
+  });
+}
+
+document.querySelectorAll(".motion-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".motion-tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    renderMotionTab(tab.dataset.cat);
+  });
+});
+document.getElementById("motion-refresh").addEventListener("click", loadMotions);
+loadMotions();

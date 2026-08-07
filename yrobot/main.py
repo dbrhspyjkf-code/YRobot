@@ -1149,20 +1149,30 @@ class Yrobot(ReachyMiniApp):
                             if t == "llm":
                                 # Xiaozhi sends the model's emotion/expression here
                                 # (e.g. {"type":"llm","emotion":"happy","text":"😀"});
-                                # map it to a Reachy one-shot move.  Per-move
-                                # cooldown prevents the default 'happy' nod from
-                                # firing on every reply (manual API calls bypass).
+                                # Prefer the official recorded emotion; fall back to a
+                                # programmatic move.  Per-move cooldown prevents the
+                                # default 'happy' emotion from firing on every reply.
                                 emo = (d.get("emotion") or "").strip().lower()
-                                from yrobot.motion import EMOTION_TO_MOVE
-                                mv = EMOTION_TO_MOVE.get(emo)
-                                if mv:
-                                    now = time.monotonic()
-                                    if now - _last_emotion_move.get(mv, -1e9) >= 5.0:
-                                        _last_emotion_move[mv] = now
-                                        choreo.play_move(mv)
-                                        logger.info("xz emotion %s -> move %s", emo, mv)
+                                from yrobot.motion import (
+                                    EMOTION_FALLBACK_MOVE, EMOTION_TO_MOVE)
+                                rec_name = EMOTION_TO_MOVE.get(emo)
+                                fb_name = EMOTION_FALLBACK_MOVE.get(emo)
+                                now = time.monotonic()
+                                target = rec_name or fb_name
+                                if target:
+                                    if now - _last_emotion_move.get(target, -1e9) >= 5.0:
+                                        _last_emotion_move[target] = now
+                                        played = False
+                                        if rec_name:
+                                            rec = _get_recorded()
+                                            if rec is not None and choreo.play_recorded(rec_name, rec):
+                                                played = True
+                                                logger.info("xz emotion %s -> recorded %s", emo, rec_name)
+                                        if not played and fb_name:
+                                            choreo.play_move(fb_name)
+                                            logger.info("xz emotion %s -> move %s", emo, fb_name)
                                     else:
-                                        logger.info("xz emotion %s -> move %s (cooldown)", emo, mv)
+                                        logger.info("xz emotion %s -> %s (cooldown)", emo, target)
                                 else:
                                     logger.info("xz emotion %s (no move)", emo or "?")
                             if t == "stt":
