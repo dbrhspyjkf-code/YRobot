@@ -151,6 +151,7 @@ class SoundCompass(threading.Thread):
         self._user_active = user_active
         self._on_target = on_target
         self._halt = threading.Event()
+        self._muted_ticks = 0
 
     def close(self) -> None:
         self._halt.set()
@@ -161,7 +162,11 @@ class SoundCompass(threading.Thread):
         while not self._halt.wait(1 / self.RATE_HZ):
             if not self._user_active():
                 samples.clear()
+                self._muted_ticks += 1
+                if self._muted_ticks % 600 == 0:
+                    logger.info("DoA muted (user_active=False for ~50s)")
                 continue
+            self._muted_ticks = 0
             try:
                 # The XVF3800 control interface shares the USB bus with the
                 # daemon and throws transient I/O errors under contention —
@@ -179,6 +184,14 @@ class SoundCompass(threading.Thread):
                 continue
             angle, device_speech = reading
             now = time.monotonic()
+            # Diagnostic: log DoA activity every ~30 s so we can tell whether
+            # the thread is alive and user_active() is passing.
+            if not hasattr(self, "_doa_log_tick"):
+                self._doa_log_tick = 0
+            self._doa_log_tick += 1
+            if self._doa_log_tick % 600 == 0:
+                logger.info("DoA alive angle=%.0f° yaw_delta=%.0f°",
+                    math.degrees(angle), math.degrees(doa_to_yaw_delta(angle)))
             try:
                 head_yaw = self._head_yaw()
                 yaw = head_yaw + doa_to_yaw_delta(angle)
@@ -192,7 +205,8 @@ class SoundCompass(threading.Thread):
             confidence = 0.1 if device_speech else 1.0
             samples.append((now, yaw, confidence))
             samples = [(t, y, w) for t, y, w in samples if now - t <= self.WINDOW_S]
-            if sum(w for _, _, w in samples) < self.MIN_CONFIDENCE:
+            total = sum(w for _, _, w in samples)
+            if total < self.MIN_CONFIDENCE:
                 continue
             target = weighted_circular_mean([(y, w) for _, y, w in samples])
             if abs(_wrap(target - head_yaw)) > self.DEADBAND_RAD:
