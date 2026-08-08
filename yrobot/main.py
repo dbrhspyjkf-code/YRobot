@@ -908,9 +908,10 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic
 
         choreo = Choreographer(reachy_mini)
-        # Slow the gaze spring so turns are smooth, never a snap.
-        choreo._gaze._max_vel = 1.5   # rad/s (was 3.0)
-        choreo._gaze._omega = 4.0     # softer spring (was 6.0)
+        # Smooth but responsive gaze: fast enough to track a speaker, bounded
+        # enough to never snap (the body turn carries the large motions).
+        choreo._gaze._max_vel = 2.5   # rad/s
+        choreo._gaze._omega = 6.0     # spring stiffness
         from yrobot.app_config import motion_controller_singleton
         motion_controller_singleton().set(choreo)
         # Official emotion library (85 recorded moves) — lazy singleton so

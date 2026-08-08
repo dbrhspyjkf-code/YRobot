@@ -285,8 +285,8 @@ class Choreographer(threading.Thread):
         self._body_yaw = 0.0
         self._body_yaw_target = 0.0
         self.BODY_YAW_LIMIT = math.radians(150.0)
-        self.BODY_FOLLOW_HEAD_DEG = 30.0   # start turning body beyond 30°
-        self.BODY_YAW_SPEED = 0.5          # rad/s, gentle body turn
+        self.BODY_FOLLOW_HEAD_DEG = 10.0   # start turning body beyond 10°
+        self.BODY_YAW_SPEED = 1.2          # rad/s, brisk but smooth body turn
 
     # -- thread-safe inputs -------------------------------------------------
 
