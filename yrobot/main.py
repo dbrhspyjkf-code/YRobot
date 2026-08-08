@@ -946,7 +946,7 @@ class Yrobot(ReachyMiniApp):
         compass = SoundCompass(
             reachy_mini.media,
             current_head_yaw=_current_head_yaw,
-            user_active=lambda: _user_speaking[0] and _visual_gaze[0] is None,
+            user_active=lambda: _visual_gaze[0] is None,
             on_target=choreo.set_gaze_target,
         )
         compass.start()

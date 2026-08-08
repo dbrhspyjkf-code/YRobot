@@ -189,7 +189,7 @@ class SoundCompass(threading.Thread):
             # confidence boost: two device-confirmed samples react faster,
             # while three software-confirmed samples still work during
             # XVF double-talk suppression.
-            confidence = 2.0 if device_speech else 1.0
+            confidence = 0.1 if device_speech else 1.0
             samples.append((now, yaw, confidence))
             samples = [(t, y, w) for t, y, w in samples if now - t <= self.WINDOW_S]
             if sum(w for _, _, w in samples) < self.MIN_CONFIDENCE:
