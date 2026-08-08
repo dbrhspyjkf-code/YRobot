@@ -107,42 +107,20 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic
         import time as _sleep
 
-        # ── Safe motor startup with soft head rise ────────────────
-        # Motors were confirmed as the undervoltage cause (30min stable
-        # without them).  Solution: use the SDK's goto_target with a
-        # long duration (6s) to slowly reach neutral, matching the
-        # original YRobot behaviour before our cleanup.
-        _MOTORS_DISABLED_FOR_TEST = False
+        # ── Safe motor startup with slow Choreographer rise ───────
+        # Avoid goto_target (defaults to 0.5s snap).  Instead create
+        # Choreographer with a very low max_vel, let it reach neutral
+        # over ~8s, then restore normal speed.
         try:
-            from reachy_mini.reachy_mini import (
-                INIT_ANTENNAS_JOINT_POSITIONS,
-                INIT_HEAD_POSE,
-            )
-            from reachy_mini.utils.interpolation import distance_between_poses
             reachy_mini.enable_motors()
             logger.info("motors enabled")
-            pose = reachy_mini.get_current_head_pose()
-            if pose is not None:
-                pose_arr = np.asarray(pose, dtype=np.float64)
-                if pose_arr.shape == (4, 4):
-                    t_dist, r_dist, _ = distance_between_poses(pose_arr, INIT_HEAD_POSE)
-                    if t_dist > 0.05 or r_dist > 0.35:
-                        logger.info("head off neutral (t=%.3f r=%.3f); rising over 6s", t_dist, r_dist)
-                        reachy_mini.goto_target(
-                            INIT_HEAD_POSE,
-                            antennas=INIT_ANTENNAS_JOINT_POSITIONS,
-                            duration=6.0,
-                        )
-                        logger.info("head reached neutral")
-                    else:
-                        logger.info("head already near neutral")
         except Exception as exc:
-            logger.warning("motor init / wake-up failed: %s", exc)
-
-        # ── Daemon stabilization delay ───────────────────────────
-        _sleep.sleep(2.0)
+            logger.warning("motor enable failed: %s", exc)
 
         choreo = Choreographer(reachy_mini)
+        # Super-slow initial rise: 0.3 rad/s instead of 2.5 rad/s
+        choreo._gaze._max_vel = 0.3
+        choreo._gaze._omega = 2.0
         # Smooth but responsive gaze: fast enough to track a speaker, bounded
         # enough to never snap (the body turn carries the large motions).
         choreo._gaze._max_vel = 2.5   # rad/s
@@ -163,7 +141,12 @@ class Yrobot(ReachyMiniApp):
             return _recorded_moves[0]
         motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
-        _sleep.sleep(1.0)
+        # Wait for slow initial rise (~8s for a 0.6 rad offset at 0.3 rad/s)
+        _sleep.sleep(8.0)
+        # Restore normal gaze speed for conversation tracking
+        choreo._gaze._max_vel = 2.5
+        choreo._gaze._omega = 6.0
+        logger.info("head rise complete, gaze speed restored")
 
         # SoundCompass: track speaker direction via XVF3800 DoA
         _user_speaking = [False]
