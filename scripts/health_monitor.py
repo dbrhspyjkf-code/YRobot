@@ -92,3 +92,30 @@ except Exception as e:
     with open(LOG, "a") as f:
         f.write(f"{t} | FATAL: {e}\n")
     print(f"FATAL: {e}")
+
+# ── Network watchdog: restart WiFi if gateway unreachable ──────
+GATEWAY = "192.168.1.1"
+WATCHDOG_STATE = "/tmp/wifi_watchdog_count"
+def _ping(host, timeout=3):
+    return subprocess.run(["ping", "-c", "1", "-W", str(timeout), host],
+                          capture_output=True).returncode == 0
+try:
+    existing = open(WATCHDOG_STATE).read().strip() if os.path.exists(WATCHDOG_STATE) else "0"
+    fail_count = int(existing) if existing.isdigit() else 0
+except Exception:
+    fail_count = 0
+if not _ping(GATEWAY):
+    fail_count += 1
+    with open(WATCHDOG_STATE, "w") as f:
+        f.write(str(fail_count))
+    if fail_count >= 3:
+        with open(LOG, "a") as f:
+            f.write(f"{t} | WATCHDOG: WiFi restart after {fail_count} ping failures, gateway {GATEWAY}\n")
+        subprocess.run(["sudo", "nmcli", "device", "disconnect", "wlan0"], capture_output=True, timeout=10)
+        time.sleep(2)
+        subprocess.run(["sudo", "nmcli", "device", "connect", "wlan0"], capture_output=True, timeout=10)
+        with open(WATCHDOG_STATE, "w") as f:
+            f.write("0")
+else:
+    with open(WATCHDOG_STATE, "w") as f:
+        f.write("0")
