@@ -1048,10 +1048,17 @@ class Yrobot(ReachyMiniApp):
                     # Use the largest face.
                     x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
                     cx = (x + w / 2) * scale
-                    # Map horizontal pixel to camera-relative angle.
-                    # Assume ~80° HFOV at 640 px → 0.125°/px, center at 320.
-                    cam_angle = (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1])
-                    cam_rad = math.radians(cam_angle)
+                    # Camera-relative angle via pinhole model: atan2 of the
+                    # pixel offset divided by focal length.  This is exact
+                    # and uses the real camera calibration, no FOV guess.
+                    try:
+                        K = reachy_mini.media.camera.K
+                        fx = float(K[0, 0])
+                        cx_princ = float(K[0, 2])
+                        cam_rad = math.atan2(cx - cx_princ, fx)
+                    except Exception:
+                        cam_rad = math.radians(
+                            (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1]))
                     # Convert to world yaw using head pose.
                     try:
                         head_yaw = _current_head_yaw()
