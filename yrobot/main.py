@@ -1,28 +1,22 @@
-"""Application wiring: Reachy Mini app, session lifecycle and CLI.
+"""Application wiring: Reachy Mini Xiaozhi cloud integration.
 
-Thread map (all communication is immutable data + atomic flags):
-
-    main loop      microphone → VAD → turn controller → bounded audio queue
-    yrobot-uplink  audio queue + latest JPEG → websocket (may block safely)
-    yrobot-camera  camera → resize/JPEG → replaceable latest-frame slot
-    yrobot-recv    gateway deltas → gate check → speaker queue / captions
-    yrobot-speaker paced, interruptible playback (owns the audio pipeline)
-    yrobot-motion  50 Hz choreographer (owns the robot pose)
-    yrobot-doa     12 Hz sound compass → gaze targets
+Thread map:
+    asyncio       mic → Opus encode → WebSocket → TTS decode → aplay
+    face-tracker  OpenCV Haar cascade (~2 fps) → visual gaze target
+    yrobot-motion 50 Hz Choreographer (owns the robot pose)
+    yrobot-doa    12 Hz SoundCompass → audio gaze target
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
-import queue
 import threading
 import time
-from dataclasses import dataclass
 
 import numpy as np
 from dotenv import load_dotenv
-import opuslib
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
@@ -106,6 +100,7 @@ class Yrobot(ReachyMiniApp):
         import subprocess as _sp
         import websockets as _ws
         import cv2
+        import opuslib
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
