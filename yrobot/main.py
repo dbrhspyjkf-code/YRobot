@@ -384,7 +384,7 @@ class Yrobot(ReachyMiniApp):
                 _waked = False
                 _wake_deadline = 0.0
                 WAKE_WORDS = ("小白", "阿皮", "reachy", "hey reachy", "嘿")
-                WAKE_TIMEOUT = 15.0
+                WAKE_TIMEOUT = 20.0
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
@@ -441,7 +441,7 @@ class Yrobot(ReachyMiniApp):
                                 text_lower = text.lower()
                                 if any(w.lower() in text_lower for w in WAKE_WORDS):
                                     _waked = True
-                                    _wake_deadline = 0
+                                    _wake_deadline = time.time() + WAKE_TIMEOUT
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                 if not _waked:
@@ -472,7 +472,6 @@ class Yrobot(ReachyMiniApp):
                                 )
                             elif t == "tts" and d.get("state") == "stop":
                                 tts_active = False
-                                _wake_deadline = time.time() + WAKE_TIMEOUT
                                 logger.info(
                                     "xz tts stop packets=%d audio(enqueued=%d written=%d pending=%d)",
                                     getattr(_aplay_add, "_count", 0),
@@ -531,6 +530,9 @@ class Yrobot(ReachyMiniApp):
                             frames.append(buf)
                         if rms_max < SILENCE_RMS:
                             continue
+                        # Refresh wake deadline on every speech burst.
+                        if _waked:
+                            _wake_deadline = time.time() + WAKE_TIMEOUT
                         _user_speaking[0] = True
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
                         sent = 0
