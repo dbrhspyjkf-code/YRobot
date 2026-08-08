@@ -136,6 +136,13 @@ class Yrobot(ReachyMiniApp):
                 "_gaze": type("G", (), {"__setattr__": lambda s,k,v: None})(),
             })()
             choreo.start()  # no-op
+
+        # ── Daemon stabilization delay ───────────────────────────
+        # The original YRobot code had a 6s goto_target BEFORE _run_xiaozhi.
+        # This gave the daemon time to fully initialize motor controllers,
+        # camera pipeline, and audio subsystem. Without it, the daemon may
+        # still be calibrating when Choreographer starts sending commands.
+        _sleep.sleep(5.0)
         # Smooth but responsive gaze: fast enough to track a speaker, bounded
         # enough to never snap (the body turn carries the large motions).
         choreo._gaze._max_vel = 2.5   # rad/s
