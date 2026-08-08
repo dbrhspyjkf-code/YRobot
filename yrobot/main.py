@@ -955,6 +955,7 @@ class Yrobot(ReachyMiniApp):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
+        _vis_frames = 0  # consecutive face detections (2 required to override DoA)
         _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
         _vis_stop = _th_face.Event()
 
@@ -984,6 +985,7 @@ class Yrobot(ReachyMiniApp):
 
 
         def _face_tracker():
+            nonlocal _vis_frames
             import json as _json, urllib.request as _ur
             frame_url = "http://127.0.0.1:8042/api/camera/frame"
             state_url = "http://127.0.0.1:8042/api/camera/state"
@@ -1029,6 +1031,14 @@ class Yrobot(ReachyMiniApp):
                     if len(faces) == 0:
                         # No face seen this frame; let audio DoA dominate.
                         _visual_gaze[0] = None
+                        _vis_frames = 0
+                        _vis_stop.wait(0.5)
+                        continue
+                    # Require 2 consecutive detections before the visual gaze
+                    # overrides the audio DoA: a single spurious Haar hit at
+                    # the frame edge would otherwise yank the head around.
+                    _vis_frames += 1
+                    if _vis_frames < 2:
                         _vis_stop.wait(0.5)
                         continue
                     # Use the largest face.

@@ -279,6 +279,14 @@ class Choreographer(threading.Thread):
         self._recorded_name = None
         self._recorded_start = -1e9
         self._recorded_duration = 0.0
+        # Explicit body yaw: when the gaze target drifts far from the current
+        # head yaw, the body slowly turns to carry the head (like a human
+        # turning toward a speaker) so the head never has to crank past ~35°.
+        self._body_yaw = 0.0
+        self._body_yaw_target = 0.0
+        self.BODY_YAW_LIMIT = math.radians(150.0)
+        self.BODY_FOLLOW_HEAD_DEG = 30.0   # start turning body beyond 30°
+        self.BODY_YAW_SPEED = 0.5          # rad/s, gentle body turn
 
     # -- thread-safe inputs -------------------------------------------------
 
@@ -407,8 +415,23 @@ class Choreographer(threading.Thread):
             t = now - t0
             self._blend_modes(dt)
             pose, antennas = self._compose(t, now, dt)
+            # Body yaw follows the gaze target: turn the body (gently) so the
+            # head only needs a small relative yaw.  Automatic body yaw on the
+            # daemon still keeps us inside mechanical limits; this explicit
+            # tracking makes the body proactively face the speaker instead of
+            # waiting for the head to hit its 65° limit.
+            rel = _wrap(self._gaze.target - self._body_yaw)
+            # Always aim the body at the gaze target, but only actually move
+            # once the head-relative yaw exceeds the follow threshold.  This
+            # gives natural "look first, then turn body" behaviour and keeps
+            # the body from chasing tiny gaze jitter.
+            if abs(rel) > math.radians(self.BODY_FOLLOW_HEAD_DEG):
+                step = self.BODY_YAW_SPEED * dt * (1.0 if rel > 0 else -1.0)
+                self._body_yaw += step
+            self._body_yaw = max(
+                -self.BODY_YAW_LIMIT, min(self.BODY_YAW_LIMIT, self._body_yaw))
             try:
-                self._mini.set_target(head=pose, antennas=antennas)
+                self._mini.set_target(head=pose, antennas=antennas, body_yaw=self._body_yaw)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("set_target dropped: %s", exc)
             next_tick += dt
