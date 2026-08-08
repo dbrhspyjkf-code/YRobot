@@ -107,42 +107,42 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic
         import time as _sleep
 
-        # ── Motor init temporarily DISABLED for stability test ────
-        _MOTORS_DISABLED_FOR_TEST = True
-        if not _MOTORS_DISABLED_FOR_TEST:
-            try:
-                reachy_mini.enable_motors()
-                logger.info("motors enabled")
-                _sleep.sleep(1.5)
-            except Exception as exc:
-                logger.warning("motor enable failed: %s", exc)
-        else:
-            logger.warning("MOTORS DISABLED for stability test")
-            try:
-                reachy_mini.disable_motors()
-            except Exception:
-                pass
-
-        if not _MOTORS_DISABLED_FOR_TEST:
-            choreo = Choreographer(reachy_mini)
-        else:
-            # Dummy choreo — all methods are no-ops
-            choreo = type("DummyChoreo", (), {
-                "start": lambda *a: None, "close": lambda *a: None, "join": lambda *a: None,
-                "set_mode": lambda *a: None, "set_gaze_target": lambda *a: None,
-                "play_move": lambda *a: None, "play_recorded": lambda *a: False,
-                "current_move": lambda *a: None, "current_recorded": lambda *a: None,
-                "current_yaw": lambda *a: 0.0, "release_still": lambda *a: None,
-                "_gaze": type("G", (), {"__setattr__": lambda s,k,v: None})(),
-            })()
-            choreo.start()  # no-op
+        # ── Safe motor startup with soft head rise ────────────────
+        # Motors were confirmed as the undervoltage cause (30min stable
+        # without them).  Solution: use the SDK's goto_target with a
+        # long duration (6s) to slowly reach neutral, matching the
+        # original YRobot behaviour before our cleanup.
+        _MOTORS_DISABLED_FOR_TEST = False
+        try:
+            from reachy_mini.reachy_mini import (
+                INIT_ANTENNAS_JOINT_POSITIONS,
+                INIT_HEAD_POSE,
+            )
+            from reachy_mini.utils.interpolation import distance_between_poses
+            reachy_mini.enable_motors()
+            logger.info("motors enabled")
+            pose = reachy_mini.get_current_head_pose()
+            if pose is not None:
+                pose_arr = np.asarray(pose, dtype=np.float64)
+                if pose_arr.shape == (4, 4):
+                    t_dist, r_dist, _ = distance_between_poses(pose_arr, INIT_HEAD_POSE)
+                    if t_dist > 0.05 or r_dist > 0.35:
+                        logger.info("head off neutral (t=%.3f r=%.3f); rising over 6s", t_dist, r_dist)
+                        reachy_mini.goto_target(
+                            INIT_HEAD_POSE,
+                            antennas=INIT_ANTENNAS_JOINT_POSITIONS,
+                            duration=6.0,
+                        )
+                        logger.info("head reached neutral")
+                    else:
+                        logger.info("head already near neutral")
+        except Exception as exc:
+            logger.warning("motor init / wake-up failed: %s", exc)
 
         # ── Daemon stabilization delay ───────────────────────────
-        # The original YRobot code had a 6s goto_target BEFORE _run_xiaozhi.
-        # This gave the daemon time to fully initialize motor controllers,
-        # camera pipeline, and audio subsystem. Without it, the daemon may
-        # still be calibrating when Choreographer starts sending commands.
-        _sleep.sleep(5.0)
+        _sleep.sleep(2.0)
+
+        choreo = Choreographer(reachy_mini)
         # Smooth but responsive gaze: fast enough to track a speaker, bounded
         # enough to never snap (the body turn carries the large motions).
         choreo._gaze._max_vel = 2.5   # rad/s
