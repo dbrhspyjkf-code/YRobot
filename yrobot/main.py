@@ -383,12 +383,13 @@ class Yrobot(ReachyMiniApp):
                 # ── Wake word state ──────────────────────────────────
                 _waked = False
                 _wake_deadline = 0.0
+                _wake_at = 0.0  # discard stale TTS from before wake
                 WAKE_WORDS = ("小白", "阿皮", "reachy", "hey reachy", "嘿")
                 WAKE_TIMEOUT = 20.0
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
-                    nonlocal _waked, _wake_deadline
+                    nonlocal _waked, _wake_deadline, _wake_at
                     while not stop_event.is_set():
                         try:
                             raw = await ws.recv()
@@ -442,6 +443,7 @@ class Yrobot(ReachyMiniApp):
                                 if any(w.lower() in text_lower for w in WAKE_WORDS):
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
+                                    _wake_at = time.time()
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                 if not _waked:
@@ -450,6 +452,11 @@ class Yrobot(ReachyMiniApp):
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state")=="start":
                                 if not _waked:
+                                    continue
+                                # Skip TTS that fires right after wake — it's
+                                # a stale response from the pre-wake utterance.
+                                if _wake_at > 0 and time.time() - _wake_at < 1.5:
+                                    logger.info("xz tts start ignored (stale, %.1fs post-wake)", time.time() - _wake_at)
                                     continue
                                 logger.info("xz tts start")
                                 tts_active = True
