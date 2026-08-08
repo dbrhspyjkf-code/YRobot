@@ -3,6 +3,85 @@
 This document records the practical setup, changes, and failure modes for the
 Reachy Mini YRobot deployment used in this project.
 
+## Recent Changes (2026-08-08 / 2026-08-09) — Stability & Startup
+
+### Startup guard chain
+
+After a power cycle or daemon restart the Reachy daemon WebSocket handler
+takes longer to initialise than its HTTP API. The old `wait-for-daemon.conf`
+grep'd for `"running"` in the HTTP response — too early.
+
+Fix:
+
+1. `/home/pollen/wait_daemon_ready.py` — SDK-level probe that creates a
+   `ReachyMini`, enables motors if disabled, and exits 0 on success.
+2. `/etc/systemd/system/yrobot.service.d/wait-for-daemon.conf` —
+   `ExecStartPre` calls this script, giving the daemon up to 30 s.
+
+The script is deployed to Reachy but NOT tracked in the YRobot repo;
+its content is identical to the one in the plan doc at
+`docs/plans/2026-08-08-yrobot-stability-improvements.md`.
+
+### Motor enable after goto_sleep / power cycle
+
+After `goto_sleep()` or a hard power-cycle, the daemon boots with
+`motor_control_mode: Disabled` and `backend_status.ready: false`. The
+`ready` flag **never** becomes `true` without SDK intervention, so
+waiting for it is pointless. The `wait_daemon_ready.py` script enables
+motors before exiting; YRobot's own `enable_motors()` retry loop (3
+tries × 1 s) handles the rest.
+
+### Hardware: camera I2C bus lockup
+
+**Symptom:** Reachy boots, head moves briefly, then hangs completely.
+`dmesg` shows dozens of `dw9807 I2C write … fail ret = -5` errors.
+The `dw9807` is the camera focus-motor chip; its I2C failures can lock
+up the kernel bus, preventing the hardware watchdog from being pinged.
+After 1 minute the BCM2835 watchdog hard-resets the board — previous-boot
+journal is empty (no clean shutdown).
+
+**Mitigation:** disconnect the camera flex cable from the CM4 board if
+hang-on-boot is observed. Voice conversation (Xiaozhi) works without the
+camera; only face tracking is lost.
+
+### Stability improvements (commits 64916b7 … 42ecfd1)
+
+- Slow-rise startup: 0.3 rad/s gaze for 8 s after motor enable, then
+  restored to 2.5 rad/s. Reduces peak current draw.
+- Motor enable failure → safe-mode (3 retries, 1 s apart).
+- Startup failure counter: only cleared on successful `run()` return;
+  consecutive failures persist across systemd restarts.
+- VAD persistence: atomic per-key env update (`yrobot/env_store.py`),
+  preserves HA token and other settings.
+- Audio: bounded latest-frame queue (max 50), TTS watchdog covers
+  startup-stall, mid-stream disconnect, and total-duration limits.
+- aplay process handle tracked for clean terminate/kill on shutdown.
+- Xiaozhi receive task supervised: premature exit triggers reconnect;
+  cancel + await on close.
+- Choreographer external inputs (mode, moves, gaze, stillness) now go
+  through a command queue consumed by the motion thread.
+- Dashboard `/api/status` exposes motion loop Hz, tick time,
+  deadline misses, WS state, session id, reconnects, TTS packet
+  timing, audio queue depth/drops.
+- Health monitor checks Dashboard API, daemon API, and uses
+  bounded subprocess timeouts.
+- Obsolete MiniCPM-o/Hermes tests removed; 46 current tests pass.
+
+### Xiaozhi configuration
+
+Production configuration is read from environment variables, falling back
+to the wired defaults:
+
+```bash
+XIAOZHI_CONV_URL  → default wss://api.tenclass.net/xiaozhi/v1/
+XIAOZHI_TOKEN     → default test-token
+XIAOZHI_DEVICE_ID → default wlan0 MAC
+```
+
+Set these in `/etc/systemd/system/yrobot.service.d/ha.conf` or
+`/home/pollen/.config/yrobot/ha.env` for production tokens.
+
+
 ## Current Deployment
 
 - Robot SSH: `pollen@192.168.1.14`
