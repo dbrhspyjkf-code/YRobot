@@ -107,33 +107,15 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic
 
         # ── Motor init + slow head rise to neutral ─────────────────────
-        # After cold boot the head may be lowered.  Drive a gentle 6 s
-        # interpolation to neutral before the Choreographer takes over,
-        # so the first 50 Hz set_target doesn't snap the head.
+        # After cold boot the head may be lowered.  Enable motors, then let
+        # the Choreographer's own spring dynamics (max_vel=2.5, omega=6.0)
+        # drive a smooth rise instead of goto_target which moves at full
+        # servo speed with no acceleration ramp.
         try:
-            from reachy_mini.reachy_mini import (
-                INIT_ANTENNAS_JOINT_POSITIONS,
-                INIT_HEAD_POSE,
-            )
-            from reachy_mini.utils.interpolation import distance_between_poses
             reachy_mini.enable_motors()
             logger.info("motors enabled")
-            pose = reachy_mini.get_current_head_pose()
-            if pose is not None:
-                pose_arr = np.asarray(pose, dtype=np.float64)
-                if pose_arr.shape == (4, 4):
-                    t_dist, r_dist, _ = distance_between_poses(pose_arr, INIT_HEAD_POSE)
-                    if t_dist > 0.05 or r_dist > 0.35:
-                        logger.info("head off neutral (t=%.3f r=%.3f); rising over 6s", t_dist, r_dist)
-                        reachy_mini.goto_target(
-                            INIT_HEAD_POSE,
-                            antennas=INIT_ANTENNAS_JOINT_POSITIONS,
-                            duration=6.0,
-                        )
-                    else:
-                        logger.info("head already near neutral")
         except Exception as exc:
-            logger.warning("motor init / wake-up failed: %s", exc)
+            logger.warning("motor enable failed: %s", exc)
 
         choreo = Choreographer(reachy_mini)
         # Smooth but responsive gaze: fast enough to track a speaker, bounded
