@@ -100,6 +100,7 @@ class Yrobot(ReachyMiniApp):
         import subprocess as _sp
         import websockets as _ws
         import cv2
+        import math
         import opuslib
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
         from yrobot.app_config import audio_input_controller_singleton
@@ -529,7 +530,7 @@ class Yrobot(ReachyMiniApp):
                 try:
                     _a.run(run())
                 except Exception as e:
-                    logger.info("xiaozhi ended: %s", e)
+                    logger.exception("xiaozhi ended: %s", e)
                 if not stop_event.is_set():
                     logger.info("xiaozhi reconnecting in 3s...")
                     stop_event.wait(3)
