@@ -394,7 +394,13 @@ async function loadLogs({ fullReplace = false } = {}) {
   const requestId = ++logInFlight;
   const url = new URL("/api/logs", window.location.origin);
   url.searchParams.set("lines", "300");
-  url.searchParams.set("min_level", logLevel.value || "info");
+  const level = logLevel.value || "info";
+  if (level === "chat") {
+    url.searchParams.set("min_level", "info");
+    url.searchParams.set("filter", "chat");
+  } else {
+    url.searchParams.set("min_level", level);
+  }
   try {
     const response = await fetch(url, { cache: "no-store" });
     const result = await response.json();

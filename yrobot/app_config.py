@@ -669,9 +669,17 @@ class LogReader:
             return False, (proc.stderr.strip() or f"journalctl rc={proc.returncode}")
         return True, None
 
-    def read(self, lines: int, min_level: str) -> tuple[list[dict[str, Any]], str | None]:
+    def read(
+        self,
+        lines: int,
+        min_level: str,
+        *,
+        filter_kind: str = "",
+    ) -> tuple[list[dict[str, Any]], str | None]:
         lines = max(1, min(self.MAX_LINES, int(lines)))
         min_priority = self._priority_for(min_level)
+        # "chat" filter: keep only Xiaozhi conversation lines (STT + TTS text).
+        chat_markers = ("xz stt:", "xz tts text:")
         try:
             proc = subprocess.run(
                 [
@@ -705,6 +713,9 @@ class LogReader:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            message = str(record.get("MESSAGE") or "")
+            if filter_kind == "chat" and not any(m in message for m in chat_markers):
+                continue
             priority = self._coerce_priority(record.get("PRIORITY"))
             if priority > min_priority:
                 continue
@@ -715,7 +726,7 @@ class LogReader:
                     "level": _JOURNAL_PRIORITY_NAMES.get(priority, "info"),
                     "logger": str(record.get("SYSLOG_IDENTIFIER") or ""),
                     "pid": self._coerce_int(record.get("_PID")),
-                    "message": str(record.get("MESSAGE") or ""),
+                    "message": message,
                 }
             )
         entries.sort(key=lambda entry: entry["timestamp_us"])
@@ -1052,15 +1063,20 @@ def register_settings_routes(
     available, journal_error = log_reader.available()
 
     @app.get("/api/logs")
-    def get_logs(lines: int = LogReader.DEFAULT_LINES, min_level: str = "info") -> dict[str, Any]:
+    def get_logs(
+        lines: int = LogReader.DEFAULT_LINES,
+        min_level: str = "info",
+        filter: str = "",
+    ) -> dict[str, Any]:
         if not available:
             raise HTTPException(status_code=503, detail=journal_error or "journal unavailable")
-        entries, error = log_reader.read(lines, min_level)
+        entries, error = log_reader.read(lines, min_level, filter_kind=filter)
         if error is not None:
             raise HTTPException(status_code=503, detail=error)
         return {
             "unit": JOURNAL_UNIT,
             "level": min_level,
+            "filter": filter,
             "lines": len(entries),
             "logs": [
                 {
