@@ -2,9 +2,6 @@ const form = document.getElementById("settings-form");
 const loading = document.getElementById("loading");
 const restartBanner = document.getElementById("restart-banner");
 const overrideWarning = document.getElementById("override-warning");
-const persona = document.getElementById("persona");
-const personaCount = document.getElementById("persona-count");
-const privacyConfirm = document.getElementById("privacy-confirm");
 const saveButton = document.getElementById("save-button");
 const saveStatus = document.getElementById("save-status");
 const configPath = document.getElementById("config-path");
@@ -58,13 +55,7 @@ let logRenderedIds = new Set();
 let logInFlight = 0;
 let micInputEnabled = true;
 
-function updatePersonaCount() {
-  personaCount.textContent = String(persona.value.length);
-}
-
 function showSettings(settings) {
-  updatePersonaCount();
-
   if (settings.environment_overrides.length) {
     overrideWarning.textContent =
       `以下设置由 daemon 环境变量管理，重启后会覆盖页面值：${settings.environment_overrides.join(", ")}`;
@@ -533,7 +524,6 @@ async function loadSettings() {
   }
 }
 
-persona.addEventListener("input", updatePersonaCount);
 refreshStatus.addEventListener("click", loadStatus);
 volumeSlider.addEventListener("input", (event) => {
   const value = event.target.value;
@@ -617,18 +607,13 @@ form.addEventListener("input", () => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!privacyConfirm.checked) {
-    saveStatus.textContent = "请先确认数据传输说明";
-    privacyConfirm.focus();
-    return;
-  }
 
   const document = {
     gateway_url: "wss://api.tenclass.net/xiaozhi/v1/",
     tls_verify: true,
     video_enabled: false,
     proactive_enabled: false,
-    persona: persona.value.trim(),
+    persona: "阿皮",
     profile: "default",
     conversation_backend: "xiaozhi",
   };
