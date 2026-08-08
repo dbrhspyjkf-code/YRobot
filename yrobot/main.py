@@ -939,10 +939,17 @@ class Yrobot(ReachyMiniApp):
         SoundCompass.WINDOW_S = 2.0       # 2s smoothing window (was 1.0)
         SoundCompass.MIN_CONFIDENCE = 6.0  # need 6+ confidence (was 3.0)
         SoundCompass.DEADBAND_RAD = 0.20   # ~11° deadband (was 0.12)
+        # Fusion arbitration: while a face is visually locked, the audio DoA
+        # backs off so the two never fight over the gaze target.  When the
+        # face is lost, the sound compass takes over again as the fallback.
+        _vis_lock_at = [0.0]  # monotonic time of last confirmed face
+        _vis_lock_s = 2.0     # keep audio muted this long after last face
+        def _vis_recent() -> bool:
+            return time.monotonic() - _vis_lock_at[0] < _vis_lock_s
         compass = SoundCompass(
             reachy_mini.media,
             current_head_yaw=_current_head_yaw,
-            user_active=lambda: _user_speaking[0],
+            user_active=lambda: _user_speaking[0] and not _vis_recent(),
             on_target=choreo.set_gaze_target,
         )
         compass.start()
@@ -1054,6 +1061,7 @@ class Yrobot(ReachyMiniApp):
                     except Exception:
                         head_yaw = choreo.current_yaw()
                     _visual_gaze[0] = (head_yaw + cam_rad, time.time())
+                    _vis_lock_at[0] = time.monotonic()
                     _vis_stop.wait(0.5)   # ~2 fps, keep CPU low
                 except Exception:
                     _vis_stop.wait(0.5)
