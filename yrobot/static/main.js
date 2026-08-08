@@ -4,8 +4,7 @@ const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
 const statusHermes = document.getElementById("status-hermes");
 const statusHermesUrl = document.getElementById("status-hermes-url");
-const statusPrivacy = document.getElementById("status-privacy");
-const statusRefreshTime = document.getElementById("status-refresh-time");
+const chatMiniEntries = document.getElementById("chat-mini-entries");
 const volumeSlider = document.getElementById("volume-slider");
 const volumeMute = document.getElementById("volume-mute");
 const audioVolumeValue = document.getElementById("audio-volume-value");
@@ -68,8 +67,6 @@ function showStatus(status) {
   statusHermes.textContent = stateText(hermes.enabled);
   statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
 
-  statusPrivacy.textContent = status.privacy.video_uploaded_to_gateway ? "音频 + 摄像头" : "仅音频";
-  statusRefreshTime.textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
   statusPanel.classList.remove("hidden");
   if (status.system) renderSystem(status.system);
 }
@@ -602,11 +599,63 @@ loadCameraState();
 loadLogs({ fullReplace: true });
 scheduleLogPoll();
 setInterval(loadStatus, 10000);
+loadChatMini();
+setInterval(loadChatMini, 8000);
 
 function renderSystem(sys) {
   const el = document.getElementById("status-sys");
   if (!el) return;
   el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C`;
+}
+
+async function loadChatMini() {
+  try {
+    const response = await fetch("/api/logs?filter=chat&limit=200", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) return;
+    const lines = (result.logs || []).map(l => l.message || l.text || String(l));
+    // Extract stt/tts pairs: find last 4 turns
+    const turns = [];
+    let i = lines.length - 1;
+    while (i >= 0 && turns.length < 4) {
+      let ttsLine = null, sttLine = null;
+      // scan backward for tts
+      while (i >= 0) {
+        const line = lines[i--];
+        if (/xz tts text:/.test(line)) { ttsLine = line; break; }
+      }
+      // scan backward for matching stt
+      while (i >= 0) {
+        const line = lines[i];
+        if (/xz stt:/.test(line)) { sttLine = line; i--; break; }
+        if (/xz tts text:/.test(line)) { i--; continue; }
+        i--;
+      }
+      if (ttsLine || sttLine) turns.unshift({ stt: sttLine, tts: ttsLine });
+    }
+    if (turns.length === 0) {
+      chatMiniEntries.innerHTML = '<span class="muted">暂无对话记录</span>';
+      return;
+    }
+    chatMiniEntries.innerHTML = turns.map(t => {
+      let html = "";
+      if (t.stt) {
+        const text = t.stt.replace(/^.*xz stt:\s*/, "").replace(/^\[.*?\]\s*/, "");
+        html += `<div class="chat-entry chat-entry-user">👤 ${escapeHtml(text)}</div>`;
+      }
+      if (t.tts) {
+        const text = t.tts.replace(/^.*xz tts text:\s*/, "").replace(/^\[.*?\]\s*/, "");
+        html += `<div class="chat-entry chat-entry-bot">🤖 ${escapeHtml(text)}</div>`;
+      }
+      return html;
+    }).join("");
+  } catch (_) { /* silently fail */ }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 // ── Motion panel ────────────────────────────────────────────────────────────
