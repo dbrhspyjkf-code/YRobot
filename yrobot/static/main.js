@@ -604,15 +604,9 @@ scheduleLogPoll();
 setInterval(loadStatus, 10000);
 
 function renderSystem(sys) {
-  const cpu = document.getElementById("status-sys-cpu");
-  const mem = document.getElementById("status-sys-mem");
-  const disk = document.getElementById("status-sys-disk");
-  const temp = document.getElementById("status-sys-temp");
-  if (!cpu) return;
-  cpu.textContent = `CPU ${sys.cpu_percent}%`;
-  mem.textContent = `内存 ${sys.memory_percent}%`;
-  disk.textContent = `磁盘 ${sys.disk_percent}%`;
-  temp.textContent = `CPU ${sys.temperature_c}°C`;
+  const el = document.getElementById("status-sys");
+  if (!el) return;
+  el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C`;
 }
 
 // ── Motion panel ────────────────────────────────────────────────────────────
