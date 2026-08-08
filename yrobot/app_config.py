@@ -27,6 +27,7 @@ from fastapi import FastAPI, HTTPException, Response
 
 from yrobot.config import Settings
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
+from yrobot.env_store import update_env_value
 
 logger = logging.getLogger(__name__)
 
@@ -791,8 +792,8 @@ def register_settings_routes(
             raise HTTPException(status_code=422, detail="rms_min must be a number")
         applied = set_vad_rms_min(float(value))
         try:
-            vad_env_path.write_text(f"YROBOT_VAD_RMS_MIN={applied:.3f}\n")
-        except OSError as exc:
+            update_env_value(vad_env_path, "YROBOT_VAD_RMS_MIN", f"{applied:.3f}")
+        except (OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=f"could not save VAD env: {exc}") from exc
         return {
             "vad": {

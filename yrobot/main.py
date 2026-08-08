@@ -59,7 +59,18 @@ def _record_startup_failure() -> int:
         pass
     return count
 
+
+def _clear_startup_failure_counter() -> None:
+    """Clear the persisted counter only after a complete run returns."""
+    try:
+        os.remove(_STARTUP_FAIL_COUNTER_PATH)
+    except FileNotFoundError:
+        pass
+
+
 logger = logging.getLogger(__name__)
+
+
 class Yrobot(ReachyMiniApp):
     """Reachy Mini app entry point (``reachy_mini_apps`` group)."""
 
@@ -74,15 +85,10 @@ class Yrobot(ReachyMiniApp):
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Run YRobot with Xiaozhi cloud backend."""
-        # Reset the failure counter from previous sessions.
-        from yrobot.main import _STARTUP_FAIL_COUNTER_PATH as _fail_path
-        try:
-            os.remove(_fail_path)
-        except FileNotFoundError:
-            pass
         try:
             self._media_holder.media = reachy_mini.media
             self._run_xiaozhi(reachy_mini, stop_event)
+            _clear_startup_failure_counter()
         except Exception as exc:
             logger.exception("YRobot startup failed: %s", exc)
             ROBOT_STATE.set("safe_mode")
@@ -108,23 +114,29 @@ class Yrobot(ReachyMiniApp):
         import time as _sleep
 
         # ── Safe motor startup with slow Choreographer rise ───────
-        # Avoid goto_target (defaults to 0.5s snap).  Instead create
-        # Choreographer with a very low max_vel, let it reach neutral
-        # over ~8s, then restore normal speed.
-        try:
-            reachy_mini.enable_motors()
-            logger.info("motors enabled")
-        except Exception as exc:
-            logger.warning("motor enable failed: %s", exc)
+        # Avoid goto_target (defaults to a short snap). Enable the motors
+        # before starting the pose writer; a failed enable is not recoverable
+        # by repeatedly sending set_target commands.
+        motor_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                reachy_mini.enable_motors()
+                logger.info("motors enabled (attempt %d)", attempt)
+                motor_error = None
+                break
+            except Exception as exc:
+                motor_error = exc
+                logger.warning("motor enable failed (attempt %d/3): %s", attempt, exc)
+                if attempt < 3:
+                    stop_event.wait(1.0)
+        if motor_error is not None:
+            raise RuntimeError("Reachy motors could not be enabled") from motor_error
 
         choreo = Choreographer(reachy_mini)
-        # Super-slow initial rise: 0.3 rad/s instead of 2.5 rad/s
+        # Keep the low-speed parameters active during the complete startup
+        # rise. Restore normal tracking only after the worker has run for 8s.
         choreo._gaze._max_vel = 0.3
         choreo._gaze._omega = 2.0
-        # Smooth but responsive gaze: fast enough to track a speaker, bounded
-        # enough to never snap (the body turn carries the large motions).
-        choreo._gaze._max_vel = 2.5   # rad/s
-        choreo._gaze._omega = 6.0     # spring stiffness
         from yrobot.app_config import motion_controller_singleton
         motion_controller_singleton().set(choreo)
         # Official emotion library (85 recorded moves) — lazy singleton so
@@ -141,12 +153,11 @@ class Yrobot(ReachyMiniApp):
             return _recorded_moves[0]
         motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
-        # Wait for slow initial rise (~8s for a 0.6 rad offset at 0.3 rad/s)
-        _sleep.sleep(8.0)
-        # Restore normal gaze speed for conversation tracking
-        choreo._gaze._max_vel = 2.5
-        choreo._gaze._omega = 6.0
-        logger.info("head rise complete, gaze speed restored")
+        # Wait for the slow initial rise unless shutdown was requested.
+        if not stop_event.wait(timeout=8.0):
+            choreo._gaze._max_vel = 2.5
+            choreo._gaze._omega = 6.0
+            logger.info("head rise complete, gaze speed restored")
 
         # SoundCompass: track speaker direction via XVF3800 DoA
         _user_speaking = [False]
