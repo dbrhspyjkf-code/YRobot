@@ -111,6 +111,7 @@ class Yrobot(ReachyMiniApp):
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
+        from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
         import time as _sleep
 
         # ── Safe motor startup with slow Choreographer rise ───────
@@ -328,9 +329,11 @@ class Yrobot(ReachyMiniApp):
         # on that pipe or it will stall incoming TTS packets.
         import queue as _pq
         import threading as _th
-        _audio_q = _pq.Queue()
+        _audio_q = BoundedLatestQueue[bytes | None](maxsize=50)
         _writer_stop = _th.Event()
-        _audio_stats = {"enqueued": 0, "written": 0, "restarts": 0}
+        _audio_proc_lock = _th.Lock()
+        _audio_proc = [None]
+        _audio_stats = {"enqueued": 0, "written": 0, "dropped": 0, "restarts": 0}
 
         def _open_aplay():
             return _sp.Popen(
@@ -341,57 +344,84 @@ class Yrobot(ReachyMiniApp):
 
         def _audio_writer():
             proc = None
-            while not _writer_stop.is_set():
-                try:
-                    chunk = _audio_q.get(timeout=0.5)
-                except _pq.Empty:
-                    continue
-                if chunk is None:
-                    break
-                for attempt in range(2):
+            try:
+                while not _writer_stop.is_set():
                     try:
-                        if proc is None or proc.poll() is not None:
-                            proc = _open_aplay()
-                            _audio_stats["restarts"] += 1
-                            logger.info("audio-out: started aplay (%d)", _audio_stats["restarts"])
-                        proc.stdin.write(chunk)
-                        _audio_stats["written"] += 1
+                        chunk = _audio_q.get(timeout=0.5)
+                    except _pq.Empty:
+                        continue
+                    if chunk is None:
                         break
-                    except (BrokenPipeError, OSError) as exc:
-                        logger.warning("audio-out: aplay write failed: %s", exc)
-                        if proc is not None:
-                            try:
-                                proc.kill()
-                            except OSError:
-                                pass
-                        proc = None
-                else:
-                    logger.error("audio-out: dropped chunk after aplay restart failure")
-            if proc is not None:
-                try:
-                    proc.stdin.close()
-                    proc.terminate()
-                except OSError:
-                    pass
+                    for attempt in range(2):
+                        try:
+                            if proc is None or proc.poll() is not None:
+                                proc = _open_aplay()
+                                with _audio_proc_lock:
+                                    _audio_proc[0] = proc
+                                _audio_stats["restarts"] += 1
+                                logger.info("audio-out: started aplay (%d)", _audio_stats["restarts"])
+                            proc.stdin.write(chunk)
+                            _audio_stats["written"] += 1
+                            break
+                        except (BrokenPipeError, OSError) as exc:
+                            logger.warning("audio-out: aplay write failed: %s", exc)
+                            if proc is not None:
+                                try:
+                                    proc.kill()
+                                except OSError:
+                                    pass
+                            with _audio_proc_lock:
+                                _audio_proc[0] = None
+                            proc = None
+                    else:
+                        _audio_stats["dropped"] += 1
+                        logger.error("audio-out: dropped chunk after aplay restart failure")
+            finally:
+                if proc is not None:
+                    try:
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                    except OSError:
+                        pass
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1.0)
+                    except (OSError, _sp.TimeoutExpired):
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                with _audio_proc_lock:
+                    _audio_proc[0] = None
 
         _audio_thread = _th.Thread(target=_audio_writer, name="aplay-writer", daemon=True)
         _audio_thread.start()
 
         def _aplay_add(stereo_f32):
             pcm = (np.clip(stereo_f32, -1, 1) * 32767).astype("<i2").tobytes()
-            try:
-                _audio_q.put_nowait(pcm)
-                _audio_stats["enqueued"] += 1
-            except _pq.Full:
-                pass  # drop frame if audio pipeline backed up
+            before = _audio_q.dropped
+            _audio_q.put_latest(pcm)
+            _audio_stats["enqueued"] += 1
+            _audio_stats["dropped"] += _audio_q.dropped - before
 
         def _aplay_flush():
-            # Drain stale audio from queue to prevent backlog
-            while not _audio_q.empty():
+            # Drain stale audio from queue to prevent backlog.
+            _audio_stats["dropped"] += _audio_q.flush()
+
+        def _stop_audio_process() -> None:
+            """Interrupt a blocked aplay write during shutdown."""
+            with _audio_proc_lock:
+                proc = _audio_proc[0]
+            if proc is None or proc.poll() is not None:
+                return
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.0)
+            except (_sp.TimeoutExpired, OSError):
                 try:
-                    _audio_q.get_nowait()
-                except _pq.Empty:
-                    break
+                    proc.kill()
+                except OSError:
+                    pass
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
@@ -411,6 +441,7 @@ class Yrobot(ReachyMiniApp):
                 _tts_start_at = 0.0
                 logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
                 tts_active = False
+                tts_watchdog = TtsWatchdog()
                 _skip_audio_until = 0.0
                 # ── Wake word state ──────────────────────────────────
                 _waked = False
@@ -433,6 +464,7 @@ class Yrobot(ReachyMiniApp):
                             if _skip_audio_until > 0 and time.time() < _skip_audio_until:
                                 continue
                             tts_packets += 1
+                            tts_watchdog.packet()
                             if not hasattr(_aplay_add, "_count"):
                                 _aplay_add._count = 0
                             _aplay_add._count += 1
@@ -500,6 +532,7 @@ class Yrobot(ReachyMiniApp):
                                 logger.info("xz tts start")
                                 tts_active = True
                                 _tts_start_at = time.time()
+                                tts_watchdog.start()
                                 _user_speaking[0] = False
                                 tts_packets = 0
                                 tts_decode_errors = 0
@@ -518,6 +551,7 @@ class Yrobot(ReachyMiniApp):
                                 )
                             elif t == "tts" and d.get("state") == "stop":
                                 tts_active = False
+                                tts_watchdog.stop()
                                 logger.info(
                                     "xz tts stop packets=%d audio(enqueued=%d written=%d pending=%d)",
                                     getattr(_aplay_add, "_count", 0),
@@ -543,13 +577,20 @@ class Yrobot(ReachyMiniApp):
                             _waked = False
                             logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
                         if tts_active:
-                            # Safety: if the server sent tts/start but no audio
-                            # ever arrives (cloud hiccup / lost stop), recover
-                            # listening after TTS_STALL_TIMEOUT so the robot is
-                            # not deaf forever.
-                            if tts_packets == 0 and time.time() - _tts_start_at > 30.0:
+                            # Recover both startup stalls and mid-stream
+                            # disconnects so one missing tts.stop cannot make
+                            # the robot deaf forever.
+                            if tts_watchdog.stalled():
                                 tts_active = False
-                                logger.warning("tts stall: no audio for 30s, forcing listen")
+                                tts_watchdog.stop()
+                                logger.warning(
+                                    "tts stall: packets=%d age=%.1fs, forcing idle",
+                                    tts_watchdog.packets,
+                                    time.monotonic() - max(
+                                        tts_watchdog.last_packet_at or tts_watchdog.started_at,
+                                        0.0,
+                                    ),
+                                )
                                 _aplay_flush()
                                 choreo.set_mode(IDLE)
                             await _a.to_thread(mic_stream.read, 960)
@@ -624,8 +665,10 @@ class Yrobot(ReachyMiniApp):
             logger.info("xiaozhi ended: %s", e)
         finally:
             _writer_stop.set()
-            _audio_q.put(None)
+            _audio_q.put_latest(None)
+            _stop_audio_process()
             _audio_thread.join(timeout=2)
+            _stop_audio_process()
             mic_stream.stop()
             mic_stream.close()
             _vis_stop.set()
