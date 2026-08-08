@@ -17,11 +17,8 @@ const statusPanel = document.getElementById("status-panel");
 const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
-const statusHa = document.getElementById("status-ha");
-const statusHaUrl = document.getElementById("status-ha-url");
 const statusHermes = document.getElementById("status-hermes");
 const statusHermesUrl = document.getElementById("status-hermes-url");
-const statusLocalInfo = document.getElementById("status-local-info");
 const statusPrivacy = document.getElementById("status-privacy");
 const statusRefreshTime = document.getElementById("status-refresh-time");
 const volumeSlider = document.getElementById("volume-slider");
@@ -112,15 +109,10 @@ function showStatus(status) {
   statusService.textContent = stateLabels[status.service.state] || status.service.state;
   statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
 
-  const ha = status.integrations.home_assistant;
-  statusHa.textContent = stateText(ha.enabled, ha.configured);
-  statusHaUrl.textContent = ha.url || "未设置 Home Assistant 地址";
-
   const hermes = status.integrations.hermes_tools;
   statusHermes.textContent = stateText(hermes.enabled);
   statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
 
-  statusLocalInfo.textContent = stateText(status.integrations.local_info.enabled);
   statusPrivacy.textContent = status.privacy.video_uploaded_to_gateway ? "音频 + 摄像头" : "仅音频";
   statusRefreshTime.textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
   statusPanel.classList.remove("hidden");
