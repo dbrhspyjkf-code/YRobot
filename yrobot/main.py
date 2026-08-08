@@ -386,7 +386,7 @@ class Yrobot(ReachyMiniApp):
                 _wake_deadline = 0.0
                 _wake_at = 0.0  # discard stale TTS from before wake
                 WAKE_WORDS = ("小白", "阿皮", "reachy", "hey reachy", "嘿")
-                WAKE_TIMEOUT = 60.0
+                WAKE_TIMEOUT = 20.0  # reset on every speech burst
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
