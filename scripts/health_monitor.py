@@ -3,7 +3,7 @@
 import os, time, subprocess
 from datetime import datetime
 
-LOG = "/tmp/yrobot-health.log"
+LOG = "/home/pollen/yrobot-health.log"
 MAX_LINES = 2000  # rotate log if it grows too large
 
 t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
