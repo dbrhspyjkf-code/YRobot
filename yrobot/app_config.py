@@ -25,25 +25,12 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Response
 
-from yrobot.config import DEFAULT_PERSONA, Settings, normalize_url
+from yrobot.config import Settings
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH_ENV = "YROBOT_CONFIG_PATH"
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "yrobot" / "settings.json"
 DEFAULT_ENV_PATH = Path.home() / ".config" / "yrobot" / "ha.env"
-
-FIELD_TO_ENV = {
-    "gateway_url": "YROBOT_REALTIME_URL",
-    "tls_verify": "YROBOT_TLS_VERIFY",
-    "video_enabled": "YROBOT_SEND_VIDEO",
-    "proactive_enabled": "YROBOT_PROACTIVE",
-    "persona": "YROBOT_PERSONA",
-    "profile": "YROBOT_PROFILE",
-    "conversation_backend": "YROBOT_CONVERSATION_BACKEND",
-}
-REQUIRED_FIELDS = frozenset(FIELD_TO_ENV)
 STARTED_AT = time.monotonic()
 
 # Populated lazily for shared callers like ``build_status``; not coupled to
@@ -157,188 +144,6 @@ def audio_input_controller_singleton() -> AudioInputController:
     if _audio_input_controller_instance is None:
         _audio_input_controller_instance = AudioInputController()
     return _audio_input_controller_instance
-
-
-def persist_env_value(path: Path, key: str, value: str) -> None:
-    path = path.expanduser()
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    out: list[str] = []
-    updated = False
-    for line in lines:
-        if not line or line.lstrip().startswith("#") or "=" not in line:
-            out.append(line)
-            continue
-        current_key = line.split("=", 1)[0].strip()
-        if current_key == key:
-            out.append(f"{key}={value}")
-            updated = True
-        else:
-            out.append(line)
-    if not updated:
-        out.append(f"{key}={value}")
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        delete=False,
-    ) as handle:
-        handle.write("\n".join(out) + "\n")
-        temporary = Path(handle.name)
-    temporary.chmod(0o600)
-    temporary.replace(path)
-
-
-def _require_bool(document: Mapping[str, Any], name: str) -> bool:
-    value = document.get(name)
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a boolean")
-    return value
-
-
-def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
-    """Normalize one complete settings form into its persisted representation."""
-    if set(document) != REQUIRED_FIELDS:
-        missing = sorted(REQUIRED_FIELDS - set(document))
-        unknown = sorted(set(document) - REQUIRED_FIELDS)
-        detail = []
-        if missing:
-            detail.append(f"missing: {', '.join(missing)}")
-        if unknown:
-            detail.append(f"unknown: {', '.join(unknown)}")
-        raise ValueError("invalid settings fields (" + "; ".join(detail) + ")")
-
-    raw_url = document.get("gateway_url")
-    if not isinstance(raw_url, str) or not raw_url.strip():
-        raise ValueError("gateway_url must be a non-empty string")
-    video = _require_bool(document, "video_enabled")
-    tls_verify = _require_bool(document, "tls_verify")
-    proactive = _require_bool(document, "proactive_enabled")
-
-    persona = document.get("persona")
-    if not isinstance(persona, str):
-        raise ValueError("persona must be a string")
-    persona = persona.strip()
-    if "\n" in persona or "\r" in persona:
-        raise ValueError("persona must be a single line")
-    if len(persona) > 240:
-        raise ValueError("persona must be at most 240 characters")
-
-    # Single-mode: profile is fixed to "default"; no switching.
-    profile = "default"
-
-    backend = document.get("conversation_backend")
-    if not isinstance(backend, str) or backend not in ("minicpmo", "xiaozhi"):
-        raise ValueError("conversation_backend must be 'minicpmo' or 'xiaozhi'")
-
-    url = normalize_url(raw_url.strip(), mode="video" if video else "audio")
-    settings_env = {
-        "YROBOT_REALTIME_URL": url,
-        "YROBOT_TLS_VERIFY": "1" if tls_verify else "0",
-        "YROBOT_SEND_VIDEO": "1" if video else "0",
-        "YROBOT_PROACTIVE": "1" if proactive and video else "0",
-        "YROBOT_PERSONA": persona,
-        "YROBOT_PROFILE": profile,
-        "YROBOT_CONVERSATION_BACKEND": backend,
-    }
-    # Exercise the same cross-field validation used by the actual app.
-    Settings.from_env(settings_env)
-    return {
-        "gateway_url": url,
-        "tls_verify": tls_verify,
-        "video_enabled": video,
-        "proactive_enabled": proactive and video,
-        "persona": persona,
-        "profile": profile,
-        "conversation_backend": backend,
-    }
-
-
-class AppConfig:
-    """Read and atomically persist dashboard-editable YRobot settings."""
-
-    def __init__(self, path: Path | None = None) -> None:
-        configured = os.environ.get(CONFIG_PATH_ENV)
-        self.path = Path(configured).expanduser() if path is None and configured else path
-        if self.path is None:
-            self.path = DEFAULT_CONFIG_PATH
-
-    def load(self) -> dict[str, str | bool]:
-        if not self.path.exists():
-            return {}
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("settings root must be an object")
-            return validate_document(raw)
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("ignoring invalid settings file %s: %s", self.path, exc)
-            return {}
-
-    @staticmethod
-    def as_environment(document: Mapping[str, str | bool]) -> dict[str, str]:
-        if not document:
-            return {}
-        return {
-            "YROBOT_REALTIME_URL": str(document["gateway_url"]),
-            "YROBOT_TLS_VERIFY": "1" if document["tls_verify"] else "0",
-            "YROBOT_SEND_VIDEO": "1" if document["video_enabled"] else "0",
-            "YROBOT_PROACTIVE": "1" if document["proactive_enabled"] else "0",
-            "YROBOT_PERSONA": str(document["persona"]),
-            "YROBOT_PROFILE": str(document["profile"]),
-            "YROBOT_CONVERSATION_BACKEND": str(document["conversation_backend"]),
-        }
-
-    def effective_environment(self, environ: Mapping[str, str]) -> dict[str, str]:
-        """Merge persisted values below the daemon/process environment."""
-        merged = self.as_environment(self.load())
-        merged.update(environ)
-        return merged
-
-    def view(self, environ: Mapping[str, str]) -> dict[str, Any]:
-        effective = self.effective_environment(environ)
-        settings = Settings.from_env(effective)
-        persona = effective.get("YROBOT_PERSONA", DEFAULT_PERSONA).strip()
-        overrides = [field for field, env_name in FIELD_TO_ENV.items() if env_name in environ]
-        return {
-            "gateway_url": settings.url,
-            "tls_verify": settings.tls_verify,
-            "video_enabled": settings.send_video,
-            "proactive_enabled": settings.proactive_enabled,
-            "persona": persona,
-            # Single-mode: profile is fixed to default, no switching UI.
-            "profile": "default",
-            "profiles": ["default"],
-            "profile_instructions": "",
-            "conversation_backend": effective.get("YROBOT_CONVERSATION_BACKEND", "minicpmo"),
-            "environment_overrides": overrides,
-            "config_path": str(self.path),
-        }
-
-    def save(self, document: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
-        normalized = validate_document(document)
-        # Validate the saved values on their own even when daemon variables
-        # will take precedence at the next launch.
-        validation_env = dict(environ)
-        validation_env.update(self.as_environment(normalized))
-        Settings.from_env(validation_env)
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=self.path.parent,
-            prefix=f".{self.path.name}.",
-            delete=False,
-        ) as handle:
-            json.dump(normalized, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            temporary = Path(handle.name)
-        temporary.chmod(0o600)
-        temporary.replace(self.path)
-        return self.view(environ)
 
 
 class VolumeController:
@@ -818,13 +623,11 @@ def _read_system_metrics() -> dict[str, Any]:
     }
 
 def build_status(
-    store: AppConfig,
     environ: Mapping[str, str],
     audio_input_controller: AudioInputController | None = None,
 ) -> dict[str, Any]:
     """Return safe runtime status for the dashboard."""
-    effective = store.effective_environment(environ)
-    settings = Settings.from_env(effective)
+    settings = Settings.from_env(environ)
     audio_input = audio_input_controller or audio_input_controller_singleton()
     input_enabled = audio_input.enabled()
     volume_percent: int | None = None
@@ -880,30 +683,22 @@ def build_status(
             "local_media_recording": False,
         },
         "config": {
-            "path": str(store.path),
-            "environment_overrides": [
-                field for field, env_name in FIELD_TO_ENV.items() if env_name in environ
-            ],
+            "path": "N/A",
+            "environment_overrides": [],
         },
     }
 
 
 def register_settings_routes(
     app: FastAPI,
-    store: AppConfig,
-    get_environment: Callable[[], Mapping[str, str]] = lambda: os.environ,
     media_holder: _MediaHolder | None = None,
     audio_input_controller: AudioInputController | None = None,
     vad_env_path: Path = DEFAULT_ENV_PATH,
 ) -> None:
-    """Attach the small settings API consumed by ``yrobot/static``."""
+    """Attach dashboard API routes consumed by ``yrobot/static``."""
 
     camera = CameraStreamer(media_holder or _MediaHolder())
     audio_input = audio_input_controller or audio_input_controller_singleton()
-
-    @app.get("/api/settings")
-    def get_settings() -> dict[str, Any]:
-        return {"settings": store.view(get_environment())}
 
     motion = motion_controller_singleton()
 
@@ -925,19 +720,7 @@ def register_settings_routes(
     def get_status() -> dict[str, Any]:
         return {
             "ok": True,
-            "status": build_status(store, get_environment(), audio_input_controller=audio_input),
-        }
-
-    @app.put("/api/settings")
-    def put_settings(document: dict[str, Any]) -> dict[str, Any]:
-        try:
-            settings = store.save(document, get_environment())
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {
-            "settings": settings,
-            "restart_required": True,
-            "message": "Settings saved. Restart YRobot to apply them.",
+            "status": build_status(os.environ, audio_input_controller=audio_input),
         }
 
     volume_controller = VolumeController()
