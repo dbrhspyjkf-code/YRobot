@@ -1,2 +1,0 @@
-# Default profile: all tools enabled.
-# Empty allow-list means every Hermes tool is available.
