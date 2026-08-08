@@ -8,6 +8,8 @@ import numpy as np
 from yrobot.motion import (
     Choreographer,
     GazeSpring,
+    IDLE,
+    LISTEN,
     SoundCompass,
     circular_mean,
     doa_to_yaw_delta,
@@ -114,3 +116,25 @@ def test_idle_saccade_target_is_trajectory_limited(monkeypatch):
     yaw = head_yaw_of(pose)
     # The random target is +0.25 rad, but it must not appear in one 20 ms tick.
     assert 0.0 < yaw < 0.03
+
+
+def test_motion_inputs_are_applied_by_motion_thread_only():
+    class FakeMini:
+        pass
+
+    choreo = Choreographer(FakeMini())
+    choreo.set_mode(LISTEN)
+    choreo.play_move("nod", now=10.0)
+    choreo.set_gaze_target(1.0, now=11.0)
+
+    assert choreo._mode == IDLE
+    assert choreo._move_name is None
+    assert choreo._gaze.target == 0.0
+
+    choreo._apply_commands()
+
+    assert choreo._mode == LISTEN
+    assert choreo._move_name == "nod"
+    assert choreo._move_start == 10.0
+    assert choreo._gaze.target == 1.0
+    assert choreo._last_voice_at == 11.0

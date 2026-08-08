@@ -23,6 +23,8 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from queue import Empty, Full, Queue
+from typing import Any
 
 import numpy as np
 try:
@@ -273,6 +275,7 @@ class Choreographer(threading.Thread):
         super().__init__(name="yrobot-motion", daemon=True)
         self._mini = mini
         self._halt = threading.Event()
+        self._command_queue: Queue[tuple[str, Any]] = Queue(maxsize=128)
         self._mode = IDLE
         self._mode_blend = {IDLE: 1.0, LISTEN: 0.0, SPEAK: 0.0}
         self._gaze = GazeSpring()
@@ -307,65 +310,80 @@ class Choreographer(threading.Thread):
 
     # -- thread-safe inputs -------------------------------------------------
 
-    def set_mode(self, mode: str) -> None:
-        self._mode = mode
-
-    def play_move(self, name: str, now: float | None = None) -> bool:
-        """Start a one-shot expressive move; returns True if accepted.
-
-        The move is layered on top of the current idle/listen/speak pose and
-        fades out by itself; a move already playing is replaced. Unknown names
-        are rejected (returns False) so the HTTP/MCP layer can surface errors.
-        """
-        if name not in MOVE_SPECS:
+    def _enqueue_command(self, command: str, payload: Any = None) -> bool:
+        try:
+            self._command_queue.put_nowait((command, payload))
+        except Full:
+            logger.warning("Motion command queue full; dropped %s", command)
             return False
-        self._move_name = name
-        self._move_start = time.monotonic() if now is None else now
         return True
 
-    def play_recorded(self, name: str, recorded_moves: Any = None) -> bool:
-        """Play a recorded move from the official emotion library.
+    def set_mode(self, mode: str) -> None:
+        if mode not in self._mode_blend:
+            logger.warning("Ignoring unknown motion mode: %s", mode)
+            return
+        self._enqueue_command("set_mode", mode)
 
-        The recorded trajectory takes over the head/antenna pose for its full
-        duration with a 300 ms blend in/out.  ``recorded_moves`` is a lazily
-        created ``RecordedMoves`` instance (shared singleton in main.py); if
-        the name is unknown or the library is unavailable, returns False.
-        """
+    def play_move(self, name: str, now: float | None = None) -> bool:
+        """Queue a one-shot expressive move; return whether it was accepted."""
+        if name not in MOVE_SPECS:
+            return False
+        start = time.monotonic() if now is None else now
+        return self._enqueue_command("play_move", (name, start))
+
+    def play_recorded(self, name: str, recorded_moves: Any = None) -> bool:
+        """Validate and queue a recorded emotion move."""
         if recorded_moves is None:
             return False
         try:
             move = recorded_moves.get(name)
         except Exception:
             return False
-        self._recorded_move = move
-        self._recorded_name = name
-        self._recorded_start = time.monotonic()
-        self._recorded_duration = float(move.duration)
-        return True
+        return self._enqueue_command("play_recorded", (name, move, time.monotonic()))
 
     def play_dance(self, name: str) -> bool:
-        """Play a dance move from the official dances library.
-
-        Same take-over semantics as ``play_recorded``; the dance library is
-        imported lazily so the server works even when the extra package is
-        not installed.
-        """
+        """Validate and queue a dance move from the optional library."""
         try:
             from reachy_mini_dances_library.dance_move import DanceMove
             move = DanceMove(name)
         except Exception:
             return False
-        self._recorded_move = move
-        self._recorded_name = name
-        self._recorded_start = time.monotonic()
-        self._recorded_duration = float(move.duration)
-        return True
+        return self._enqueue_command("play_recorded", (name, move, time.monotonic()))
 
     def current_move(self) -> str | None:
         return self._move_name
 
     def current_recorded(self) -> str | None:
         return getattr(self, "_recorded_name", None) if self._recorded_move is not None else None
+
+    def _apply_commands(self) -> None:
+        """Apply all pending external requests inside the motion thread."""
+        while True:
+            try:
+                command, payload = self._command_queue.get_nowait()
+            except Empty:
+                break
+
+            if command == "set_mode":
+                self._mode = str(payload)
+            elif command == "play_move":
+                self._move_name, self._move_start = payload
+            elif command == "play_recorded":
+                name, move, start = payload
+                self._recorded_move = move
+                self._recorded_name = name
+                self._recorded_start = start
+                self._recorded_duration = float(move.duration)
+            elif command == "set_gaze_target":
+                target, voice_at = payload
+                self._gaze.target = target
+                self._last_voice_at = voice_at
+            elif command == "hold_still":
+                self._still_until = max(self._still_until, float(payload))
+            elif command == "release_still":
+                self._still_until = 0.0
+            else:
+                logger.warning("Unknown motion command: %s", command)
 
     def _move_offsets(
         self, now: float, dt: float
@@ -395,24 +413,19 @@ class Choreographer(threading.Thread):
         return roll, pitch, yaw, ant
 
     def set_gaze_target(self, world_yaw: float, now: float | None = None) -> None:
-        self._gaze.target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
-        self._last_voice_at = time.monotonic() if now is None else now
+        target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
+        voice_at = time.monotonic() if now is None else now
+        self._enqueue_command("set_gaze_target", (target, voice_at))
 
     def current_yaw(self) -> float:
         return self._gaze.pos
 
     def hold_still(self, until: float) -> None:
-        """Freeze all self-motion until ``until`` (monotonic time).
-
-        Called when a barge candidate ducks playback: with the speaker
-        already silent, the motors are the robot's only remaining noise
-        source, and a servo knock during the verify window reads as voice.
-        Doubling as body language — the robot visibly stops to listen.
-        """
-        self._still_until = max(self._still_until, until)
+        """Queue a smooth freeze request for the motion thread."""
+        self._enqueue_command("hold_still", until)
 
     def release_still(self) -> None:
-        self._still_until = 0.0
+        self._enqueue_command("release_still")
 
     def close(self) -> None:
         self._halt.set()
@@ -430,6 +443,7 @@ class Choreographer(threading.Thread):
         while not self._halt.is_set():
             now = time.monotonic()
             t = now - t0
+            self._apply_commands()
             self._blend_modes(dt)
             pose, antennas = self._compose(t, now, dt)
             # Body yaw follows the gaze target: turn the body (gently) so the
