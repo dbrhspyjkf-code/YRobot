@@ -608,16 +608,18 @@ function renderSystem(sys) {
   el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C`;
 }
 
+let _chatMiniLastRendered = "";
+
 async function loadChatMini() {
   try {
     const response = await fetch("/api/logs?filter=chat&limit=200", { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) return;
     const lines = (result.logs || []).map(l => l.message || l.text || String(l));
-    // Extract stt/tts pairs: find last 4 turns
+    // Extract stt/tts pairs: find last 6 turns
     const turns = [];
     let i = lines.length - 1;
-    while (i >= 0 && turns.length < 4) {
+    while (i >= 0 && turns.length < 6) {
       let ttsLine = null, sttLine = null;
       // scan backward for tts
       while (i >= 0) {
@@ -634,21 +636,28 @@ async function loadChatMini() {
       if (ttsLine || sttLine) turns.unshift({ stt: sttLine, tts: ttsLine });
     }
     if (turns.length === 0) {
-      chatMiniEntries.innerHTML = '<span class="muted">暂无对话记录</span>';
+      // Keep existing entries; don't overwrite with empty placeholder.
+      if (!_chatMiniLastRendered) {
+        chatMiniEntries.innerHTML = '<span class="muted">暂无对话记录</span>';
+      }
       return;
     }
-    chatMiniEntries.innerHTML = turns.map(t => {
-      let html = "";
+    const html = turns.map(t => {
+      let h = "";
       if (t.stt) {
         const text = t.stt.replace(/^.*xz stt:\s*/, "").replace(/^\[.*?\]\s*/, "");
-        html += `<div class="chat-entry chat-entry-user">👤 ${escapeHtml(text)}</div>`;
+        h += `<div class="chat-entry chat-entry-user">👤 ${escapeHtml(text)}</div>`;
       }
       if (t.tts) {
         const text = t.tts.replace(/^.*xz tts text:\s*/, "").replace(/^\[.*?\]\s*/, "");
-        html += `<div class="chat-entry chat-entry-bot">🤖 ${escapeHtml(text)}</div>`;
+        h += `<div class="chat-entry chat-entry-bot">🤖 ${escapeHtml(text)}</div>`;
       }
-      return html;
+      return h;
     }).join("");
+    if (html !== _chatMiniLastRendered) {
+      _chatMiniLastRendered = html;
+      chatMiniEntries.innerHTML = html;
+    }
   } catch (_) { /* silently fail */ }
 }
 
