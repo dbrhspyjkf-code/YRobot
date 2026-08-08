@@ -940,6 +940,16 @@ class Yrobot(ReachyMiniApp):
         SoundCompass.WINDOW_S = 2.0       # 2s smoothing window (was 1.0)
         SoundCompass.MIN_CONFIDENCE = 6.0  # need 6+ confidence (was 3.0)
         SoundCompass.DEADBAND_RAD = 0.20   # ~11° deadband (was 0.12)
+
+        # ── PersonTracker: fuse camera face detection with audio DoA ──────
+        # Runs at ~5 fps; when a face is confidently detected the visual
+        # yaw overrides the audio-only DoA estimate.
+        import threading as _th_face
+        _face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
+
         # Fusion arbitration: while the face tracker has a confirmed face in
         # view (_visual_gaze is not None), SoundCompass backs off.  As soon
         # as the face is lost the sound compass immediately takes over.
@@ -950,15 +960,6 @@ class Yrobot(ReachyMiniApp):
             on_target=choreo.set_gaze_target,
         )
         compass.start()
-
-        # ── PersonTracker: fuse camera face detection with audio DoA ──────
-        # Runs at ~5 fps; when a face is confidently detected the visual
-        # yaw overrides the audio-only DoA estimate.
-        import threading as _th_face
-        _face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-        _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
         _vis_frames = 0  # consecutive face detections (2 required to override DoA)
         _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
         _vis_stop = _th_face.Event()
