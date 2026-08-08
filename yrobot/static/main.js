@@ -1,10 +1,3 @@
-const form = document.getElementById("settings-form");
-const loading = document.getElementById("loading");
-const restartBanner = document.getElementById("restart-banner");
-const overrideWarning = document.getElementById("override-warning");
-const saveButton = document.getElementById("save-button");
-const saveStatus = document.getElementById("save-status");
-const configPath = document.getElementById("config-path");
 const statusPanel = document.getElementById("status-panel");
 const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
@@ -54,16 +47,6 @@ let logAutoScroll = true;
 let logRenderedIds = new Set();
 let logInFlight = 0;
 let micInputEnabled = true;
-
-function showSettings(settings) {
-  if (settings.environment_overrides.length) {
-    overrideWarning.textContent =
-      `以下设置由 daemon 环境变量管理，重启后会覆盖页面值：${settings.environment_overrides.join(", ")}`;
-    overrideWarning.classList.remove("hidden");
-  } else {
-    overrideWarning.classList.add("hidden");
-  }
-}
 
 function formatUptime(seconds) {
   if (seconds < 60) return `${seconds} 秒`;
@@ -511,19 +494,6 @@ async function setMicInputEnabled(enabled) {
 
 
 
-async function loadSettings() {
-  try {
-    const response = await fetch("/api/settings", { cache: "no-store" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "读取失败");
-    showSettings(result.settings);
-    loading.classList.add("hidden");
-    form.classList.remove("hidden");
-  } catch (error) {
-    loading.textContent = `无法读取设置：${error.message}`;
-  }
-}
-
 refreshStatus.addEventListener("click", loadStatus);
 volumeSlider.addEventListener("input", (event) => {
   const value = event.target.value;
@@ -600,44 +570,6 @@ logJump.addEventListener("click", () => {
   syncLogJump();
   maybeLogAutoScroll();
 });
-form.addEventListener("input", () => {
-  saveStatus.textContent = "有未保存的修改";
-  restartBanner.classList.add("hidden");
-});
-
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const document = {
-    gateway_url: "wss://api.tenclass.net/xiaozhi/v1/",
-    tls_verify: true,
-    video_enabled: false,
-    proactive_enabled: false,
-    persona: "阿皮",
-    profile: "default",
-    conversation_backend: "xiaozhi",
-  };
-
-  saveButton.disabled = true;
-  saveStatus.textContent = "正在验证并保存…";
-  try {
-    const response = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(document),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "保存失败");
-    showSettings(result.settings);
-    saveStatus.textContent = "已保存，等待重启应用";
-    restartBanner.classList.remove("hidden");
-    window.scrollTo({ top: restartBanner.offsetTop - 20, behavior: "smooth" });
-  } catch (error) {
-    saveStatus.textContent = `保存失败：${error.message}`;
-  } finally {
-    saveButton.disabled = false;
-  }
-});
 
 async function restartSystem() {
   if (!window.confirm("重启 YRobot？服务会短暂离线几秒后自动恢复。")) return;
@@ -664,7 +596,6 @@ async function restartSystem() {
 powerRestart.addEventListener("click", restartSystem);
 
 loadStatus();
-loadSettings();
 loadVolume();
 loadVad();
 loadCameraState();
