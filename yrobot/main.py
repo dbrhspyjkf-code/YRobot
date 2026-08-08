@@ -26,7 +26,7 @@ from yrobot.app_config import (
     register_settings_routes,
 )
 from yrobot.config import Settings
-from yrobot.state import ROBOT_STATE
+from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
 try:
@@ -34,6 +34,9 @@ try:
         XIAOZHI_DEVICE_ID = f.read().strip()
 except Exception:
     XIAOZHI_DEVICE_ID = ""
+XIAOZHI_DEVICE_ID = os.environ.get("XIAOZHI_DEVICE_ID", XIAOZHI_DEVICE_ID)
+XIAOZHI_CONV_URL = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
+XIAOZHI_TOKEN = os.environ.get("XIAOZHI_TOKEN", "test-token")
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +134,9 @@ class Yrobot(ReachyMiniApp):
                 if attempt < 3:
                     stop_event.wait(1.0)
         if motor_error is not None:
+            RUNTIME_HEALTH.update(motor_ready=False)
             raise RuntimeError("Reachy motors could not be enabled") from motor_error
+        RUNTIME_HEALTH.update(motor_ready=True)
 
         choreo = Choreographer(reachy_mini)
         # Keep the low-speed parameters active during the complete startup
@@ -403,10 +408,18 @@ class Yrobot(ReachyMiniApp):
             _audio_q.put_latest(pcm)
             _audio_stats["enqueued"] += 1
             _audio_stats["dropped"] += _audio_q.dropped - before
+            RUNTIME_HEALTH.update(
+                audio_queue=_audio_q.qsize(),
+                audio_dropped=_audio_stats["dropped"],
+            )
 
         def _aplay_flush():
             # Drain stale audio from queue to prevent backlog.
             _audio_stats["dropped"] += _audio_q.flush()
+            RUNTIME_HEALTH.update(
+                audio_queue=_audio_q.qsize(),
+                audio_dropped=_audio_stats["dropped"],
+            )
 
         def _stop_audio_process() -> None:
             """Interrupt a blocked aplay write during shutdown."""
@@ -425,8 +438,9 @@ class Yrobot(ReachyMiniApp):
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
-            hdrs = {"Authorization": "Bearer test-token", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
-            async with _ws.connect("wss://api.tenclass.net/xiaozhi/v1/", additional_headers=hdrs, open_timeout=12, ping_interval=20, ping_timeout=10) as ws:
+            hdrs = {"Authorization": f"Bearer {XIAOZHI_TOKEN}", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
+            RUNTIME_HEALTH.update(ws_state="connecting")
+            async with _ws.connect(XIAOZHI_CONV_URL, additional_headers=hdrs, open_timeout=12, ping_interval=20, ping_timeout=10) as ws:
                 await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
                     "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
                 data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
@@ -440,6 +454,13 @@ class Yrobot(ReachyMiniApp):
                 tts_decode_errors = 0
                 _tts_start_at = 0.0
                 logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
+                RUNTIME_HEALTH.update(
+                    ws_state="connected",
+                    session_id=sid,
+                    tts_active=False,
+                    tts_packets=0,
+                    last_rx_at=time.time(),
+                )
                 tts_active = False
                 tts_watchdog = TtsWatchdog()
                 _skip_audio_until = 0.0
@@ -465,6 +486,11 @@ class Yrobot(ReachyMiniApp):
                                 continue
                             tts_packets += 1
                             tts_watchdog.packet()
+                            RUNTIME_HEALTH.update(
+                                last_rx_at=time.time(),
+                                tts_packets=tts_packets,
+                                last_tts_packet_at=time.time() if tts_watchdog.active else None,
+                            )
                             if not hasattr(_aplay_add, "_count"):
                                 _aplay_add._count = 0
                             _aplay_add._count += 1
@@ -485,6 +511,7 @@ class Yrobot(ReachyMiniApp):
                                     tts_packets, len(raw), exc,
                                 )
                         else:
+                            RUNTIME_HEALTH.update(last_rx_at=time.time())
                             d = _j.loads(raw)
                             t = d.get("type","")
                             if t == "llm":
@@ -533,6 +560,11 @@ class Yrobot(ReachyMiniApp):
                                 tts_active = True
                                 _tts_start_at = time.time()
                                 tts_watchdog.start()
+                                RUNTIME_HEALTH.update(
+                                    tts_active=True,
+                                    tts_packets=0,
+                                    last_tts_packet_at=None,
+                                )
                                 _user_speaking[0] = False
                                 tts_packets = 0
                                 tts_decode_errors = 0
@@ -552,6 +584,7 @@ class Yrobot(ReachyMiniApp):
                             elif t == "tts" and d.get("state") == "stop":
                                 tts_active = False
                                 tts_watchdog.stop()
+                                RUNTIME_HEALTH.update(tts_active=False, tts_packets=tts_packets)
                                 logger.info(
                                     "xz tts stop packets=%d audio(enqueued=%d written=%d pending=%d)",
                                     getattr(_aplay_add, "_count", 0),
@@ -671,13 +704,17 @@ class Yrobot(ReachyMiniApp):
                 try:
                     _a.run(run())
                 except Exception as e:
+                    RUNTIME_HEALTH.update(ws_state="error", session_id=None, tts_active=False)
                     logger.exception("xiaozhi ended: %s", e)
                 if not stop_event.is_set():
-                    logger.info("xiaozhi reconnecting in 3s...")
+                    reconnects = RUNTIME_HEALTH.increment("reconnects")
+                    RUNTIME_HEALTH.update(ws_state="reconnecting")
+                    logger.info("xiaozhi reconnecting in 3s (attempt %d)...", reconnects)
                     stop_event.wait(3)
         except Exception as e:
             logger.info("xiaozhi ended: %s", e)
         finally:
+            RUNTIME_HEALTH.update(ws_state="stopped", session_id=None, tts_active=False)
             _writer_stop.set()
             _audio_q.put_latest(None)
             _stop_audio_process()

@@ -1,8 +1,6 @@
-# YRobot v3.2 — 全双工全模态实施与验收
+# Historical MiniCPM-o Plan (Superseded)
 
-目标不是“支持音频和图片”，而是在同一条 MiniCPM-o 4.5 时间线上持续听、持续看、
-边说边感知，并且允许用户自然抢话。默认产品路径必须是 `mode=video`；`mode=audio`
-只作为显式的低带宽降级。
+> This document describes the removed MiniCPM-o implementation and is retained only as historical context. The current production path is Xiaozhi; use `docs/plans/2026-08-08-yrobot-stability-improvements.md` and `docs/reachy-mini-yrobot-ops.md` for current behavior and work.
 
 ## 已完成的工程改造
 

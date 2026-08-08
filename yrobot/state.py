@@ -12,6 +12,45 @@ latest value. Mutating it replaces the inner reference; readers do
 
 from __future__ import annotations
 
+import threading
+from typing import Any
+
+
+class _RuntimeHealth:
+    """Small thread-safe snapshot shared by runtime and dashboard."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._values: dict[str, Any] = {
+            "motor_ready": False,
+            "ws_state": "not_started",
+            "session_id": None,
+            "reconnects": 0,
+            "tts_active": False,
+            "tts_packets": 0,
+            "audio_queue": 0,
+            "audio_dropped": 0,
+            "last_rx_at": None,
+            "last_tts_packet_at": None,
+        }
+
+    def update(self, **values: Any) -> None:
+        with self._lock:
+            self._values.update(values)
+
+    def increment(self, key: str, amount: int = 1) -> int:
+        with self._lock:
+            value = int(self._values.get(key, 0)) + amount
+            self._values[key] = value
+            return value
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._values)
+
+
+RUNTIME_HEALTH = _RuntimeHealth()
+
 
 class _State:
     """Single mutable cell holding the robot state.

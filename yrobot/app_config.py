@@ -28,6 +28,7 @@ from fastapi import FastAPI, HTTPException, Response
 from yrobot.config import Settings
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
 from yrobot.env_store import update_env_value
+from yrobot.state import RUNTIME_HEALTH
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,16 @@ class MotionController:
         if choreo is None:
             return None
         return choreo.current_move() or choreo.current_recorded()
+
+    def status(self) -> dict[str, Any]:
+        choreo = self.get()
+        if choreo is None:
+            return {"ready": False}
+        try:
+            return {"ready": True, **choreo.get_status()}
+        except Exception as exc:
+            logger.debug("motion status unavailable: %s", exc)
+            return {"ready": False, "error": str(exc)}
 
     def list_moves(self) -> list[str]:
         from yrobot.motion import MOVES
@@ -639,6 +650,7 @@ def build_status(
         volume_error = str(exc)
     mic_state = dashboard_mic_signal()
     mic_state["available"] = mic_state.get("updated_at", 0.0) > 0.0
+    xiaozhi_url = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
     return {
         "service": {
             "name": "YRobot",
@@ -647,13 +659,15 @@ def build_status(
             "uptime_s": max(0, int(time.monotonic() - STARTED_AT)),
         },
         "system": _read_system_metrics(),
+        "motion": motion_controller_singleton().status(),
+        "runtime": RUNTIME_HEALTH.snapshot(),
         "conversation": {
-            "gateway_url": settings.url,
-            "realtime_mode": settings.realtime_mode,
-            "tls_verify": settings.tls_verify,
-            "video_enabled": settings.send_video,
-            "proactive_enabled": settings.proactive_enabled,
-            "backend": settings.conversation_backend,
+            "gateway_url": xiaozhi_url,
+            "realtime_mode": "audio",
+            "tls_verify": xiaozhi_url.startswith("wss://"),
+            "video_enabled": False,
+            "proactive_enabled": False,
+            "backend": "xiaozhi",
         },
         "audio": {
             "volume_percent": volume_percent,

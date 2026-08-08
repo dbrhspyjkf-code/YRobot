@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yrobot"
 version = "3.2.0"
-description = "Full-duplex MiniCPM-o 4.5 conversation for Reachy Mini Wireless"
+description = "Xiaozhi voice conversation and motion control for Reachy Mini Wireless"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "Apache-2.0" }

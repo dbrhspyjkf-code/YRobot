@@ -304,6 +304,12 @@ class Choreographer(threading.Thread):
         self._last_set_target_err = 0.0
         self._set_target_err_interval = 1.0  # rate-limit error logs
         self._set_target_err_suppressed = 0
+        self._status_lock = threading.Lock()
+        self._loop_hz = 0.0
+        self._last_tick_ms = 0.0
+        self._last_loop_at = 0.0
+        self._deadline_misses = 0
+        self._set_target_failures = 0
         self.BODY_YAW_LIMIT = math.radians(150.0)
         self.BODY_FOLLOW_HEAD_DEG = 10.0   # start turning body beyond 10°
         self.BODY_YAW_SPEED = 1.2          # rad/s, brisk but smooth body turn
@@ -430,7 +436,22 @@ class Choreographer(threading.Thread):
     def close(self) -> None:
         self._halt.set()
 
-    # -- 50 Hz loop -----------------------------------------------------------
+    def get_status(self) -> dict[str, Any]:
+        """Return a lightweight, thread-safe motion health snapshot."""
+        with self._status_lock:
+            return {
+                "thread_alive": self.is_alive(),
+                "mode": self._mode,
+                "current_move": self._move_name,
+                "current_recorded": self.current_recorded(),
+                "command_queue": self._command_queue.qsize(),
+                "loop_hz": round(self._loop_hz, 2),
+                "last_tick_ms": round(self._last_tick_ms, 2),
+                "last_loop_at": self._last_loop_at or None,
+                "deadline_misses": self._deadline_misses,
+                "set_target_failures": self._set_target_failures,
+                "antennas": [float(value) for value in self._antennas],
+            }
 
     def run(self) -> None:
         try:
@@ -440,9 +461,18 @@ class Choreographer(threading.Thread):
         dt = 1 / self.RATE_HZ
         t0 = time.monotonic()
         next_tick = t0
+        previous_tick = t0
         while not self._halt.is_set():
-            now = time.monotonic()
+            loop_start = time.monotonic()
+            now = loop_start
             t = now - t0
+            with self._status_lock:
+                if loop_start > previous_tick:
+                    self._loop_hz = 1.0 / (loop_start - previous_tick)
+                self._last_loop_at = time.time()
+                if loop_start > next_tick + dt:
+                    self._deadline_misses += 1
+            previous_tick = loop_start
             self._apply_commands()
             self._blend_modes(dt)
             pose, antennas = self._compose(t, now, dt)
@@ -464,6 +494,8 @@ class Choreographer(threading.Thread):
             try:
                 self._mini.set_target(head=pose, antennas=antennas, body_yaw=self._body_yaw)
             except Exception as exc:
+                with self._status_lock:
+                    self._set_target_failures += 1
                 now_err = time.monotonic()
                 if now_err - self._last_set_target_err >= self._set_target_err_interval:
                     msg = f"set_target failed: {exc}"
@@ -474,6 +506,8 @@ class Choreographer(threading.Thread):
                     self._last_set_target_err = now_err
                 else:
                     self._set_target_err_suppressed += 1
+            with self._status_lock:
+                self._last_tick_ms = (time.monotonic() - loop_start) * 1000.0
             next_tick += dt
             sleep = next_tick - time.monotonic()
             if sleep > 0:
