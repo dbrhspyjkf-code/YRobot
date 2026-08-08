@@ -106,14 +106,15 @@ class Yrobot(ReachyMiniApp):
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
 
-        # ── Motor init + slow head rise to neutral ─────────────────────
-        # After cold boot the head may be lowered.  Enable motors, then let
-        # the Choreographer's own spring dynamics (max_vel=2.5, omega=6.0)
-        # drive a smooth rise instead of goto_target which moves at full
-        # servo speed with no acceleration ramp.
+        # ── Staggered startup to avoid inrush current spikes ────────
+        # Previous crashes coincided with all subsystems (motors, camera,
+        # mic, speaker, DOA, face tracker) starting simultaneously after
+        # the MiniCPM-o cleanup removed the 6s blocking goto_target.
+        import time as _sleep
         try:
             reachy_mini.enable_motors()
             logger.info("motors enabled")
+            _sleep.sleep(1.5)
         except Exception as exc:
             logger.warning("motor enable failed: %s", exc)
 
@@ -138,6 +139,7 @@ class Yrobot(ReachyMiniApp):
             return _recorded_moves[0]
         motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
+        _sleep.sleep(1.0)
 
         # SoundCompass: track speaker direction via XVF3800 DoA
         _user_speaking = [False]
@@ -170,6 +172,7 @@ class Yrobot(ReachyMiniApp):
             on_target=choreo.set_gaze_target,
         )
         compass.start()
+        _sleep.sleep(1.0)
         _vis_frames = 0  # consecutive face detections (2 required to override DoA)
         _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
         _vis_stop = _th_face.Event()
@@ -295,6 +298,8 @@ class Yrobot(ReachyMiniApp):
             logger.info("released SDK speaker for aplay")
         except Exception as e:
             logger.warning("stop_playing failed: %s", e)
+
+        _sleep.sleep(1.0)
 
         mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
