@@ -380,16 +380,17 @@ class Yrobot(ReachyMiniApp):
                 _tts_start_at = 0.0
                 logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
                 tts_active = False
+                _skip_audio_until = 0.0
                 # ── Wake word state ──────────────────────────────────
                 _waked = False
                 _wake_deadline = 0.0
                 _wake_at = 0.0  # discard stale TTS from before wake
                 WAKE_WORDS = ("小白", "阿皮", "reachy", "hey reachy", "嘿")
-                WAKE_TIMEOUT = 20.0
+                WAKE_TIMEOUT = 60.0
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
-                    nonlocal _waked, _wake_deadline, _wake_at
+                    nonlocal _waked, _wake_deadline, _wake_at, _skip_audio_until
                     while not stop_event.is_set():
                         try:
                             raw = await ws.recv()
@@ -397,6 +398,8 @@ class Yrobot(ReachyMiniApp):
                             continue
                         if isinstance(raw, bytes):
                             if not _waked:
+                                continue
+                            if _skip_audio_until > 0 and time.time() < _skip_audio_until:
                                 continue
                             tts_packets += 1
                             if not hasattr(_aplay_add, "_count"):
@@ -458,10 +461,10 @@ class Yrobot(ReachyMiniApp):
                             elif t == "tts" and d.get("state")=="start":
                                 if not _waked:
                                     continue
-                                # Skip TTS that fires right after wake — it's
-                                # a stale response from the pre-wake utterance.
-                                if _wake_at > 0 and time.time() - _wake_at < 1.5:
-                                    logger.info("xz tts start ignored (stale, %.1fs post-wake)", time.time() - _wake_at)
+                                now_ts = time.time()
+                                if _wake_at > 0 and now_ts - _wake_at < 1.5:
+                                    logger.info("xz tts start ignored (stale, %.1fs post-wake)", now_ts - _wake_at)
+                                    _skip_audio_until = now_ts + 1.5
                                     continue
                                 logger.info("xz tts start")
                                 tts_active = True
