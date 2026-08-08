@@ -383,7 +383,7 @@ class Yrobot(ReachyMiniApp):
                 # ── Wake word state ──────────────────────────────────
                 _waked = False
                 _wake_deadline = 0.0
-                WAKE_WORDS = ("大白", "阿皮", "reachy", "hey reachy", "嘿")
+                WAKE_WORDS = ("小白", "阿皮", "reachy", "hey reachy", "嘿")
                 WAKE_TIMEOUT = 15.0
 
                 async def recv():
