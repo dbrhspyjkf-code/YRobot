@@ -572,6 +572,13 @@ class Yrobot(ReachyMiniApp):
                     SILENCE_RMS = max(500, int(_get_vad_min() * 32768))
                     logger.info("xz silence floor rms=%.0f", SILENCE_RMS)
                     while not stop_event.is_set():
+                        if rt.done():
+                            if rt.cancelled():
+                                raise RuntimeError("xiaozhi receive task was cancelled")
+                            recv_error = rt.exception()
+                            if recv_error is not None:
+                                raise RuntimeError("xiaozhi receive task failed") from recv_error
+                            raise RuntimeError("xiaozhi receive task ended unexpectedly")
                         # Auto-expire wake after conversation timeout.
                         if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
                             _waked = False
@@ -650,7 +657,14 @@ class Yrobot(ReachyMiniApp):
                             if stop_event.is_set(): break
                             await _a.sleep(0.2)
                 finally:
-                    rt.cancel()
+                    if not rt.done():
+                        rt.cancel()
+                    try:
+                        await rt
+                    except _a.CancelledError:
+                        pass
+                    except Exception as exc:
+                        logger.warning("xiaozhi receive task closed with error: %s", exc)
 
         try:
             while not stop_event.is_set():
