@@ -298,6 +298,9 @@ class Choreographer(threading.Thread):
         # turning toward a speaker) so the head never has to crank past ~35°.
         self._body_yaw = 0.0
         self._body_yaw_target = 0.0
+        self._last_set_target_err = 0.0
+        self._set_target_err_interval = 1.0  # rate-limit error logs
+        self._set_target_err_suppressed = 0
         self.BODY_YAW_LIMIT = math.radians(150.0)
         self.BODY_FOLLOW_HEAD_DEG = 10.0   # start turning body beyond 10°
         self.BODY_YAW_SPEED = 1.2          # rad/s, brisk but smooth body turn
@@ -446,8 +449,17 @@ class Choreographer(threading.Thread):
                 -self.BODY_YAW_LIMIT, min(self.BODY_YAW_LIMIT, self._body_yaw))
             try:
                 self._mini.set_target(head=pose, antennas=antennas, body_yaw=self._body_yaw)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("set_target dropped: %s", exc)
+            except Exception as exc:
+                now_err = time.monotonic()
+                if now_err - self._last_set_target_err >= self._set_target_err_interval:
+                    msg = f"set_target failed: {exc}"
+                    if self._set_target_err_suppressed:
+                        msg += f" (suppressed {self._set_target_err_suppressed} repeats)"
+                        self._set_target_err_suppressed = 0
+                    logger.warning(msg)
+                    self._last_set_target_err = now_err
+                else:
+                    self._set_target_err_suppressed += 1
             next_tick += dt
             sleep = next_tick - time.monotonic()
             if sleep > 0:
@@ -539,12 +551,24 @@ class Choreographer(threading.Thread):
                 except Exception:
                     self._recorded_move = None
 
-        # Antennas: perked and still when listening, dancing when speaking.
-        target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen) + m_ant
-        sway = 0.05 * idle * math.sin(2 * math.pi * 0.3 * t) + 0.10 * speak * math.sin(
-            2 * math.pi * 1.4 * t
-        )
-        goal = np.array([target + sway, target - sway])
+        # Antennas: freeze when listening (official app pattern), sway otherwise.
+        if listen > 0.5:
+            if not hasattr(self, '_listen_antennas') or getattr(self, '_last_listen', 0) < 0.5:
+                self._listen_antennas = self._antennas.copy()
+            goal = self._listen_antennas.copy()
+        else:
+            if hasattr(self, '_listen_antennas') and getattr(self, '_last_listen', 0) > 0.5:
+                self._antenna_blend = 0.0
+            self._antenna_blend = min(1.0, getattr(self, '_antenna_blend', 1.0) + dt / 0.4)
+            target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen) + m_ant
+            sway = 0.05 * idle * math.sin(2 * math.pi * 0.3 * t) + 0.10 * speak * math.sin(
+                2 * math.pi * 1.4 * t
+            )
+            target_arr = np.array([target + sway, target - sway])
+            if hasattr(self, '_listen_antennas'):
+                target_arr = self._listen_antennas * (1.0 - self._antenna_blend) + target_arr * self._antenna_blend
+            goal = target_arr
+        self._last_listen = listen
         goal = goal * (1.0 - self._still) + self._antennas * self._still  # freeze in place
         self._antennas += (goal - self._antennas) * min(dt / 0.12, 1.0)
         return pose, [float(self._antennas[0]), float(self._antennas[1])]
