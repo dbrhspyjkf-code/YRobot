@@ -108,8 +108,6 @@ class Yrobot(ReachyMiniApp):
         import time as _sleep
 
         # ── Motor init temporarily DISABLED for stability test ────
-        # Hypothesis: motor inrush current causes undervoltage → reboot loop.
-        # If system stays stable with motors off, we need a soft-start.
         _MOTORS_DISABLED_FOR_TEST = True
         if not _MOTORS_DISABLED_FOR_TEST:
             try:
@@ -119,9 +117,25 @@ class Yrobot(ReachyMiniApp):
             except Exception as exc:
                 logger.warning("motor enable failed: %s", exc)
         else:
-            logger.warning("MOTORS DISABLED for stability test — head won't move")
+            logger.warning("MOTORS DISABLED for stability test")
+            try:
+                reachy_mini.disable_motors()
+            except Exception:
+                pass
 
-        choreo = Choreographer(reachy_mini)
+        if not _MOTORS_DISABLED_FOR_TEST:
+            choreo = Choreographer(reachy_mini)
+        else:
+            # Dummy choreo — all methods are no-ops
+            choreo = type("DummyChoreo", (), {
+                "start": lambda *a: None, "close": lambda *a: None, "join": lambda *a: None,
+                "set_mode": lambda *a: None, "set_gaze_target": lambda *a: None,
+                "play_move": lambda *a: None, "play_recorded": lambda *a: False,
+                "current_move": lambda *a: None, "current_recorded": lambda *a: None,
+                "current_yaw": lambda *a: 0.0, "release_still": lambda *a: None,
+                "_gaze": type("G", (), {"__setattr__": lambda s,k,v: None})(),
+            })()
+            choreo.start()  # no-op
         # Smooth but responsive gaze: fast enough to track a speaker, bounded
         # enough to never snap (the body turn carries the large motions).
         choreo._gaze._max_vel = 2.5   # rad/s
