@@ -791,7 +791,7 @@ def register_settings_routes(
             raise HTTPException(status_code=422, detail="rms_min must be a number")
         applied = set_vad_rms_min(float(value))
         try:
-            persist_env_value(vad_env_path, "YROBOT_VAD_RMS_MIN", f"{applied:.3f}")
+            vad_env_path.write_text(f"YROBOT_VAD_RMS_MIN={applied:.3f}\n")
         except OSError as exc:
             raise HTTPException(status_code=503, detail=f"could not save VAD env: {exc}") from exc
         return {
