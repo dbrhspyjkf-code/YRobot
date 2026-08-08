@@ -600,7 +600,7 @@ loadLogs({ fullReplace: true });
 scheduleLogPoll();
 setInterval(loadStatus, 10000);
 loadChatMini();
-setInterval(loadChatMini, 8000);
+setInterval(loadChatMini, 2000);
 
 function renderSystem(sys) {
   const el = document.getElementById("status-sys");
