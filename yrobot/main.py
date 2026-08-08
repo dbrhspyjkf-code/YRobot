@@ -380,15 +380,23 @@ class Yrobot(ReachyMiniApp):
                 _tts_start_at = 0.0
                 logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
                 tts_active = False
+                # ── Wake word state ──────────────────────────────────
+                _waked = False
+                _wake_deadline = 0.0
+                WAKE_WORD = "大白"
+                WAKE_TIMEOUT = 15.0
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
+                    nonlocal _waked, _wake_deadline
                     while not stop_event.is_set():
                         try:
                             raw = await ws.recv()
                         except _a.TimeoutError:
                             continue
                         if isinstance(raw, bytes):
+                            if not _waked:
+                                continue
                             tts_packets += 1
                             if not hasattr(_aplay_add, "_count"):
                                 _aplay_add._count = 0
@@ -426,9 +434,22 @@ class Yrobot(ReachyMiniApp):
                                 else:
                                     _handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
                             if t == "stt":
-                                logger.info("xz stt: %s", d.get("text",""))
+                                text = d.get("text","")
+                                logger.info("xz stt: %s", text)
+                                # Wake word gate: only respond if addressed by name
+                                # or already in an active conversation window.
+                                if WAKE_WORD in text:
+                                    _waked = True
+                                    _wake_deadline = 0
+                                    choreo.play_move("nod")
+                                    logger.info("wake word detected: %.60s", text)
+                                if not _waked:
+                                    logger.info("xz stt ignored (not waked): %.60s", text)
+                                    continue
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state")=="start":
+                                if not _waked:
+                                    continue
                                 logger.info("xz tts start")
                                 tts_active = True
                                 _tts_start_at = time.time()
@@ -450,6 +471,7 @@ class Yrobot(ReachyMiniApp):
                                 )
                             elif t == "tts" and d.get("state") == "stop":
                                 tts_active = False
+                                _wake_deadline = time.time() + WAKE_TIMEOUT
                                 logger.info(
                                     "xz tts stop packets=%d audio(enqueued=%d written=%d pending=%d)",
                                     getattr(_aplay_add, "_count", 0),
@@ -470,6 +492,10 @@ class Yrobot(ReachyMiniApp):
                     SILENCE_RMS = max(500, int(_get_vad_min() * 32768))
                     logger.info("xz silence floor rms=%.0f", SILENCE_RMS)
                     while not stop_event.is_set():
+                        # Auto-expire wake after conversation timeout.
+                        if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
+                            _waked = False
+                            logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
                         if tts_active:
                             # Safety: if the server sent tts/start but no audio
                             # ever arrives (cloud hiccup / lost stop), recover
