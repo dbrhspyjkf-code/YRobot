@@ -164,23 +164,9 @@
         <section class="panel">
           <div class="panel-heading">
             <div><p class="step">01 / CONNECTION</p><h2>实时服务</h2></div>
-            <span class="pill">WebSocket</span>
+            <span class="pill">Xiaozhi 云</span>
           </div>
-          <label for="gateway-url">MiniCPM-o Gateway</label>
-          <input id="gateway-url" name="gateway_url" type="text" spellcheck="false" required />
-          <p class="hint">可填写主机名或完整的 ws:// / wss:// 地址；音频/视频模式会自动写入 URL。</p>
-
-          <label for="conversation-backend">对话后端</label>
-          <select id="conversation-backend" name="conversation_backend">
-            <option value="minicpmo">MiniCPM-o（实时多模态）</option>
-            <option value="xiaozhi">Xiaozhi 云（流式对话）</option>
-          </select>
-          <p class="hint">MiniCPM-o 支持视频实时对话；Xiaozhi 云对话更自然快速，视觉通过 MCP 工具。切换后需重启。</p>
-
-          <div class="toggle-row">
-            <div><b>验证 TLS 证书</b><small>公网 Gateway 建议始终开启</small></div>
-            <label class="switch"><input id="tls-verify" type="checkbox" /><span></span></label>
-          </div>
+          <p class="hint">对话后端固定为 Xiaozhi 云（流式对话），无需手动配置。</p>
         </section>
 
         <section class="panel">

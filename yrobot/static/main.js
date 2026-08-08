@@ -2,15 +2,12 @@ const form = document.getElementById("settings-form");
 const loading = document.getElementById("loading");
 const restartBanner = document.getElementById("restart-banner");
 const overrideWarning = document.getElementById("override-warning");
-const gatewayUrl = document.getElementById("gateway-url");
-const tlsVerify = document.getElementById("tls-verify");
 const videoEnabled = document.getElementById("video-enabled");
 const proactiveEnabled = document.getElementById("proactive-enabled");
 const persona = document.getElementById("persona");
 const personaCount = document.getElementById("persona-count");
 const privacyConfirm = document.getElementById("privacy-confirm");
 const saveButton = document.getElementById("save-button");
-const conversationBackend = document.getElementById("conversation-backend");
 const saveStatus = document.getElementById("save-status");
 const configPath = document.getElementById("config-path");
 const statusPanel = document.getElementById("status-panel");
@@ -73,16 +70,12 @@ function syncVideoControls() {
 }
 
 function showSettings(settings) {
-  gatewayUrl.value = settings.gateway_url;
-  tlsVerify.checked = settings.tls_verify;
   videoEnabled.checked = settings.video_enabled;
   proactiveEnabled.checked = settings.proactive_enabled;
   persona.value = settings.persona;
-  conversationBackend.value = settings.conversation_backend || "minicpmo";
   configPath.textContent = `保存位置：${settings.config_path}`;
 
   updatePersonaCount();
-  syncVideoControls();
 
   if (settings.environment_overrides.length) {
     overrideWarning.textContent =
@@ -644,13 +637,13 @@ form.addEventListener("submit", async (event) => {
   }
 
   const document = {
-    gateway_url: gatewayUrl.value.trim(),
-    tls_verify: tlsVerify.checked,
+    gateway_url: "wss://api.tenclass.net/xiaozhi/v1/",
+    tls_verify: true,
     video_enabled: videoEnabled.checked,
     proactive_enabled: proactiveEnabled.checked,
     persona: persona.value.trim(),
     profile: "default",
-    conversation_backend: conversationBackend.value || "minicpmo",
+    conversation_backend: "xiaozhi",
   };
 
   saveButton.disabled = true;
