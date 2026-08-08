@@ -383,7 +383,7 @@ class Yrobot(ReachyMiniApp):
                 # ── Wake word state ──────────────────────────────────
                 _waked = False
                 _wake_deadline = 0.0
-                WAKE_WORD = "大白"
+                WAKE_WORDS = ("大白", "阿皮", "reachy", "hey reachy", "嘿")
                 WAKE_TIMEOUT = 15.0
 
                 async def recv():
@@ -436,9 +436,10 @@ class Yrobot(ReachyMiniApp):
                             if t == "stt":
                                 text = d.get("text","")
                                 logger.info("xz stt: %s", text)
-                                # Wake word gate: only respond if addressed by name
-                                # or already in an active conversation window.
-                                if WAKE_WORD in text:
+                                # Wake word gate: respond if addressed by any
+                                # known name, or already in active conversation.
+                                text_lower = text.lower()
+                                if any(w.lower() in text_lower for w in WAKE_WORDS):
                                     _waked = True
                                     _wake_deadline = 0
                                     choreo.play_move("nod")
