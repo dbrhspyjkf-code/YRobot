@@ -105,18 +105,21 @@ class Yrobot(ReachyMiniApp):
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
-
-        # ── Staggered startup to avoid inrush current spikes ────────
-        # Previous crashes coincided with all subsystems (motors, camera,
-        # mic, speaker, DOA, face tracker) starting simultaneously after
-        # the MiniCPM-o cleanup removed the 6s blocking goto_target.
         import time as _sleep
-        try:
-            reachy_mini.enable_motors()
-            logger.info("motors enabled")
-            _sleep.sleep(1.5)
-        except Exception as exc:
-            logger.warning("motor enable failed: %s", exc)
+
+        # ── Motor init temporarily DISABLED for stability test ────
+        # Hypothesis: motor inrush current causes undervoltage → reboot loop.
+        # If system stays stable with motors off, we need a soft-start.
+        _MOTORS_DISABLED_FOR_TEST = True
+        if not _MOTORS_DISABLED_FOR_TEST:
+            try:
+                reachy_mini.enable_motors()
+                logger.info("motors enabled")
+                _sleep.sleep(1.5)
+            except Exception as exc:
+                logger.warning("motor enable failed: %s", exc)
+        else:
+            logger.warning("MOTORS DISABLED for stability test — head won't move")
 
         choreo = Choreographer(reachy_mini)
         # Smooth but responsive gaze: fast enough to track a speaker, bounded
@@ -226,7 +229,7 @@ class Yrobot(ReachyMiniApp):
                 _ensure_camera()
                 try:
                     req = _ur.Request(frame_url)
-                    with _ur.urlopen(req, timeout=2) as resp:
+                    with _ur.urlopen(req, timeout=3) as resp:
                         jpeg = resp.read()
                     arr = np.frombuffer(jpeg, dtype=np.uint8)
                     bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -361,11 +364,19 @@ class Yrobot(ReachyMiniApp):
 
         def _aplay_add(stereo_f32):
             pcm = (np.clip(stereo_f32, -1, 1) * 32767).astype("<i2").tobytes()
-            _audio_q.put_nowait(pcm)
-            _audio_stats["enqueued"] += 1
+            try:
+                _audio_q.put_nowait(pcm)
+                _audio_stats["enqueued"] += 1
+            except _pq.Full:
+                pass  # drop frame if audio pipeline backed up
 
         def _aplay_flush():
-            pass
+            # Drain stale audio from queue to prevent backlog
+            while not _audio_q.empty():
+                try:
+                    _audio_q.get_nowait()
+                except _pq.Empty:
+                    break
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
@@ -558,10 +569,10 @@ class Yrobot(ReachyMiniApp):
                         sent = 0
                         for buf in frames:
                             try:
-                                await ws.send(enc.encode(buf.tobytes(), 960))
+                                await _a.wait_for(ws.send(enc.encode(buf.tobytes(), 960)), timeout=3)
                                 sent += 1
                                 await _a.sleep(0)
-                            except Exception: pass
+                            except Exception: break
                         deadline = time.monotonic() + 6.0
                         min_deadline = time.monotonic() + 3.0
                         while time.monotonic() < deadline and not stop_event.is_set():
@@ -569,10 +580,10 @@ class Yrobot(ReachyMiniApp):
                             rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
                             _publish_dashboard_mic(float(rms) / 32768.0)
                             try:
-                                await ws.send(enc.encode(buf.tobytes(), 960))
+                                await _a.wait_for(ws.send(enc.encode(buf.tobytes(), 960)), timeout=3)
                                 sent += 1
                                 await _a.sleep(0)
-                            except Exception: pass
+                            except Exception: break
                             if time.monotonic() > min_deadline and rms < 1000:
                                 break
                         await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
