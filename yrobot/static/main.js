@@ -110,7 +110,8 @@ function stateText(enabled, configured = true) {
 }
 
 function showStatus(status) {
-  statusService.textContent = status.service.state === "running" ? "运行中" : status.service.state;
+  const stateLabels = { active: "活跃", sleeping: "待机", deep_sleep: "休眠", safe_mode: "安全模式" };
+  statusService.textContent = stateLabels[status.service.state] || status.service.state;
   statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
 
   const mode = status.conversation.realtime_mode === "video" ? "视频模式" : "音频模式";
