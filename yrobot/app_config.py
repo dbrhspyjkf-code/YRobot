@@ -226,22 +226,8 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
     if len(persona) > 240:
         raise ValueError("persona must be at most 240 characters")
 
-    profile = document.get("profile")
-    if not isinstance(profile, str) or not profile.strip():
-        raise ValueError("profile must be a non-empty string")
-    profile = profile.strip()
-    try:
-        from yrobot.profile import load_profile, list_profiles
-
-        available = list_profiles()
-        if profile not in available:
-            raise ValueError(
-                f"profile {profile!r} not found. Available: {', '.join(available)}"
-            )
-        # Validate the profile actually loads (tools.txt / instructions.txt parse).
-        load_profile(profile)
-    except FileNotFoundError as exc:
-        raise ValueError(str(exc)) from exc
+    # Single-mode: profile is fixed to "default"; no switching.
+    profile = "default"
 
     backend = document.get("conversation_backend")
     if not isinstance(backend, str) or backend not in ("minicpmo", "xiaozhi"):
@@ -315,23 +301,17 @@ class AppConfig:
         effective = self.effective_environment(environ)
         settings = Settings.from_env(effective)
         persona = effective.get("YROBOT_PERSONA", DEFAULT_PERSONA).strip()
-        profile = effective.get("YROBOT_PROFILE", "default").strip() or "default"
         overrides = [field for field, env_name in FIELD_TO_ENV.items() if env_name in environ]
-        try:
-            from yrobot.profile import list_profiles
-
-            profiles = list_profiles()
-        except Exception:  # noqa: BLE001 — profile listing must never break settings
-            profiles = []
         return {
             "gateway_url": settings.url,
             "tls_verify": settings.tls_verify,
             "video_enabled": settings.send_video,
             "proactive_enabled": settings.proactive_enabled,
             "persona": persona,
-            "profile": profile,
-            "profiles": profiles,
-            "profile_instructions": settings._load_profile_instructions()[:200],
+            # Single-mode: profile is fixed to default, no switching UI.
+            "profile": "default",
+            "profiles": ["default"],
+            "profile_instructions": "",
             "conversation_backend": effective.get("YROBOT_CONVERSATION_BACKEND", "minicpmo"),
             "environment_overrides": overrides,
             "config_path": str(self.path),

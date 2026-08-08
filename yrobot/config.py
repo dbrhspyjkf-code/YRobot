@@ -192,31 +192,7 @@ class Settings:
             parts.append(HERMES_TOOLS_POLICY)
         if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
             parts.append(LOCAL_INFO_POLICY)
-        # Profile-specific instructions override (appended last so they take
-        # priority over the generic policies above when both apply).
-        profile_instructions = self._load_profile_instructions()
-        if profile_instructions:
-            parts.append(profile_instructions)
         return "\n".join(parts)
-
-    def _load_profile_instructions(self) -> str:
-        """Read the active profile's instructions.txt, if any.
-
-        Defers imports to avoid a circular dependency with yrobot.profile.
-        Returns "" when the profile does not load or has no instructions.
-        """
-        try:
-            from yrobot.profile import load_profile
-        except Exception:  # noqa: BLE001 — never let profile IO break settings
-            return ""
-        try:
-            override = self.profile_dir or None
-            profile = load_profile(
-                self.profile_name, override_dir=override
-            )
-        except FileNotFoundError:
-            return ""
-        return profile.instructions
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> Settings:
