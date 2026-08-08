@@ -437,13 +437,18 @@ class Yrobot(ReachyMiniApp):
                             if t == "stt":
                                 text = d.get("text","")
                                 logger.info("xz stt: %s", text)
-                                # Wake word gate: respond if addressed by any
-                                # known name, or already in active conversation.
+                                # Wake word gate (skip if force-wake flag set).
+                                _force = False
+                                try:
+                                    _force = open("/tmp/yrobot_force_wake").read().strip() == "1"
+                                except Exception:
+                                    pass
                                 text_lower = text.lower()
-                                if any(w.lower() in text_lower for w in WAKE_WORDS):
+                                if _force or any(w.lower() in text_lower for w in WAKE_WORDS):
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
-                                    _wake_at = time.time()
+                                    if not _force:
+                                        _wake_at = time.time()  # only gate stale for real wake
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                 if not _waked:
