@@ -17,8 +17,6 @@ const statusPanel = document.getElementById("status-panel");
 const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
-const statusConversation = document.getElementById("status-conversation");
-const statusProactive = document.getElementById("status-proactive");
 const statusHa = document.getElementById("status-ha");
 const statusHaUrl = document.getElementById("status-ha-url");
 const statusHermes = document.getElementById("status-hermes");
@@ -113,10 +111,6 @@ function showStatus(status) {
   const stateLabels = { active: "活跃", sleeping: "待机", deep_sleep: "休眠", safe_mode: "安全模式" };
   statusService.textContent = stateLabels[status.service.state] || status.service.state;
   statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
-
-  const mode = status.conversation.realtime_mode === "video" ? "视频模式" : "音频模式";
-  statusConversation.textContent = `${mode} / ${status.conversation.tls_verify ? "TLS 验证" : "TLS 未验证"}`;
-  statusProactive.textContent = status.conversation.proactive_enabled ? "主动观察开启" : "主动观察关闭";
 
   const ha = status.integrations.home_assistant;
   statusHa.textContent = stateText(ha.enabled, ha.configured);
