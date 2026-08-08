@@ -2,8 +2,6 @@ const form = document.getElementById("settings-form");
 const loading = document.getElementById("loading");
 const restartBanner = document.getElementById("restart-banner");
 const overrideWarning = document.getElementById("override-warning");
-const videoEnabled = document.getElementById("video-enabled");
-const proactiveEnabled = document.getElementById("proactive-enabled");
 const persona = document.getElementById("persona");
 const personaCount = document.getElementById("persona-count");
 const privacyConfirm = document.getElementById("privacy-confirm");
@@ -64,17 +62,7 @@ function updatePersonaCount() {
   personaCount.textContent = String(persona.value.length);
 }
 
-function syncVideoControls() {
-  proactiveEnabled.disabled = !videoEnabled.checked;
-  if (!videoEnabled.checked) proactiveEnabled.checked = false;
-}
-
 function showSettings(settings) {
-  videoEnabled.checked = settings.video_enabled;
-  proactiveEnabled.checked = settings.proactive_enabled;
-  persona.value = settings.persona;
-  configPath.textContent = `保存位置：${settings.config_path}`;
-
   updatePersonaCount();
 
   if (settings.environment_overrides.length) {
@@ -546,7 +534,6 @@ async function loadSettings() {
 }
 
 persona.addEventListener("input", updatePersonaCount);
-videoEnabled.addEventListener("change", syncVideoControls);
 refreshStatus.addEventListener("click", loadStatus);
 volumeSlider.addEventListener("input", (event) => {
   const value = event.target.value;
@@ -639,8 +626,8 @@ form.addEventListener("submit", async (event) => {
   const document = {
     gateway_url: "wss://api.tenclass.net/xiaozhi/v1/",
     tls_verify: true,
-    video_enabled: videoEnabled.checked,
-    proactive_enabled: proactiveEnabled.checked,
+    video_enabled: false,
+    proactive_enabled: false,
     persona: persona.value.trim(),
     profile: "default",
     conversation_backend: "xiaozhi",
