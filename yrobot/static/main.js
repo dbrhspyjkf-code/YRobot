@@ -638,7 +638,17 @@ setInterval(loadChatMini, 2000);
 function renderSystem(sys) {
   const el = document.getElementById("status-sys");
   if (!el) return;
-  el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C`;
+  let power = "";
+  if (sys.power?.available) {
+    if (sys.power.under_voltage || sys.power.throttled) {
+      power = " · 电源异常";
+    } else if (sys.power.under_voltage_seen || sys.power.throttled_seen || sys.power.frequency_capped_seen) {
+      power = " · 曾低电压";
+    } else {
+      power = " · 电源正常";
+    }
+  }
+  el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C${power}`;
 }
 
 let _chatMiniLastRendered = "";

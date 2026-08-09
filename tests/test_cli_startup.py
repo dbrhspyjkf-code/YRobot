@@ -78,3 +78,22 @@ def test_cli_keeps_keyboard_interrupt_as_clean_stop(monkeypatch, main_module):
     main_module.cli()
 
     assert fake_app.stopped is True
+
+
+def test_xiaozhi_expected_websocket_close_is_reconnect_not_crash(main_module):
+    class CloseFrame:
+        code = 1005
+
+    class FakeConnectionClosed(Exception):
+        rcvd = CloseFrame()
+
+    err = RuntimeError("xiaozhi receive task failed")
+    err.__cause__ = FakeConnectionClosed("received 1005")
+
+    assert main_module._is_expected_xiaozhi_disconnect(err) is True
+
+
+def test_xiaozhi_unexpected_error_stays_exceptional(main_module):
+    err = RuntimeError("bad decode")
+
+    assert main_module._is_expected_xiaozhi_disconnect(err) is False

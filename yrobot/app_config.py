@@ -667,7 +667,52 @@ def _read_system_metrics() -> dict[str, Any]:
         "memory_percent": round(mem_used_pct, 1),
         "disk_percent": round(disk_pct, 1),
         "temperature_c": round(temp_c, 1),
+        "power": _read_pi_power_state(),
     }
+
+
+def _read_pi_power_state() -> dict[str, Any]:
+    """Read Raspberry Pi throttling flags from vcgencmd when available."""
+    state: dict[str, Any] = {
+        "available": False,
+        "raw": None,
+        "under_voltage": False,
+        "under_voltage_seen": False,
+        "throttled": False,
+        "throttled_seen": False,
+        "frequency_capped": False,
+        "frequency_capped_seen": False,
+    }
+    try:
+        proc = subprocess.run(
+            ["vcgencmd", "get_throttled"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+    except Exception:
+        return state
+    if proc.returncode != 0:
+        return state
+    raw = proc.stdout.strip()
+    match = re.search(r"throttled=(0x[0-9a-fA-F]+|\d+)", raw)
+    if match is None:
+        return state
+    flags = int(match.group(1), 0)
+    state.update(
+        {
+            "available": True,
+            "raw": match.group(1),
+            "under_voltage": bool(flags & (1 << 0)),
+            "frequency_capped": bool(flags & (1 << 1)),
+            "throttled": bool(flags & (1 << 2)),
+            "under_voltage_seen": bool(flags & (1 << 16)),
+            "frequency_capped_seen": bool(flags & (1 << 17)),
+            "throttled_seen": bool(flags & (1 << 18)),
+        }
+    )
+    return state
 
 def build_status(
     environ: Mapping[str, str],

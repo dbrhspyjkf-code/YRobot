@@ -71,6 +71,35 @@ def _clear_startup_failure_counter() -> None:
         pass
 
 
+class _XiaozhiReconnect(Exception):
+    """Expected Xiaozhi session close that should reconnect without traceback."""
+
+
+def _websocket_close_code(exc: BaseException) -> int | None:
+    for attr in ("code",):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    for attr in ("rcvd", "sent"):
+        frame = getattr(exc, attr, None)
+        value = getattr(frame, "code", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _is_expected_xiaozhi_disconnect(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if current.__class__.__name__ == "ConnectionClosedOK":
+            return True
+        code = _websocket_close_code(current)
+        if code in {1000, 1001, 1005}:
+            return True
+        current = current.__cause__
+    return False
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -628,6 +657,8 @@ class Yrobot(ReachyMiniApp):
                                 raise RuntimeError("xiaozhi receive task was cancelled")
                             recv_error = rt.exception()
                             if recv_error is not None:
+                                if _is_expected_xiaozhi_disconnect(recv_error):
+                                    raise _XiaozhiReconnect(str(recv_error)) from recv_error
                                 raise RuntimeError("xiaozhi receive task failed") from recv_error
                             raise RuntimeError("xiaozhi receive task ended unexpectedly")
                         # Auto-expire wake after conversation timeout.
@@ -715,12 +746,18 @@ class Yrobot(ReachyMiniApp):
                     except _a.CancelledError:
                         pass
                     except Exception as exc:
-                        logger.warning("xiaozhi receive task closed with error: %s", exc)
+                        if _is_expected_xiaozhi_disconnect(exc):
+                            logger.warning("xiaozhi receive task closed, reconnecting: %s", exc)
+                        else:
+                            logger.warning("xiaozhi receive task closed with error: %s", exc)
 
         try:
             while not stop_event.is_set():
                 try:
                     _a.run(run())
+                except _XiaozhiReconnect as e:
+                    RUNTIME_HEALTH.update(ws_state="reconnecting", session_id=None, tts_active=False)
+                    logger.warning("xiaozhi session closed, reconnecting: %s", e)
                 except Exception as e:
                     RUNTIME_HEALTH.update(ws_state="error", session_id=None, tts_active=False)
                     logger.exception("xiaozhi ended: %s", e)
