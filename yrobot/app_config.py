@@ -246,6 +246,16 @@ CAMERA_LONG_EDGE = 640
 CAMERA_JPEG_QUALITY = 70
 CAMERA_INTERVAL_S = 0.5
 SYSTEM_SERVICE_NAME = "yrobot.service"
+SYSTEM_POWER_ACTIONS = {
+    "reboot": {
+        "command": ["sudo", "-n", "systemctl", "reboot"],
+        "message": "正在重启 Reachy Mini…网络会短暂断开。",
+    },
+    "poweroff": {
+        "command": ["sudo", "-n", "systemctl", "poweroff"],
+        "message": "正在关闭 Reachy Mini…关机后需要手动按电源开机。",
+    },
+}
 
 
 class SystemController:
@@ -298,6 +308,31 @@ class SystemController:
             "action": "restart",
             "message": "正在重启 YRobot…几秒后页面会自动重新连接。",
         }
+
+    @staticmethod
+    def _dispatch_power(command: list[str], action: str) -> None:
+        try:
+            subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — fire-and-forget
+            logger.warning("system power %s failed: %s", action, exc)
+
+    def power(self, action: str) -> dict[str, Any]:
+        spec = SYSTEM_POWER_ACTIONS.get(action)
+        if spec is None:
+            raise ValueError("unsupported system power action")
+        threading.Thread(
+            target=self._dispatch_power,
+            args=(spec["command"], action),
+            name=f"yrobot-system-power-{action}",
+            daemon=True,
+        ).start()
+        return {"ok": True, "action": action, "message": spec["message"]}
 
 
 class _MediaHolder:
@@ -749,6 +784,13 @@ def register_settings_routes(
     @app.post("/api/system/restart")
     def post_system_restart() -> dict[str, Any]:
         return system_controller.restart()
+
+    @app.post("/api/system/power")
+    def post_system_power(document: dict[str, Any]) -> dict[str, Any]:
+        action = document.get("action")
+        if action not in SYSTEM_POWER_ACTIONS:
+            raise HTTPException(status_code=422, detail="action must be 'reboot' or 'poweroff'")
+        return system_controller.power(str(action))
 
     @app.get("/api/volume")
     def get_volume() -> dict[str, Any]:

@@ -24,7 +24,8 @@ const cameraStatus = document.getElementById("camera-status");
 const cameraMeta = document.getElementById("camera-meta");
 
 const logList = document.getElementById("log-list");
-const powerRestart = document.getElementById("power-restart");
+const powerReboot = document.getElementById("power-reboot");
+const powerOff = document.getElementById("power-off");
 const logFrame = document.getElementById("log-frame");
 const logEmpty = document.getElementById("log-empty");
 const logMeta = document.getElementById("log-meta");
@@ -568,29 +569,61 @@ logJump.addEventListener("click", () => {
   maybeLogAutoScroll();
 });
 
-async function restartSystem() {
-  if (!window.confirm("重启 YRobot？服务会短暂离线几秒后自动恢复。")) return;
-  powerRestart.classList.add("busy");
-  powerRestart.disabled = true;
-  try {
-    const response = await fetch("/api/system/restart", { method: "POST" });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || result.ok === false) {
-      const detail = result.message || result.detail || `HTTP ${response.status}`;
-      window.alert(`重启失败：${detail}`);
-      powerRestart.classList.remove("busy");
-      powerRestart.disabled = false;
-      return;
-    }
-    window.alert("正在重启…几秒后会自动重新连接。");
-  } catch (error) {
-    powerRestart.classList.remove("busy");
-    powerRestart.disabled = false;
-    window.alert(`请求失败：${error.message}`);
+function setPowerButtonsBusy(button) {
+  for (const item of [powerReboot, powerOff]) {
+    if (!item) continue;
+    item.disabled = true;
+    item.classList.toggle("busy", item === button);
   }
 }
 
-powerRestart.addEventListener("click", restartSystem);
+function clearPowerButtonsBusy() {
+  for (const item of [powerReboot, powerOff]) {
+    if (!item) continue;
+    item.disabled = false;
+    item.classList.remove("busy");
+  }
+}
+
+async function requestPowerAction(action, button, confirmText, successText) {
+  if (!window.confirm(confirmText)) return;
+  setPowerButtonsBusy(button);
+  try {
+    const response = await fetch("/api/system/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      const detail = result.message || result.detail || `HTTP ${response.status}`;
+      window.alert(`命令失败：${detail}`);
+      clearPowerButtonsBusy();
+      return;
+    }
+    window.alert(result.message || successText);
+  } catch (error) {
+    window.alert(`请求失败：${error.message}`);
+    clearPowerButtonsBusy();
+  }
+}
+
+powerReboot.addEventListener("click", () => {
+  requestPowerAction(
+    "reboot",
+    powerReboot,
+    "确认重启 Reachy Mini？网络会短暂断开，启动后会自动恢复。",
+    "正在重启 Reachy Mini…",
+  );
+});
+powerOff.addEventListener("click", () => {
+  requestPowerAction(
+    "poweroff",
+    powerOff,
+    "确认关闭 Reachy Mini？关机后需要手动按电源开机。",
+    "正在关闭 Reachy Mini…",
+  );
+});
 
 loadStatus();
 loadVolume();
