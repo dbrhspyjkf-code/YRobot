@@ -760,6 +760,11 @@ def cli() -> None:
         app.wrapped_run()
     except KeyboardInterrupt:
         app.stop()
+    except Exception:
+        logger.exception("YRobot process crashed during startup/runtime")
+        app.stop()
+        logging.shutdown()
+        os._exit(1)
 
 
 if __name__ == "__main__":

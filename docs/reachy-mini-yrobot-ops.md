@@ -13,14 +13,16 @@ grep'd for `"running"` in the HTTP response — too early.
 
 Fix:
 
-1. `/home/pollen/wait_daemon_ready.py` — SDK-level probe that creates a
+1. `scripts/wait_daemon_ready.py`, deployed to
+   `/home/pollen/wait_daemon_ready.py` — SDK-level probe that creates a
    `ReachyMini`, enables motors if disabled, and exits 0 on success.
 2. `/etc/systemd/system/yrobot.service.d/wait-for-daemon.conf` —
    `ExecStartPre` calls this script, giving the daemon up to 30 s.
 
-The script is deployed to Reachy but NOT tracked in the YRobot repo;
-its content is identical to the one in the plan doc at
-`docs/plans/2026-08-08-yrobot-stability-improvements.md`.
+The script exits the success path with `os._exit(0)`. This avoids a startup
+stall where the SDK/GStreamer worker threads keep Python alive after the
+daemon probe already succeeded, leaving `yrobot.service` stuck in
+`activating (start-pre)` until systemd times it out.
 
 ### Motor enable after goto_sleep / power cycle
 
@@ -679,4 +681,3 @@ tool. `UNREACHABLE` lines indicate the endpoint URL or the server is broken.
 Full `pytest` and `ruff check .` have had unrelated failures from in-progress
 local changes. Treat focused hardware-relevant checks as the immediate gate, and
 only clean full-suite issues when intentionally doing repo cleanup.
-
