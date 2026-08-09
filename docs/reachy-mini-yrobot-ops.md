@@ -69,6 +69,109 @@ camera; only face tracking is lost.
   bounded subprocess timeouts.
 - Obsolete MiniCPM-o/Hermes tests removed; 46 current tests pass.
 
+### Smooth startup motion handoff
+
+**Symptom:** after power-on the head jumped upward too quickly before the
+robot settled into normal idle motion.
+
+Root cause: YRobot enabled motors and immediately started the 50 Hz
+`Choreographer`. The first `set_target()` frame was based on the internal
+idle pose, not the real pose the robot was physically holding after sleep or
+power loss.
+
+Fix:
+
+1. `yrobot/main.py` snapshots `get_current_head_pose()` and
+   `get_current_joint_positions()` before motor enable.
+2. `yrobot/motion.py: Choreographer` accepts `startup_head_pose` and
+   `startup_antennas`.
+3. The first 4 s of motion blend from the captured real pose to the composed
+   idle pose with smoothstep interpolation.
+4. Normal gaze speed is still restored after the existing 8 s startup window.
+
+Verification on hardware:
+
+- service restart and full `sudo reboot` both came back automatically;
+- logs showed `captured startup pose for smooth motor handoff`,
+  `motors enabled (attempt 1)`, and `head rise complete`;
+- user observed the head now rises slowly.
+
+### Power health / undervoltage
+
+**Symptom:** robot froze briefly, then behaved like it had restarted.
+
+Evidence:
+
+- Current boot started at `2026-08-09 09:40:49`.
+- `yrobot.service` and `reachy-mini-daemon.service` had `NRestarts=0`, so this
+  was not an application-level restart.
+- Kernel log showed `Undervoltage detected!` followed by `Voltage normalised`.
+- `vcgencmd get_throttled` returned `0x50000`: current voltage was normal, but
+  undervoltage/throttling had happened since boot.
+
+Mitigation:
+
+- use a stable high-current 5 V supply and low-resistance cable;
+- avoid marginal USB power ports or loose connectors;
+- Dashboard `/api/status` now includes `system.power` from
+  `vcgencmd get_throttled`;
+- Dashboard displays `电源正常`, `电源异常`, or `曾低电压`.
+
+Interpretation of the current power flags:
+
+- `under_voltage` / `throttled`: problem is happening now;
+- `under_voltage_seen` / `throttled_seen`: it happened sometime since boot;
+- `raw=0x50000`: no current low voltage, but low voltage and throttling were
+  seen earlier in this boot.
+
+### Xiaozhi reconnect logging
+
+Xiaozhi WebSocket can close with code `1005` and then reconnect successfully.
+This used to produce a large Traceback even though the recovery path was
+working.
+
+Fix:
+
+- close codes `1000`, `1001`, and `1005`, plus `ConnectionClosedOK`, are now
+  treated as expected reconnect events;
+- YRobot logs a concise warning and increments reconnects;
+- unexpected exceptions still use `logger.exception()` and keep the full
+  Traceback.
+
+This makes real failures easier to see in `/api/logs` and `journalctl`.
+
+### IK errors from official recorded emotions
+
+**Symptom:** during conversation the robot froze, then made a sudden movement,
+then recovered.
+
+Evidence from `journalctl`:
+
+- YRobot logged automatic emotions such as
+  `xz emotion happy -> recorded cheerful1` and
+  `xz emotion winking -> recorded welcoming1`.
+- Within the same seconds, the daemon logged:
+  `IK error: WARNING: Collision detected or head pose not achievable!`
+
+Root cause: automatic Xiaozhi emotions were using the official recorded-emotion
+library. Some recorded moves can request poses that are unreachable or collide
+with the current composed YRobot posture on this robot. The daemon rejects IK,
+which looks like a short freeze followed by a catch-up movement.
+
+Fix:
+
+- automatic Xiaozhi emotions no longer call recorded emotions;
+- automatic emotions now use only bounded programmatic moves from
+  `EMOTION_FALLBACK_MOVE` (`nod`, `tilt`, `surprise`, etc.);
+- manual Dashboard/API motion still keeps access to recorded moves and dances.
+
+Operational rule:
+
+Do not re-enable official recorded moves for **automatic** model emotions unless
+they are first filtered through a reachability/safety layer. If the daemon logs
+`Collision detected or head pose not achievable`, check for a nearby
+`xz emotion ... -> recorded ...` line before looking elsewhere.
+
 ### Xiaozhi configuration
 
 Production configuration is read from environment variables, falling back
