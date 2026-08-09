@@ -118,6 +118,19 @@ class Yrobot(ReachyMiniApp):
         import time as _sleep
 
         # ── Safe motor startup with slow Choreographer rise ───────
+        # Snapshot the real pose before our 50 Hz writer starts. The first
+        # Choreographer targets blend from this pose so startup never snaps
+        # from sleep directly into the internal idle pose.
+        startup_head_pose = None
+        startup_antennas = None
+        try:
+            startup_head_pose = reachy_mini.get_current_head_pose()
+            _, antenna_joints = reachy_mini.get_current_joint_positions()
+            startup_antennas = (float(antenna_joints[0]), float(antenna_joints[1]))
+            logger.info("captured startup pose for smooth motor handoff")
+        except Exception as exc:
+            logger.warning("could not capture startup pose before motor enable: %s", exc)
+
         # Avoid goto_target (defaults to a short snap). Enable the motors
         # before starting the pose writer; a failed enable is not recoverable
         # by repeatedly sending set_target commands.
@@ -138,7 +151,12 @@ class Yrobot(ReachyMiniApp):
             raise RuntimeError("Reachy motors could not be enabled") from motor_error
         RUNTIME_HEALTH.update(motor_ready=True)
 
-        choreo = Choreographer(reachy_mini)
+        choreo = Choreographer(
+            reachy_mini,
+            startup_head_pose=startup_head_pose,
+            startup_antennas=startup_antennas,
+            startup_blend_duration=4.0,
+        )
         # Keep the low-speed parameters active during the complete startup
         # rise. Restore normal tracking only after the worker has run for 8s.
         choreo._gaze._max_vel = 0.3

@@ -138,3 +138,43 @@ def test_motion_inputs_are_applied_by_motion_thread_only():
     assert choreo._move_start == 10.0
     assert choreo._gaze.target == 1.0
     assert choreo._last_voice_at == 11.0
+
+
+def test_startup_blend_first_frame_uses_captured_robot_pose():
+    class FakeMini:
+        pass
+
+    startup_pose = rpy_pose(0.2, -0.1, 0.4, 0.03)
+    startup_antennas = (0.7, -0.6)
+    choreo = Choreographer(
+        FakeMini(),
+        startup_head_pose=startup_pose,
+        startup_antennas=startup_antennas,
+        startup_blend_duration=4.0,
+    )
+
+    pose, antennas = choreo._compose(t=0.0, now=10.0, dt=0.02)
+
+    assert np.allclose(pose, startup_pose)
+    assert np.allclose(antennas, startup_antennas)
+
+
+def test_startup_blend_finishes_and_releases_to_normal_motion():
+    class FakeMini:
+        pass
+
+    startup_pose = rpy_pose(0.2, -0.1, 0.4, 0.03)
+    choreo = Choreographer(
+        FakeMini(),
+        startup_head_pose=startup_pose,
+        startup_antennas=(0.7, -0.6),
+        startup_blend_duration=1.0,
+    )
+
+    choreo._compose(t=0.0, now=10.0, dt=0.02)
+    pose, antennas = choreo._compose(t=1.1, now=11.1, dt=0.02)
+
+    assert choreo._startup_pose is None
+    assert choreo._startup_antennas is None
+    assert not np.allclose(pose, startup_pose)
+    assert not np.allclose(antennas, (0.7, -0.6))

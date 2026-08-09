@@ -237,6 +237,11 @@ def _wrap(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
+def _smoothstep(alpha: float) -> float:
+    alpha = max(0.0, min(1.0, alpha))
+    return alpha * alpha * (3.0 - 2.0 * alpha)
+
+
 class GazeSpring:
     """Critically damped 2nd-order tracker: fast, smooth, never overshoots."""
 
@@ -271,7 +276,13 @@ class Choreographer(threading.Thread):
     YAW_LIMIT = 2.4  # rad, stay inside the ±160° body envelope
     ANTENNA_NEUTRAL = 0.17
 
-    def __init__(self, mini) -> None:
+    def __init__(
+        self,
+        mini,
+        startup_head_pose: np.ndarray | None = None,
+        startup_antennas: tuple[float, float] | list[float] | np.ndarray | None = None,
+        startup_blend_duration: float = 3.0,
+    ) -> None:
         super().__init__(name="yrobot-motion", daemon=True)
         self._mini = mini
         self._halt = threading.Event()
@@ -313,6 +324,34 @@ class Choreographer(threading.Thread):
         self.BODY_YAW_LIMIT = math.radians(150.0)
         self.BODY_FOLLOW_HEAD_DEG = 10.0   # start turning body beyond 10°
         self.BODY_YAW_SPEED = 1.2          # rad/s, brisk but smooth body turn
+        self._startup_pose = self._valid_pose_or_none(startup_head_pose)
+        self._startup_antennas = self._valid_antennas_or_none(startup_antennas)
+        self._startup_blend_duration = max(0.0, float(startup_blend_duration))
+        self._startup_started_at: float | None = None
+        if self._startup_antennas is not None:
+            self._antennas = self._startup_antennas.copy()
+
+    @staticmethod
+    def _valid_pose_or_none(pose: np.ndarray | None) -> np.ndarray | None:
+        if pose is None:
+            return None
+        arr = np.asarray(pose, dtype=np.float64)
+        if arr.shape != (4, 4):
+            logger.warning("Ignoring startup head pose with invalid shape: %s", arr.shape)
+            return None
+        return arr
+
+    @staticmethod
+    def _valid_antennas_or_none(
+        antennas: tuple[float, float] | list[float] | np.ndarray | None,
+    ) -> np.ndarray | None:
+        if antennas is None:
+            return None
+        arr = np.asarray(antennas, dtype=np.float64)
+        if arr.shape != (2,):
+            logger.warning("Ignoring startup antennas with invalid shape: %s", arr.shape)
+            return None
+        return arr
 
     # -- thread-safe inputs -------------------------------------------------
 
@@ -619,4 +658,36 @@ class Choreographer(threading.Thread):
         self._last_listen = listen
         goal = goal * (1.0 - self._still) + self._antennas * self._still  # freeze in place
         self._antennas += (goal - self._antennas) * min(dt / 0.12, 1.0)
+        pose, antennas = self._apply_startup_blend(pose, self._antennas, now)
+        self._antennas = antennas.copy()
         return pose, [float(self._antennas[0]), float(self._antennas[1])]
+
+    def _apply_startup_blend(
+        self,
+        pose: np.ndarray,
+        antennas: np.ndarray,
+        now: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if (
+            self._startup_pose is None
+            and self._startup_antennas is None
+        ) or self._startup_blend_duration <= 0:
+            return pose, antennas
+
+        if self._startup_started_at is None:
+            self._startup_started_at = now
+        alpha = _smoothstep((now - self._startup_started_at) / self._startup_blend_duration)
+
+        if alpha >= 1.0:
+            self._startup_pose = None
+            self._startup_antennas = None
+            return pose, antennas
+
+        blended_pose = pose
+        if self._startup_pose is not None:
+            blended_pose = _blend_pose(self._startup_pose, pose, alpha)
+
+        blended_antennas = antennas
+        if self._startup_antennas is not None:
+            blended_antennas = self._startup_antennas * (1.0 - alpha) + antennas * alpha
+        return blended_pose, blended_antennas
