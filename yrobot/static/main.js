@@ -3,8 +3,6 @@ const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
 const statusSys = document.getElementById("status-sys");
-const statusHermes = document.getElementById("status-hermes");
-const statusHermesUrl = document.getElementById("status-hermes-url");
 const chatMiniEntries = document.getElementById("chat-mini-entries");
 const volumeSlider = document.getElementById("volume-slider");
 const volumeMute = document.getElementById("volume-mute");
@@ -64,10 +62,6 @@ function showStatus(status) {
   const stateLabels = { active: "活跃", sleeping: "待机", deep_sleep: "休眠", safe_mode: "安全模式" };
   statusService.textContent = stateLabels[status.service.state] || status.service.state;
   statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
-
-  const hermes = status.integrations.hermes_tools;
-  statusHermes.textContent = stateText(hermes.enabled);
-  statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
 
   statusPanel.classList.remove("hidden");
   if (status.system) renderSystem(status.system, status.motion);

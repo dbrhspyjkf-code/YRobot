@@ -47,6 +47,7 @@ header { height: 76px; display: flex; align-items: center; justify-content: spac
 .panel-heading.compact { align-items: center; margin-bottom: 18px; }
 .panel-heading h2, .privacy-card h2 { margin: 0; font-size: 24px; letter-spacing: -0.035em; }
 .status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.chat-mini + .status-grid { margin-top: 14px; }
 .status-item { min-height: 104px; padding: 15px; border: 1px solid var(--line); border-radius: 12px; background: rgba(248, 250, 247, 0.72); }
 .status-item span { display: block; margin-bottom: 12px; color: var(--muted); font-size: 11px; font-weight: 800; }
 .status-item b { display: block; margin-bottom: 7px; font-size: 16px; overflow-wrap: anywhere; }

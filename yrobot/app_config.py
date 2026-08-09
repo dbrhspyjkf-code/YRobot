@@ -764,10 +764,6 @@ def build_status(
                 "url": settings.ha_url,
                 "whitelist_path": settings.ha_whitelist_path,
             },
-            "hermes_tools": {
-                "enabled": settings.hermes_tools_enabled,
-                "url": settings.hermes_tools_url,
-            },
             "local_info": {
                 "enabled": settings.local_info_enabled,
             },
