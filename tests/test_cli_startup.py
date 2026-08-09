@@ -97,3 +97,34 @@ def test_xiaozhi_unexpected_error_stays_exceptional(main_module):
     err = RuntimeError("bad decode")
 
     assert main_module._is_expected_xiaozhi_disconnect(err) is False
+
+
+def test_xiaozhi_auto_emotion_uses_safe_fallback_not_recorded(main_module):
+    class FakeChoreo:
+        def __init__(self):
+            self.moves: list[str] = []
+            self.recorded: list[str] = []
+
+        def play_move(self, name):
+            self.moves.append(name)
+            return True
+
+        def play_recorded(self, name, recorded):
+            self.recorded.append(name)
+            return True
+
+    def recorded_provider():
+        raise AssertionError("automatic emotion should not load recorded moves")
+
+    choreo = FakeChoreo()
+
+    main_module._handle_xiaozhi_emotion(
+        choreo,
+        "happy",
+        {},
+        recorded_provider,
+        prefer_recorded=False,
+    )
+
+    assert choreo.moves == ["nod"]
+    assert choreo.recorded == []
