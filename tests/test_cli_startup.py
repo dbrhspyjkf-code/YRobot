@@ -128,3 +128,25 @@ def test_xiaozhi_auto_emotion_uses_safe_fallback_not_recorded(main_module):
 
     assert choreo.moves == ["nod"]
     assert choreo.recorded == []
+
+
+def test_speaker_gaze_uses_audio_when_visual_disagrees(main_module):
+    target, source = main_module._fuse_speaker_gaze(
+        audio_yaw=0.0,
+        visual_yaw=1.2,
+        max_visual_audio_delta=0.5,
+    )
+
+    assert target == 0.0
+    assert source == "audio"
+
+
+def test_speaker_gaze_blends_visual_when_it_agrees(main_module):
+    target, source = main_module._fuse_speaker_gaze(
+        audio_yaw=0.0,
+        visual_yaw=0.2,
+        max_visual_audio_delta=0.5,
+    )
+
+    assert 0.0 < target < 0.2
+    assert source == "audio+visual"

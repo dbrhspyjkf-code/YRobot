@@ -132,6 +132,11 @@ def doa_to_yaw_delta(angle: float) -> float:
     return math.pi / 2 - angle
 
 
+def doa_confidence_weight(device_speech: bool) -> float:
+    """Weight a DoA sample; hardware-confirmed speech should dominate."""
+    return 3.0 if device_speech else 1.0
+
+
 class SoundCompass(threading.Thread):
     """Polls DoA at 12 Hz and publishes stable world-frame gaze targets."""
 
@@ -204,7 +209,7 @@ class SoundCompass(threading.Thread):
             # confidence boost: two device-confirmed samples react faster,
             # while three software-confirmed samples still work during
             # XVF double-talk suppression.
-            confidence = 0.1 if device_speech else 1.0
+            confidence = doa_confidence_weight(device_speech)
             samples.append((now, yaw, confidence))
             samples = [(t, y, w) for t, y, w in samples if now - t <= self.WINDOW_S]
             total = sum(w for _, _, w in samples)
@@ -316,6 +321,8 @@ class Choreographer(threading.Thread):
         self._set_target_err_interval = 1.0  # rate-limit error logs
         self._set_target_err_suppressed = 0
         self._status_lock = threading.Lock()
+        self._gaze_source = "idle"
+        self._gaze_target_updated_at = 0.0
         self._loop_hz = 0.0
         self._last_tick_ms = 0.0
         self._last_loop_at = 0.0
@@ -420,9 +427,16 @@ class Choreographer(threading.Thread):
                 self._recorded_start = start
                 self._recorded_duration = float(move.duration)
             elif command == "set_gaze_target":
-                target, voice_at = payload
+                if len(payload) == 2:
+                    target, voice_at = payload
+                    source = "audio"
+                else:
+                    target, voice_at, source = payload
                 self._gaze.target = target
                 self._last_voice_at = voice_at
+                with self._status_lock:
+                    self._gaze_source = str(source)
+                    self._gaze_target_updated_at = time.time()
             elif command == "hold_still":
                 self._still_until = max(self._still_until, float(payload))
             elif command == "release_still":
@@ -457,10 +471,15 @@ class Choreographer(threading.Thread):
         ant = ant_delta * fade
         return roll, pitch, yaw, ant
 
-    def set_gaze_target(self, world_yaw: float, now: float | None = None) -> None:
+    def set_gaze_target(
+        self,
+        world_yaw: float,
+        now: float | None = None,
+        source: str = "audio",
+    ) -> None:
         target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
         voice_at = time.monotonic() if now is None else now
-        self._enqueue_command("set_gaze_target", (target, voice_at))
+        self._enqueue_command("set_gaze_target", (target, voice_at, source))
 
     def current_yaw(self) -> float:
         return self._gaze.pos
@@ -490,6 +509,13 @@ class Choreographer(threading.Thread):
                 "deadline_misses": self._deadline_misses,
                 "set_target_failures": self._set_target_failures,
                 "antennas": [float(value) for value in self._antennas],
+                "gaze_target_rad": round(float(self._gaze.target), 3),
+                "gaze_source": self._gaze_source,
+                "gaze_age_s": (
+                    round(time.time() - self._gaze_target_updated_at, 1)
+                    if self._gaze_target_updated_at
+                    else None
+                ),
             }
 
     def run(self) -> None:

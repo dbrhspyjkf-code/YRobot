@@ -131,6 +131,22 @@ def _handle_xiaozhi_emotion(
         logger.info("xz emotion %s -> safe move %s", emo, fb_name)
 
 
+def _fuse_speaker_gaze(
+    audio_yaw: float,
+    visual_yaw: float | None,
+    *,
+    max_visual_audio_delta: float = math.radians(28.0),
+) -> tuple[float, str]:
+    """Use visual gaze only when it agrees with the audio speaker direction."""
+    if visual_yaw is None:
+        return audio_yaw, "audio"
+    delta = abs((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi)
+    if delta > max_visual_audio_delta:
+        return audio_yaw, "audio"
+    fused = audio_yaw + ((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi) * 0.45
+    return fused, "audio+visual"
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -263,15 +279,34 @@ class Yrobot(ReachyMiniApp):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
         _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
+        _last_gaze_log = [0.0]
 
-        # Fusion arbitration: while the face tracker has a confirmed face in
-        # view (_visual_gaze is not None), SoundCompass backs off.  As soon
-        # as the face is lost the sound compass immediately takes over.
+        def _set_speaker_gaze(audio_yaw: float) -> None:
+            visual_yaw = None
+            if _visual_gaze[0] is not None:
+                vy, vt = _visual_gaze[0]
+                if time.time() - vt < 0.8:
+                    visual_yaw = vy
+            target, source = _fuse_speaker_gaze(audio_yaw, visual_yaw)
+            choreo.set_gaze_target(target, source=source)
+            if time.time() - _last_gaze_log[0] > 2.0:
+                _last_gaze_log[0] = time.time()
+                visual_label = "none" if visual_yaw is None else f"{math.degrees(visual_yaw):.0f}°"
+                logger.info(
+                    "gaze target source=%s audio=%.0f° visual=%s target=%.0f°",
+                    source,
+                    math.degrees(audio_yaw),
+                    visual_label,
+                    math.degrees(target),
+                )
+
+        # Audio is the primary speaker signal. Vision only refines the target
+        # when a recent face agrees with the DoA direction; it never mutes DoA.
         compass = SoundCompass(
             reachy_mini.media,
             current_head_yaw=_current_head_yaw,
-            user_active=lambda: _visual_gaze[0] is None,
-            on_target=choreo.set_gaze_target,
+            user_active=lambda: _user_speaking[0],
+            on_target=_set_speaker_gaze,
         )
         compass.start()
         _sleep.sleep(1.0)
@@ -702,13 +737,6 @@ class Yrobot(ReachyMiniApp):
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0.1)
                             continue
-                        # Feed latest visual gaze if available (rate-limited)
-                        if _visual_gaze[0] is not None:
-                            vy, vt = _visual_gaze[0]
-                            _vg = getattr(choreo, "_last_vis_gaze_at", 0)
-                            if time.time() - vt < 0.5 and time.time() - _vg > 0.5:
-                                choreo.set_gaze_target(vy)
-                                choreo._last_vis_gaze_at = time.time()
                         frames = []
                         rms_max = 0
                         for _ in range(16):

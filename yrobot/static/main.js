@@ -2,6 +2,7 @@ const statusPanel = document.getElementById("status-panel");
 const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
+const statusSys = document.getElementById("status-sys");
 const statusHermes = document.getElementById("status-hermes");
 const statusHermesUrl = document.getElementById("status-hermes-url");
 const chatMiniEntries = document.getElementById("chat-mini-entries");
@@ -69,7 +70,7 @@ function showStatus(status) {
   statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
 
   statusPanel.classList.remove("hidden");
-  if (status.system) renderSystem(status.system);
+  if (status.system) renderSystem(status.system, status.motion);
 }
 
 async function loadStatus() {
@@ -82,7 +83,7 @@ async function loadStatus() {
     showAudio(result.status.audio);
   } catch (error) {
     statusPanel.classList.remove("hidden");
-  if (status.system) renderSystem(status.system);
+    statusSys.textContent = "--";
     statusService.textContent = "读取失败";
     statusUptime.textContent = error.message;
   } finally {
@@ -635,7 +636,7 @@ setInterval(loadStatus, 10000);
 loadChatMini();
 setInterval(loadChatMini, 2000);
 
-function renderSystem(sys) {
+function renderSystem(sys, motion) {
   const el = document.getElementById("status-sys");
   if (!el) return;
   let power = "";
@@ -648,7 +649,12 @@ function renderSystem(sys) {
       power = " · 电源正常";
     }
   }
-  el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C${power}`;
+  let gaze = "";
+  if (motion?.gaze_source) {
+    const deg = motion.gaze_target_rad === undefined ? "" : ` ${Math.round(motion.gaze_target_rad * 180 / Math.PI)}°`;
+    gaze = ` · 视线 ${motion.gaze_source}${deg}`;
+  }
+  el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C${power}${gaze}`;
 }
 
 let _chatMiniLastRendered = "";

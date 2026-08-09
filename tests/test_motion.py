@@ -12,6 +12,7 @@ from yrobot.motion import (
     LISTEN,
     SoundCompass,
     circular_mean,
+    doa_confidence_weight,
     doa_to_yaw_delta,
     head_yaw_of,
     rpy_pose,
@@ -34,6 +35,10 @@ def test_circular_mean_handles_wraparound():
 def test_weighted_circular_mean_prioritizes_device_confirmed_samples():
     mean = weighted_circular_mean([(0.0, 2.0), (math.pi / 2, 1.0)])
     assert 0.0 < mean < math.pi / 4
+
+
+def test_device_confirmed_doa_has_higher_weight():
+    assert doa_confidence_weight(True) > doa_confidence_weight(False)
 
 
 def test_rpy_pose_yaw_roundtrip():
@@ -138,6 +143,20 @@ def test_motion_inputs_are_applied_by_motion_thread_only():
     assert choreo._move_start == 10.0
     assert choreo._gaze.target == 1.0
     assert choreo._last_voice_at == 11.0
+
+
+def test_gaze_target_status_tracks_source():
+    class FakeMini:
+        pass
+
+    choreo = Choreographer(FakeMini())
+    choreo.set_gaze_target(1.0, now=11.0, source="audio+visual")
+    choreo._apply_commands()
+
+    status = choreo.get_status()
+
+    assert status["gaze_target_rad"] == 1.0
+    assert status["gaze_source"] == "audio+visual"
 
 
 def test_startup_blend_first_frame_uses_captured_robot_pose():
