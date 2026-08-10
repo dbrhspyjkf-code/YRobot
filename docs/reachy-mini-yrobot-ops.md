@@ -331,6 +331,24 @@ journal entries. At that moment camera capture was disabled by dashboard state
 (`running=false`), so `/api/camera/frame` returned 404. Re-enable capture and
 check changing frame hashes before recording camera acceptance.
 
+### QWEN audio output repair
+
+QWEN text replies arrived but had no audible playback because the system ALSA
+default PCM is `null`; the original QWEN `aplay` invocation did not choose the
+Reachy sink. QWEN playback now explicitly uses `-D reachymini_audio_sink`.
+
+- feature commit: `9a098df`;
+- production commit: `4190180`;
+- exact two-file rollback backup:
+  `/home/pollen/.local/state/yrobot/backups/qwen-audio-sink-20260810-174517`;
+- backup-manifest SHA-256:
+  `7a7f0423196742aebad8597c1c7f0d9ea37d227cff034cc17109efac53f42d4d`.
+
+The test-first regression, full focused suite, and focused Ruff passed. After
+restart, QWEN was connected with no runtime error, and a short 440 Hz tone was
+sent through `reachymini_audio_sink`. Record only an operator's audible report
+as proof that this physical path is working.
+
 Deployment backup:
 
 ```text

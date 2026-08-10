@@ -122,6 +122,21 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 - Camera capture is presently disabled (`running=false`) by dashboard state,
   so `/api/camera/frame` returns 404. This is separate from the QWEN fix and
   must be enabled before camera acceptance is marked complete.
+- Diagnosed silent QWEN speech with direct ALSA evidence: the system default
+  PCM is `null`, while QWEN's `aplay` command had no device argument. QWEN
+  text responses and PCM delivery were therefore present but discarded.
+- Added a failing test requiring QWEN playback to target
+  `reachymini_audio_sink`, then added only `-D reachymini_audio_sink` to the
+  `aplay` command. The runtime suite, full focused suite, and focused Ruff
+  passed. Feature fix commit: `9a098df`; production fix commit: `4190180`.
+- Backed up the two changed files at
+  `/home/pollen/.local/state/yrobot/backups/qwen-audio-sink-20260810-174517`
+  (manifest SHA-256
+  `7a7f0423196742aebad8597c1c7f0d9ea37d227cff034cc17109efac53f42d4d`).
+- Restarted QWEN after the audio fix. It returned to `connected` with no error;
+  motion was about 49.9 Hz with zero target failures and no error-level journal
+  entries. A short 440 Hz test tone was sent to `reachymini_audio_sink`; audible
+  confirmation from the operator is still required.
 
 ## Decisions that must remain stable
 
@@ -199,6 +214,9 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | Duplicate response regression | Test first failed, then QWEN runtime suite, full focused suite, Ruff | Fixed; `5c6bd29` / `a6bfb02` |
 | 2026-08-10 | QWEN repaired activation | QWEN connected/no error; motion 52.5 Hz; target failures 0; journal errors 0 | Passed |
 | 2026-08-10 | Camera state | Dashboard capture `running=false`; frame endpoint 404 | Pending enable and hash check |
+| 2026-08-10 | QWEN audio-sink regression | Test first failed, then runtime suite, full focused suite, Ruff | Fixed; `9a098df` / `4190180` |
+| 2026-08-10 | QWEN post-audio restart | Connected/no error; motion 49.9 Hz; target failures 0; journal errors 0 | Passed |
+| 2026-08-10 | Speaker path | 440 Hz tone sent to `reachymini_audio_sink` | Pending audible confirmation |
 | 2026-08-10 | QWEN physical acceptance | Audible speech, interruption, languages, and appliance state | Ready for operator observation |
 
 ## Update protocol
