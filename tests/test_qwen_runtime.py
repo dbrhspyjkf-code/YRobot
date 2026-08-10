@@ -134,3 +134,9 @@ def test_qwen_idle_timeout_is_reconnectable():
 
     assert _qwen_should_reconnect(error) is True
     assert _qwen_should_reconnect(RuntimeError("invalid API key")) is False
+
+
+def test_qwen_internal_service_error_is_reconnectable():
+    error = RuntimeError("Internal service error: null")
+
+    assert _qwen_should_reconnect(error) is True

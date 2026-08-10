@@ -50,6 +50,7 @@ _MOTION_SET_TARGET_RESTART_FAILURES = 1500  # ~30s at 50 Hz
 _QWEN_RECONNECT_MESSAGES = (
     "no response was generated for 300 seconds",
     "session was closed",
+    "internal service error",
 )
 
 
