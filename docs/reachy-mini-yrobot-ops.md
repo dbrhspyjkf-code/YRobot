@@ -538,6 +538,23 @@ because it is ambiguous and could affect other devices. After restarting
 `yrobot.service`, QWEN reported connected, audio input enabled, the aliases
 were loaded by `ToolExecutor`, and pre-test HA state stayed `off`.
 
+### 2026-08-10 QWEN 1011 internal-error reconnect
+
+The operator pasted a QWEN WebSocket failure:
+`ConnectionClosedError: received 1011 ... Internal service error: null`.
+Read-only status showed YRobot had entered `safe_mode`, QWEN `ws_state=error`,
+and `last_error` was `Internal service error: null`. This was the same class
+of provider-side transient close as the previous idle timeout, but the
+reconnect classifier only handled the 300-second idle text.
+
+Added `internal service error` to reconnectable QWEN errors so the runtime
+flushes playback, marks reconnecting, waits briefly, and rebuilds the QWEN
+WebSocket instead of entering safe mode. A regression test first failed, then
+the focused QWEN/tool/runtime/config/backend suite passed (78 tests),
+`py_compile` passed, and the narrowed Ruff check passed. Production commit:
+`57d3c6d`; feature worktree commit: `76c5d6c`. The service was restarted and
+reported `active`, QWEN `connected`, audio input enabled, and no runtime error.
+
 Deployment backup:
 
 ```text
