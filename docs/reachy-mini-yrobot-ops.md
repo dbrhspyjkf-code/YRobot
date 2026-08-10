@@ -309,6 +309,28 @@ Current deployment state:
 - audible interruption, multilingual speech, and a physical allowlisted-light
   check remain operator acceptance tests; do not mark them passed from logs.
 
+### Repaired duplicate wake response
+
+The first QWEN hardware session exposed `Conversation already has an active
+response`: repeated `你好小白` transcripts within an already active semantic-VAD
+window sent a second `response.create`. The repair makes the wake gate ignore
+repeated wake transcripts until the active window expires. It was added
+test-first, then verified with the focused runtime suite, the full 79-test
+focused suite, and focused Ruff.
+
+- feature commit: `5c6bd29`;
+- production commit: `a6bfb02`;
+- exact two-file rollback backup:
+  `/home/pollen/.local/state/yrobot/backups/qwen-response-guard-20260810-174027`;
+- backup-manifest SHA-256:
+  `52baf212e2dbbc2a66c4587057c8d78a70cc3819e603c64d58d530dab24d11fe`.
+
+After the repaired restart, QWEN reported `connected` with no runtime error;
+the motion loop was about 52.5 Hz with zero target failures and no error-level
+journal entries. At that moment camera capture was disabled by dashboard state
+(`running=false`), so `/api/camera/frame` returned 404. Re-enable capture and
+check changing frame hashes before recording camera acceptance.
+
 Deployment backup:
 
 ```text

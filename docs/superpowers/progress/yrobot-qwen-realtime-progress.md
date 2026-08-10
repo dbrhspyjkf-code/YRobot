@@ -103,6 +103,25 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   connection `connected`, and no error; the official daemon remains active.
 - After the QWEN restart, motion is ready and alive at about 50 Hz with zero
   target failures, and the post-restart error-level journal count is zero.
+- Diagnosed the first QWEN runtime failure as a duplicate `response.create`:
+  a second wake phrase received during an already active semantic-VAD session
+  reactivated the wake gate. The provider closed the conversation with
+  `Conversation already has an active response`.
+- Added a failing regression test, then changed `WakeGate` to ignore repeated
+  wake transcripts while already active. The focused runtime suite passed, then
+  the full 79-test focused suite and focused Ruff passed. Feature fix commit:
+  `5c6bd29`; production fix commit: `a6bfb02`.
+- Backed up the two changed production files at
+  `/home/pollen/.local/state/yrobot/backups/qwen-response-guard-20260810-174027`
+  (manifest SHA-256
+  `52baf212e2dbbc2a66c4587057c8d78a70cc3819e603c64d58d530dab24d11fe`).
+- Restarted into the repaired QWEN runtime at 2026-08-10 17:42:00+08. It now
+  reports configured/running `qwen`, `connected`, and no error; motion is
+  alive at about 52.5 Hz with zero target failures and no error-level journal
+  entries after startup.
+- Camera capture is presently disabled (`running=false`) by dashboard state,
+  so `/api/camera/frame` returns 404. This is separate from the QWEN fix and
+  must be enabled before camera acceptance is marked complete.
 
 ## Decisions that must remain stable
 
@@ -131,6 +150,8 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 - Existing full pytest discovery references modules currently deleted from the
   production working tree. Feature-specific tests are authoritative until that
   unrelated migration is reconciled.
+- Camera hardware verification remains incomplete while dashboard capture is
+  disabled; do not infer camera health from the active official media daemon.
 
 ## Next action
 
@@ -138,7 +159,8 @@ Perform the physical acceptance sequence with QWEN: say `你好小白`, converse
 Chinese then English then Chinese, interrupt playback ten times, ask for the
 weather, operate one explicitly allowlisted low-risk light, and confirm an
 unknown device plus a blocked class take no action. Record the audible and
-physical observations before testing rollback to XIAOZHI.
+physical observations, re-enable camera capture and verify changing frame
+hashes, before testing rollback to XIAOZHI.
 
 ## Verification log
 
@@ -174,7 +196,10 @@ physical observations before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN credential preflight | All three required entries configured; `ha.env` mode `0600`; whitelist present | Ready |
 | 2026-08-10 | QWEN activation | One YRobot restart; backend API reports QWEN connected/no error | Passed |
 | 2026-08-10 | QWEN post-restart health | Official daemon active; motion ~50 Hz; target failures 0; journal errors 0 | Passed |
-| 2026-08-10 | QWEN physical acceptance | Audible speech, interruption, languages, and appliance state | Pending operator observation |
+| 2026-08-10 | Duplicate response regression | Test first failed, then QWEN runtime suite, full focused suite, Ruff | Fixed; `5c6bd29` / `a6bfb02` |
+| 2026-08-10 | QWEN repaired activation | QWEN connected/no error; motion 52.5 Hz; target failures 0; journal errors 0 | Passed |
+| 2026-08-10 | Camera state | Dashboard capture `running=false`; frame endpoint 404 | Pending enable and hash check |
+| 2026-08-10 | QWEN physical acceptance | Audible speech, interruption, languages, and appliance state | Ready for operator observation |
 
 ## Update protocol
 
