@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 _STARTUP_FAIL_COUNTER_PATH = "/tmp/.yrobot_startup_failures"
 _MAX_STARTUP_FAILURES = 3
 _MOTION_SET_TARGET_RESTART_FAILURES = 1500  # ~30s at 50 Hz
+_QWEN_RECONNECT_MESSAGES = (
+    "no response was generated for 300 seconds",
+    "session was closed",
+)
 
 
 def _record_startup_failure() -> int:
@@ -92,6 +96,11 @@ def _start_motion_connection_watchdog(choreo, stop_event: threading.Event) -> th
     thread = threading.Thread(target=_watch, name="motion-connection-watchdog", daemon=True)
     thread.start()
     return thread
+
+
+def _qwen_should_reconnect(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(fragment in message for fragment in _QWEN_RECONNECT_MESSAGES)
 
 
 class _XiaozhiReconnect(Exception):
@@ -427,7 +436,18 @@ class Yrobot(ReachyMiniApp):
                         pass
 
         try:
-            asyncio.run(run_qwen())
+            while not stop_event.is_set():
+                try:
+                    asyncio.run(run_qwen())
+                except Exception as exc:
+                    if not _qwen_should_reconnect(exc):
+                        raise
+                    logger.warning("QWEN session closed, reconnecting: %s", exc)
+                    RUNTIME_HEALTH.increment("reconnects")
+                    RUNTIME_HEALTH.update(ws_state="reconnecting", last_error=str(exc))
+                    playback.flush()
+                    choreo.set_mode(IDLE)
+                    stop_event.wait(2.0)
         finally:
             RUNTIME_HEALTH.update(ws_state="stopped", tts_active=False, audio_queue=0)
             playback.close()

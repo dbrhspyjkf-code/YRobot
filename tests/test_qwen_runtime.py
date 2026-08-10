@@ -6,7 +6,7 @@ import pytest
 import yrobot.main as main_module
 from yrobot.audio_runtime import PcmPlayback, WakeGate
 from yrobot.config import Settings
-from yrobot.main import Yrobot
+from yrobot.main import Yrobot, _qwen_should_reconnect
 
 
 def make_robot(monkeypatch):
@@ -125,3 +125,12 @@ def test_qwen_wake_is_not_reactivated_while_active():
 
     assert gate.observe_transcript("你好小白", now=100.0) is True
     assert gate.observe_transcript("你好小白", now=101.0) is False
+
+
+def test_qwen_idle_timeout_is_reconnectable():
+    error = RuntimeError(
+        "Your session was closed because no response was generated for 300 seconds."
+    )
+
+    assert _qwen_should_reconnect(error) is True
+    assert _qwen_should_reconnect(RuntimeError("invalid API key")) is False
