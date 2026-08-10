@@ -433,6 +433,23 @@ QWEN/tool/runtime/config/backend suite passed (74 tests), Ruff passed, and the
 service was restarted. Production commit: `8931388`; feature worktree commit:
 `fd280b2`. Re-run the spoken `书台灯` acceptance next.
 
+### 2026-08-10 HA local spoken-control repair
+
+The repeated spoken test still left `书台灯` at `on`: QWEN replied with
+`关闭书台灯`, but no server tool event was emitted. The safer fallback is now
+local and deterministic: completed QWEN STT text is matched only against
+robot-local allowlisted phrases, then executed through the same
+`control_allowed_device` path. No arbitrary entity IDs or non-allowlisted
+devices are accepted.
+
+The `书台灯` whitelist now also includes `书灯` aliases for ASR variants.
+Regression tests first failed on the missing spoken-control entrypoint; after
+the fix the focused QWEN/tool/runtime/config/backend suite passed (76 tests),
+`py_compile` passed, and narrowed Ruff checks passed. Production commit:
+`ce35ed7`; feature worktree commit: `c5eb9eb`. The service was restarted and
+reported QWEN connected with no runtime error. Re-run the spoken close-lamp
+acceptance using `你好小白，关闭书灯` or `你好小白，关闭书台灯`.
+
 Deployment backup:
 
 ```text
