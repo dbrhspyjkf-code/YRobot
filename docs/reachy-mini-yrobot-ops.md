@@ -470,6 +470,24 @@ Logs show `关闭书` triggered `{'ok': True, 'device': '书台灯', 'action':
 after the sequence reported `书台灯` as `on`, matching the final open command.
 The operator replied `好了`.
 
+### 2026-08-10 QWEN idle reconnect repair
+
+After successful HA voice acceptance, the operator reported that 小白 could not
+wake. Read-only status showed the root cause was not the wake phrase or mic:
+audio input was enabled and the mic was available, but YRobot was in
+`safe_mode` with QWEN `ws_state=error`. The provider error was `Your session was
+closed because no response was generated for 300 seconds.`
+
+The immediate recovery was a narrow `yrobot.service` restart, which restored
+QWEN `connected`. The code now treats QWEN idle session-close messages as
+reconnectable: it flushes playback, marks the runtime reconnecting, waits
+briefly, and rebuilds the QWEN WebSocket instead of letting the app fall into
+safe mode. A regression test first failed on the missing reconnect classifier;
+after the fix the focused QWEN/tool/runtime/config/backend suite passed
+(77 tests), `py_compile` passed, and the narrowed Ruff check passed. Production
+commit: `4fdb792`; feature worktree commit: `b1e7c35`. The service was
+restarted and reported QWEN connected, mic enabled, and no runtime error.
+
 Deployment backup:
 
 ```text
