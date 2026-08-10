@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.parse
 import urllib.request
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from yrobot.config import Settings
+
+logger = logging.getLogger(__name__)
 
 VERIFIED_HERMES_BASE = "http://192.168.1.200:8766"
 VERIFIED_HERMES_IOS_API = "http://192.168.1.200:8900"   # hermes-mcp-xiaozhi iOS HTTP API
