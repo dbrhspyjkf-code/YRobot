@@ -602,6 +602,22 @@ QWEN reported connected, audio input enabled, and no runtime error. Local
 executor validation for `关闭走廊灯`, `关闭走廊`, and `走廊关灯` returned success,
 with HA state remaining `off`.
 
+### 2026-08-10 厨房灯 bare-close follow-up
+
+The operator reported that `打开厨房灯` worked but `关闭厨房灯` did not. Logs showed
+the open request was recognized as `打开厨房灯` and executed locally, but the close
+request was recognized only as `关闭。`; there was no device name left for the
+exact allowlist to match, so HA state remained `on`.
+
+Added a guarded local follow-up rule in `ToolExecutor`: bare `关`, `关闭`, or
+`关掉` can control only the last successfully spoken device, only for
+`turn_off`, and only within 30 seconds. Bare `打开` is still ignored. Regression
+tests first failed, then the focused QWEN/tool/runtime/config/backend suite
+passed (84 tests), `py_compile` passed, and Ruff passed. Production commit:
+`7dcda03`; feature worktree commit: `b5e2be4`. After restart, QWEN reported
+connected, audio input enabled, and no runtime error. Local executor validation
+opened `厨房灯` and then bare `关闭` turned it off.
+
 Deployment backup:
 
 ```text
