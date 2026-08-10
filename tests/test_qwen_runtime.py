@@ -6,7 +6,7 @@ import pytest
 import yrobot.main as main_module
 from yrobot.audio_runtime import PcmPlayback, WakeGate
 from yrobot.config import Settings
-from yrobot.main import Yrobot, _qwen_should_reconnect
+from yrobot.main import RecentTranscriptWindow, Yrobot, _qwen_should_reconnect
 
 
 def make_robot(monkeypatch):
@@ -140,3 +140,17 @@ def test_qwen_internal_service_error_is_reconnectable():
     error = RuntimeError("Internal service error: null")
 
     assert _qwen_should_reconnect(error) is True
+
+
+def test_recent_transcript_window_joins_asr_fragments():
+    window = RecentTranscriptWindow(window_s=1.5)
+
+    assert window.candidates("关闭餐", now=100.0) == ["关闭餐"]
+    assert window.candidates("厅灯", now=100.8) == ["厅灯", "关闭餐厅灯"]
+    assert window.candidates("厨房灯", now=103.0) == ["厨房灯"]
+
+
+def test_qwen_vad_default_is_not_overly_aggressive():
+    from yrobot.audio import get_vad_rms_min
+
+    assert get_vad_rms_min() == 0.065

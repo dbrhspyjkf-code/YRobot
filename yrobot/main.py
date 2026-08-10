@@ -54,6 +54,29 @@ _QWEN_RECONNECT_MESSAGES = (
 )
 
 
+class RecentTranscriptWindow:
+    """Build short ASR-fragment candidates without widening device control."""
+
+    def __init__(self, *, window_s: float = 1.5, max_items: int = 4) -> None:
+        self.window_s = window_s
+        self.max_items = max_items
+        self._items: list[tuple[float, str]] = []
+
+    def candidates(self, transcript: str, *, now: float | None = None) -> list[str]:
+        text = transcript.strip()
+        if not text:
+            return []
+        current = time.monotonic() if now is None else now
+        self._items = [
+            (at, value) for at, value in self._items if current - at <= self.window_s
+        ]
+        self._items.append((current, text))
+        self._items = self._items[-self.max_items :]
+        values = [value for _, value in self._items]
+        joined = "".join(values)
+        return [text] if joined == text else [text, joined]
+
+
 def _record_startup_failure() -> int:
     """Increment the persisted failure counter and return the new value."""
     try:
@@ -296,6 +319,7 @@ class Yrobot(ReachyMiniApp):
         )
         playback = PcmPlayback()
         gate = WakeGate()
+        transcript_window = RecentTranscriptWindow()
         mic_stream.start()
         playback.start()
 
@@ -338,19 +362,28 @@ class Yrobot(ReachyMiniApp):
                 await client.set_turn_detection("semantic_vad")
                 await client.request_response()
 
-            async def execute_local_spoken_control(transcript: str) -> None:
-                result = await asyncio.to_thread(tool_executor.execute_spoken_control, transcript)
-                if result is not None:
-                    logger.info("qwen local spoken control: %s", result)
+            async def execute_local_spoken_control(candidates: list[str]) -> None:
+                for candidate in candidates:
+                    result = await asyncio.to_thread(
+                        tool_executor.execute_spoken_control, candidate
+                    )
+                    if result is not None:
+                        logger.info(
+                            "qwen local spoken control: %s transcript=%r",
+                            result,
+                            candidate,
+                        )
+                        return
 
             def on_input_transcript(transcript: str) -> None:
                 logger.info("qwen stt: %s", transcript[:120])
+                candidates = transcript_window.candidates(transcript)
                 if gate.observe_transcript(transcript):
                     logger.info("QWEN wake word detected")
                     choreo.play_move("nod")
                     asyncio.create_task(activate_from_wake())
-                if gate.active:
-                    asyncio.create_task(execute_local_spoken_control(transcript))
+                if gate.active and candidates:
+                    asyncio.create_task(execute_local_spoken_control(candidates))
 
             def on_output_transcript(transcript: str) -> None:
                 logger.info("qwen response: %s", transcript[:160])
