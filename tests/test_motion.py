@@ -159,6 +159,23 @@ def test_gaze_target_status_tracks_source():
     assert status["gaze_source"] == "audio+visual"
 
 
+def test_set_target_consecutive_failures_reset_after_success():
+    class FakeMini:
+        pass
+
+    choreo = Choreographer(FakeMini())
+    choreo._record_set_target_failure()
+    choreo._record_set_target_failure()
+
+    assert choreo.get_status()["set_target_failures"] == 2
+    assert choreo.get_status()["set_target_consecutive_failures"] == 2
+
+    choreo._record_set_target_success()
+
+    assert choreo.get_status()["set_target_failures"] == 2
+    assert choreo.get_status()["set_target_consecutive_failures"] == 0
+
+
 def test_startup_blend_first_frame_uses_captured_robot_pose():
     class FakeMini:
         pass

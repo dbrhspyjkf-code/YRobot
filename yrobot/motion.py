@@ -323,11 +323,20 @@ class Choreographer(threading.Thread):
         self._status_lock = threading.Lock()
         self._gaze_source = "idle"
         self._gaze_target_updated_at = 0.0
+        self._tracking_debug: dict[str, Any] = {
+            "audio_yaw_rad": None,
+            "visual_yaw_rad": None,
+            "target_yaw_rad": None,
+            "source": "idle",
+            "face_detected": False,
+            "updated_at": 0.0,
+        }
         self._loop_hz = 0.0
         self._last_tick_ms = 0.0
         self._last_loop_at = 0.0
         self._deadline_misses = 0
         self._set_target_failures = 0
+        self._set_target_consecutive_failures = 0
         self.BODY_YAW_LIMIT = math.radians(150.0)
         self.BODY_FOLLOW_HEAD_DEG = 10.0   # start turning body beyond 10°
         self.BODY_YAW_SPEED = 1.2          # rad/s, brisk but smooth body turn
@@ -481,6 +490,24 @@ class Choreographer(threading.Thread):
         voice_at = time.monotonic() if now is None else now
         self._enqueue_command("set_gaze_target", (target, voice_at, source))
 
+    def set_tracking_debug(
+        self,
+        *,
+        audio_yaw: float,
+        visual_yaw: float | None,
+        target_yaw: float,
+        source: str,
+    ) -> None:
+        with self._status_lock:
+            self._tracking_debug = {
+                "audio_yaw_rad": float(audio_yaw),
+                "visual_yaw_rad": None if visual_yaw is None else float(visual_yaw),
+                "target_yaw_rad": float(target_yaw),
+                "source": str(source),
+                "face_detected": visual_yaw is not None,
+                "updated_at": time.time(),
+            }
+
     def current_yaw(self) -> float:
         return self._gaze.pos
 
@@ -497,6 +524,11 @@ class Choreographer(threading.Thread):
     def get_status(self) -> dict[str, Any]:
         """Return a lightweight, thread-safe motion health snapshot."""
         with self._status_lock:
+            tracking = dict(self._tracking_debug)
+            if tracking.get("updated_at"):
+                tracking["age_s"] = round(time.time() - float(tracking["updated_at"]), 1)
+            else:
+                tracking["age_s"] = None
             return {
                 "thread_alive": self.is_alive(),
                 "mode": self._mode,
@@ -508,6 +540,7 @@ class Choreographer(threading.Thread):
                 "last_loop_at": self._last_loop_at or None,
                 "deadline_misses": self._deadline_misses,
                 "set_target_failures": self._set_target_failures,
+                "set_target_consecutive_failures": self._set_target_consecutive_failures,
                 "antennas": [float(value) for value in self._antennas],
                 "gaze_target_rad": round(float(self._gaze.target), 3),
                 "gaze_source": self._gaze_source,
@@ -516,6 +549,7 @@ class Choreographer(threading.Thread):
                     if self._gaze_target_updated_at
                     else None
                 ),
+                "tracking": tracking,
             }
 
     def run(self) -> None:
@@ -558,9 +592,9 @@ class Choreographer(threading.Thread):
                 -self.BODY_YAW_LIMIT, min(self.BODY_YAW_LIMIT, self._body_yaw))
             try:
                 self._mini.set_target(head=pose, antennas=antennas, body_yaw=self._body_yaw)
+                self._record_set_target_success()
             except Exception as exc:
-                with self._status_lock:
-                    self._set_target_failures += 1
+                self._record_set_target_failure()
                 now_err = time.monotonic()
                 if now_err - self._last_set_target_err >= self._set_target_err_interval:
                     msg = f"set_target failed: {exc}"
@@ -579,6 +613,15 @@ class Choreographer(threading.Thread):
                 time.sleep(sleep)
             else:
                 next_tick = time.monotonic()  # never try to catch up with a jump
+
+    def _record_set_target_success(self) -> None:
+        with self._status_lock:
+            self._set_target_consecutive_failures = 0
+
+    def _record_set_target_failure(self) -> None:
+        with self._status_lock:
+            self._set_target_failures += 1
+            self._set_target_consecutive_failures += 1
 
     def _blend_modes(self, dt: float) -> None:
         """Cross-fade posture weights (~250 ms) so mode flips never step."""

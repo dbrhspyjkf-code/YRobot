@@ -140,6 +140,21 @@ Fix:
 
 This makes real failures easier to see in `/api/logs` and `journalctl`.
 
+### Xiaozhi pause when mic upload is disabled
+
+The Dashboard MIC button controls whether microphone audio is uploaded to the
+conversation backend. When MIC upload is disabled, YRobot now pauses the
+Xiaozhi WebSocket session instead of keeping an idle connection open. This
+avoids Xiaozhi's ~70 s idle close cycle (`received 1005`) and the repeated
+3 s reconnect loop.
+
+Expected states:
+
+- MIC enabled: `/api/status` shows `runtime.ws_state=connected`.
+- MIC disabled: `/api/status` shows `runtime.ws_state=paused` and
+  `audio.input_enabled=false`.
+- Re-enabling MIC lets the outer loop reconnect Xiaozhi automatically.
+
 ### IK errors from official recorded emotions
 
 **Symptom:** during conversation the robot froze, then made a sudden movement,
@@ -202,6 +217,30 @@ Set these in `/etc/systemd/system/yrobot.service.d/ha.conf` or
 
 Do not print or commit secrets. The Home Assistant token is loaded from
 `/home/pollen/.config/yrobot/ha.env`.
+
+### Speaker tracking: audio + vision
+
+YRobot uses the XVF3800 DoA angle as the fast speaker signal and the camera
+face detector as a stabilizer. The camera does not replace audio blindly:
+only a recent, consecutive face detection is fused with the audio target.
+
+Current behavior:
+
+- `yrobot.motion.SoundCompass` samples DoA only while the app believes the
+  user is speaking.
+- `yrobot/main.py` keeps audio as the fallback target.
+- When vision is available and within the accepted audio/visual delta,
+  `YROBOT_HEAD_TRACKING_WEIGHT` controls how strongly the fused target moves
+  toward the face. Default: `0.7`.
+- Dashboard `/api/status` exposes `motion.tracking` with
+  `audio_yaw_rad`, `visual_yaw_rad`, `target_yaw_rad`, `source`,
+  `face_detected`, and `age_s`.
+- Dashboard shows a `追踪` card so field testing can tell whether bad facing
+  came from audio DoA, missing face detection, or final target fusion.
+
+Operational note: if Dashboard shows `source=声音` and `未看到脸`, the camera
+is not helping; check the camera preview first. A frame with hands, monitors,
+or books but no frontal face will often leave tracking audio-only.
 
 ## Recent Changes (2026-08-05 / 2026-08-06)
 
@@ -705,11 +744,30 @@ Short-press power shutdown is acceptable for normal use. Avoid long-press forced
 power cuts while writing configuration, updating code, committing, pushing, or
 while services are still starting.
 
+The official GPIO shutdown service only calls `sudo shutdown -h now`. YRobot
+adds a systemd override for `gpio-shutdown-daemon.service` so the physical
+button first posts to the official daemon sleep endpoint:
+
+```text
+/api/daemon/stop?goto_sleep=true
+```
+
+The override runs:
+
+```text
+/home/pollen/YRobot/scripts/gpio_graceful_shutdown_monitor.py
+```
+
+Dashboard Power Off / Reboot also requests the same sleep endpoint before the
+system power command. If the sleep request fails, shutdown still proceeds so the
+button cannot get stuck.
+
 After reboot, verify:
 
 ```bash
 systemctl is-active reachy-mini-daemon.service
 systemctl is-active yrobot.service
+systemctl cat gpio-shutdown-daemon.service
 curl http://127.0.0.1:8000/api/motors/status | python3 -m json.tool
 ```
 

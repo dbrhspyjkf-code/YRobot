@@ -99,6 +99,14 @@ def test_xiaozhi_unexpected_error_stays_exceptional(main_module):
     assert main_module._is_expected_xiaozhi_disconnect(err) is False
 
 
+def test_xiaozhi_pauses_when_mic_input_is_disabled(main_module):
+    assert main_module._xiaozhi_should_pause_for_mic(False) is True
+
+
+def test_xiaozhi_runs_when_mic_input_is_enabled(main_module):
+    assert main_module._xiaozhi_should_pause_for_mic(True) is False
+
+
 def test_xiaozhi_auto_emotion_uses_safe_fallback_not_recorded(main_module):
     class FakeChoreo:
         def __init__(self):
@@ -149,4 +157,27 @@ def test_speaker_gaze_blends_visual_when_it_agrees(main_module):
     )
 
     assert 0.0 < target < 0.2
+    assert source == "audio+visual"
+
+
+def test_speaker_gaze_prefers_visual_when_face_is_stable(main_module):
+    target, source = main_module._fuse_speaker_gaze(
+        audio_yaw=0.0,
+        visual_yaw=0.4,
+        max_visual_audio_delta=0.8,
+    )
+
+    assert target > 0.25
+    assert source == "audio+visual"
+
+
+def test_speaker_gaze_visual_weight_is_configurable(main_module):
+    target, source = main_module._fuse_speaker_gaze(
+        audio_yaw=0.0,
+        visual_yaw=0.4,
+        max_visual_audio_delta=0.8,
+        visual_weight=0.25,
+    )
+
+    assert 0.09 < target < 0.11
     assert source == "audio+visual"

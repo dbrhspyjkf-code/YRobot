@@ -1,0 +1,85 @@
+name: YRobotRemote
+options:
+  bundleIdPrefix: ai.proma.yrobotremote
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  YRobotRemote:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Sources/App/Info.plist
+      properties:
+        CFBundleDisplayName: YRobot Remote
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: "YRobot Remote discovers and talks to your Reachy Mini on the local Wi-Fi network."
+        NSBluetoothAlwaysUsageDescription: "YRobot Remote uses Bluetooth to provision Wi-Fi on your Reachy Mini when it is offline."
+        NSBluetoothPeripheralUsageDescription: "YRobot Remote uses Bluetooth to provision Wi-Fi on your Reachy Mini when it is offline."
+        NSCameraUsageDescription: "YRobot Remote streams the Reachy Mini camera preview for live viewing."
+        NSMicrophoneUsageDescription: "YRobot Remote reports microphone level when audio upload to the robot is enabled."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.proma.yrobotremote
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        ENABLE_PREVIEWS: YES
+
+  YRobotRemoteTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/YRobotRemoteTests
+      - path: Tests/Fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: YRobotRemote
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.proma.yrobotremote.tests
+        GENERATE_INFOPLIST_FILE: YES
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/YRobotRemote.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/YRobotRemote"
+
+schemes:
+  YRobotRemote:
+    build:
+      targets:
+        YRobotRemote: all
+        YRobotRemoteTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - YRobotRemoteTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
