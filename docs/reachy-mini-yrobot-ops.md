@@ -488,6 +488,17 @@ after the fix the focused QWEN/tool/runtime/config/backend suite passed
 commit: `4fdb792`; feature worktree commit: `b1e7c35`. The service was
 restarted and reported QWEN connected, mic enabled, and no runtime error.
 
+### 2026-08-10 Fan short ASR aliases
+
+The operator reported `关闭风扇` did not work. Read-only evidence showed
+`落地扇` remained `on`; logs showed QWEN STT shortened the command to `关闭风`
+and QWEN replied verbally, but no local whitelist execution occurred. Added
+short aliases only for the already allowlisted `落地扇`: `关闭风`, `关掉风`, and
+`打开风`. After restarting `yrobot.service`, QWEN reported connected, audio
+input remained enabled, the aliases were loaded by `ToolExecutor`, and the
+pre-test HA state was still `on`. Re-run voice acceptance with
+`你好小白，关闭风`.
+
 Deployment backup:
 
 ```text
