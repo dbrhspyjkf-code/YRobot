@@ -450,6 +450,17 @@ the fix the focused QWEN/tool/runtime/config/backend suite passed (76 tests),
 reported QWEN connected with no runtime error. Re-run the spoken close-lamp
 acceptance using `你好小白，关闭书灯` or `你好小白，关闭书台灯`.
 
+### 2026-08-10 HA short ASR aliases
+
+The next spoken attempts still left `书台灯` at `on`. The relevant QWEN STT
+outputs were shortened to `关闭书` and `关闭书台`, so the strict local whitelist
+matcher did not fire. Added short aliases only for the selected allowlisted
+`书台灯`: `关闭书`, `关闭书台`, `关掉书台`, and open-side `打开书台`.
+After restarting `yrobot.service`, QWEN reported connected with no runtime
+error, the aliases were loaded by `ToolExecutor`, and pre-test HA state was
+still `on`. Re-run voice acceptance with a short phrase such as
+`你好小白，关闭书`.
+
 Deployment backup:
 
 ```text
