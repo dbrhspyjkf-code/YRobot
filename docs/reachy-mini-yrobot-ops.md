@@ -516,6 +516,18 @@ suite passed (77 tests), `py_compile` passed, and the narrowed F401 Ruff check
 passed. Production commit: `26def16`; feature worktree commit: `0a190c3`.
 The service was restarted and reported QWEN connected with no runtime error.
 
+### 2026-08-10 Ceiling light short ASR aliases
+
+The operator reported `吸顶灯` could not be controlled. Read-only evidence
+showed `吸顶灯` was allowlisted and HA state was `off`, but logs showed QWEN
+STT shortened the attempted open command to `打开西`; no local whitelist
+execution occurred. Added short aliases only for the already allowlisted
+`吸顶灯`: `打开西`, `打开吸`, `打开顶灯`, `关闭西`, `关闭吸`, and `关闭顶灯`.
+After restarting `yrobot.service`, audio input was re-enabled, QWEN reported
+connected, the aliases were loaded by `ToolExecutor`, and pre-test HA state
+was still `off`. Re-run voice acceptance with `你好小白，打开西` or
+`你好小白，打开吸顶灯`.
+
 Deployment backup:
 
 ```text
