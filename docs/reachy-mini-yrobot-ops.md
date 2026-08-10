@@ -528,6 +528,16 @@ connected, the aliases were loaded by `ToolExecutor`, and pre-test HA state
 was still `off`. Re-run voice acceptance with `你好小白，打开西` or
 `你好小白，打开吸顶灯`.
 
+### 2026-08-10 Ceiling light second ASR aliases
+
+The repeated open test still failed. Read-only state stayed `off`; logs showed
+QWEN STT variants `打开C`, bare `打开`, and `打开系统`, with no local whitelist
+execution. Added only the specific observed aliases `打开C` and `打开系统` for
+the already allowlisted `吸顶灯`. Bare `打开` was intentionally not added
+because it is ambiguous and could affect other devices. After restarting
+`yrobot.service`, QWEN reported connected, audio input enabled, the aliases
+were loaded by `ToolExecutor`, and pre-test HA state stayed `off`.
+
 Deployment backup:
 
 ```text
