@@ -155,6 +155,8 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   path; the operator confirmed it was audible.
 - The operator then confirmed QWEN spoken replies are audible and normal
   conversation works. This completes the baseline realtime speech acceptance.
+- The operator confirmed QWEN automatically switched languages during a real
+  multilingual conversation. Multilingual acceptance is complete.
 
 ## Decisions that must remain stable
 
@@ -238,7 +240,8 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN audio conversion regression | Direct sink rejected 24 kHz mono; test first failed, then suites and Ruff passed | Fixed; `60bd98d` / `b24af62` |
 | 2026-08-10 | QWEN converted audio path | 24 kHz mono 660 Hz tone sent to `plug:reachymini_audio_sink` | Operator confirmed audible |
 | 2026-08-10 | QWEN baseline speech acceptance | Wake, spoken reply, and normal conversation | Operator confirmed working |
-| 2026-08-10 | Remaining QWEN acceptance | Interruption, multilingual switching, allowlisted appliance state, camera | Pending targeted checks |
+| 2026-08-10 | QWEN multilingual acceptance | Real conversation automatically switched languages | Operator confirmed working |
+| 2026-08-10 | Remaining QWEN acceptance | Interruption, allowlisted appliance state, camera | Pending targeted checks |
 
 ## Update protocol
 

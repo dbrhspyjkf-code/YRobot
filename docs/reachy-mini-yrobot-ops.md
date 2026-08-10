@@ -366,6 +366,10 @@ Hz tone was sent using this exact conversion path. The operator confirmed it was
 audible, so the Reachy speaker route is accepted; QWEN spoken-response playback
 was then confirmed in a normal conversation.
 
+The operator also confirmed automatic language switching in a real QWEN
+conversation. Multilingual support is accepted; interruption and appliance
+actions remain separate physical acceptance checks.
+
 Deployment backup:
 
 ```text
