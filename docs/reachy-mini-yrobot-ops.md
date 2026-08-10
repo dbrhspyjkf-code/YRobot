@@ -555,6 +555,23 @@ the focused QWEN/tool/runtime/config/backend suite passed (78 tests),
 `57d3c6d`; feature worktree commit: `76c5d6c`. The service was restarted and
 reported `active`, QWEN `connected`, audio input enabled, and no runtime error.
 
+### 2026-08-10 QWEN ASR fragment joining and VAD lowering
+
+The operator correctly challenged the repeated ASR truncation: clear loud
+phrases such as `关闭餐厅灯` were still transcribed as `关闭餐`. Evidence showed
+the live VAD threshold was `0.116`, and `audio.py` still defaulted to `0.11`
+even though `Settings` defaulted to `0.065`.
+
+Implemented a 1.5 s `RecentTranscriptWindow` for QWEN STT: local HA matching
+now tries both the current STT fragment and joined recent fragments, so split
+commands can match full whitelist phrases without adding ambiguous bare
+commands such as `打开` or `关闭`. Lowered `audio.py` default VAD to `0.065`
+and set the live runtime VAD to `0.065`. Regression tests first failed, then
+the focused QWEN/tool/config/backend suite passed (80 tests), `py_compile`
+passed, and narrowed Ruff passed. Production commit: `aa97eba`; feature
+worktree commit: `bd5e482`. The service was restarted and reported QWEN
+connected, audio input enabled, no runtime error, and VAD `0.065`.
+
 Deployment backup:
 
 ```text
