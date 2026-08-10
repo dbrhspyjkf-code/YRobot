@@ -195,6 +195,117 @@ def test_spoken_control_ignores_unknown_phrase_before_network(tmp_path):
     assert opener.calls == []
 
 
+def test_bare_close_can_follow_recent_spoken_device(tmp_path):
+    opener = RecordingOpener([])
+    settings = make_settings(
+        tmp_path,
+        [
+            {
+                "name": "厨房灯",
+                "phrases": ["打开厨房灯"],
+                "service": "switch.turn_on",
+                "entity_id": "switch.kitchen",
+            },
+            {
+                "name": "厨房灯",
+                "phrases": ["关闭厨房灯"],
+                "service": "switch.turn_off",
+                "entity_id": "switch.kitchen",
+            },
+        ],
+    )
+    executor = ToolExecutor(settings, opener=opener)
+
+    assert executor.execute_spoken_control("打开厨房灯", now=100.0) == {
+        "ok": True,
+        "device": "厨房灯",
+        "action": "turn_on",
+    }
+    assert executor.execute_spoken_control("关闭", now=116.0) == {
+        "ok": True,
+        "device": "厨房灯",
+        "action": "turn_off",
+    }
+
+    assert len(opener.calls) == 2
+    request, _ = opener.calls[1]
+    assert request.full_url == "http://homeassistant.local:8123/api/services/switch/turn_off"
+    assert json.loads(request.data) == {"entity_id": "switch.kitchen"}
+
+
+def test_bare_close_without_recent_device_is_ignored(tmp_path):
+    opener = RecordingOpener([])
+    settings = make_settings(
+        tmp_path,
+        [
+            {
+                "name": "厨房灯",
+                "phrases": ["关闭厨房灯"],
+                "service": "switch.turn_off",
+                "entity_id": "switch.kitchen",
+            }
+        ],
+    )
+    executor = ToolExecutor(settings, opener=opener)
+
+    assert executor.execute_spoken_control("关闭", now=100.0) is None
+    assert opener.calls == []
+
+
+def test_bare_close_context_expires(tmp_path):
+    opener = RecordingOpener([])
+    settings = make_settings(
+        tmp_path,
+        [
+            {
+                "name": "厨房灯",
+                "phrases": ["打开厨房灯"],
+                "service": "switch.turn_on",
+                "entity_id": "switch.kitchen",
+            },
+            {
+                "name": "厨房灯",
+                "phrases": ["关闭厨房灯"],
+                "service": "switch.turn_off",
+                "entity_id": "switch.kitchen",
+            },
+        ],
+    )
+    executor = ToolExecutor(settings, opener=opener)
+
+    executor.execute_spoken_control("打开厨房灯", now=100.0)
+
+    assert executor.execute_spoken_control("关闭", now=140.1) is None
+    assert len(opener.calls) == 1
+
+
+def test_bare_open_is_not_inferred_from_context(tmp_path):
+    opener = RecordingOpener([])
+    settings = make_settings(
+        tmp_path,
+        [
+            {
+                "name": "厨房灯",
+                "phrases": ["关闭厨房灯"],
+                "service": "switch.turn_off",
+                "entity_id": "switch.kitchen",
+            },
+            {
+                "name": "厨房灯",
+                "phrases": ["打开厨房灯"],
+                "service": "switch.turn_on",
+                "entity_id": "switch.kitchen",
+            },
+        ],
+    )
+    executor = ToolExecutor(settings, opener=opener)
+
+    executor.execute_spoken_control("关闭厨房灯", now=100.0)
+
+    assert executor.execute_spoken_control("打开", now=110.0) is None
+    assert len(opener.calls) == 1
+
+
 def test_device_state_uses_allowlisted_entity(tmp_path):
     opener = RecordingOpener({"entity_id": "fan.study", "state": "on"})
     settings = make_settings(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ VERIFIED_HERMES_BASE = "http://192.168.1.200:8766"
 MAX_RESULT_BYTES = 4096
 ALLOWED_DOMAINS = frozenset({"light", "switch", "fan"})
 ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle"})
+FOLLOW_UP_CLOSE_WINDOW_S = 30.0
+BARE_CLOSE_PHRASES = frozenset({"关", "关闭", "关掉"})
 BLOCKED_DOMAINS = frozenset({"lock", "cover", "alarm_control_panel", "climate", "water_heater"})
 BLOCKED_TERMS = (
     "lock",
@@ -64,6 +67,8 @@ class ToolExecutor:
         self._devices: dict[str, AllowedAction] = {}
         self._phrases: dict[str, tuple[str, str]] = {}
         self._blocked_devices: set[str] = set()
+        self._last_spoken_device: str | None = None
+        self._last_spoken_at = 0.0
         self._load_whitelist()
 
     @staticmethod
@@ -136,17 +141,36 @@ class ToolExecutor:
             result = {"ok": False, "error": message or type(exc).__name__}
         return self._bounded(result)
 
-    def execute_spoken_control(self, transcript: str) -> dict[str, Any] | None:
+    def execute_spoken_control(
+        self, transcript: str, *, now: float | None = None
+    ) -> dict[str, Any] | None:
         text = self._normalize_phrase(transcript)
         if not text:
             return None
+        timestamp = time.monotonic() if now is None else now
         for phrase, (device, action) in sorted(
             self._phrases.items(), key=lambda item: len(item[0]), reverse=True
         ):
             if phrase in text:
-                return self.execute(
+                result = self.execute(
                     "control_allowed_device", {"device": device, "action": action}
                 )
+                if result.get("ok") is True:
+                    self._last_spoken_device = device
+                    self._last_spoken_at = timestamp
+                return result
+        if (
+            text in BARE_CLOSE_PHRASES
+            and self._last_spoken_device is not None
+            and timestamp - self._last_spoken_at <= FOLLOW_UP_CLOSE_WINDOW_S
+        ):
+            result = self.execute(
+                "control_allowed_device",
+                {"device": self._last_spoken_device, "action": "turn_off"},
+            )
+            if result.get("ok") is True:
+                self._last_spoken_at = timestamp
+            return result
         return None
 
     def _load_whitelist(self) -> None:
