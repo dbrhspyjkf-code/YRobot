@@ -13,6 +13,7 @@ from typing import Any
 from yrobot.config import Settings
 
 VERIFIED_HERMES_BASE = "http://192.168.1.200:8766"
+VERIFIED_HERMES_IOS_API = "http://192.168.1.200:8900"   # hermes-mcp-xiaozhi iOS HTTP API
 MAX_RESULT_BYTES = 4096
 ALLOWED_DOMAINS = frozenset({"light", "switch", "fan", "media_player", "number"})
 ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle", "oscillate", "media_play", "media_pause", "set_value"})
@@ -78,7 +79,7 @@ class ToolExecutor:
                 "type": "function",
                 "function": {
                     "name": "get_weather",
-                    "description": "查询指定城市的实时天气。",
+                    "description": "查询指定城市的实时天气（通过 hermes-mcp-xiaozhi）。",
                     "parameters": {
                         "type": "object",
                         "properties": {"city": {"type": "string", "description": "城市名"}},
@@ -121,6 +122,93 @@ class ToolExecutor:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_price",
+                    "description": "查询股票、ETF、指数的实时价格（A 股/港股/美股）。例如「看看茅台多少钱」「查询 600519」「上证指数」。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "description": "股票名称或代码（如「贵州茅台」「600519」「tsla」），或完整查询语句"},
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_detail",
+                    "description": "获取股票详细分析（财务数据/股东/资金流向/基本面）。例如「宁德时代基本面」「比亚迪股东情况」。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "description": "股票名称或代码"},
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_portfolio_stocks",
+                    "description": "查询用户自选股列表的当前行情。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_portfolio_stock",
+                    "description": "把一只股票加入自选股列表（按中文名或代码）。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "股票名或代码（如「宁德时代」或「300750」）"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "remove_portfolio_stock",
+                    "description": "从自选股列表移除一只股票。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "股票名或代码"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_advice",
+                    "description": "对指定股票做操盘建议（基于 AI 智能分析）。例如「茅台现在能买吗」「比亚迪的操盘建议」。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "description": "股票名/代码 + 你的问题"},
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +216,12 @@ class ToolExecutor:
             "get_weather": self._get_weather,
             "get_device_state": self._get_device_state,
             "control_allowed_device": self._control_device,
+            "get_stock_price": self._get_stock_price,
+            "get_stock_detail": self._get_stock_detail,
+            "get_portfolio_stocks": self._get_portfolio_stocks,
+            "add_portfolio_stock": self._add_portfolio_stock,
+            "remove_portfolio_stock": self._remove_portfolio_stock,
+            "get_stock_advice": self._get_stock_advice,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -227,18 +321,73 @@ class ToolExecutor:
     def _normalize_phrase(value: str) -> str:
         return "".join(char for char in value.casefold() if char.isalnum())
 
+    def _call_hermes_tool(self, name: str, prompt: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """通用：调 hermes-mcp-xiaozhi iOS API (:8900) /api/tools/call.
+
+        所有 hermes 工具都通过这个端点暴露 (port 8900)，body 格式：
+          {"name": "工具名", "arguments": {"prompt": "...", **extra}}
+        返回 {"ok": true, "result": "人类可读字符串"}.
+        """
+        if not self.settings.hermes_tools_enabled:
+            return {"ok": False, "error": "Hermes tools are disabled"}
+        ios_url = self.settings.hermes_ios_api_url.rstrip("/")
+        if ios_url != VERIFIED_HERMES_IOS_API:
+            return {"ok": False, "error": "Hermes iOS API base is not verified"}
+        arguments = {"prompt": prompt}
+        if extra:
+            arguments.update(extra)
+        payload = json.dumps({"name": name, "arguments": arguments}).encode("utf-8")
+        request = urllib.request.Request(
+            f"{ios_url}/api/tools/call",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        result = self._read_json(request)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "Hermes tool call returned invalid data"}
+        if not result.get("ok"):
+            return {"ok": False, "error": str(result.get("error") or "tool call failed")}
+        return {"ok": True, "result": str(result.get("result") or "")}
+
     def _get_weather(self, arguments: dict[str, Any]) -> dict[str, Any]:
         city = str(arguments.get("city") or "").strip()
         if not city:
             return {"ok": False, "error": "city is required"}
-        if self.settings.hermes_tools_url.rstrip("/") != VERIFIED_HERMES_BASE:
-            return {"ok": False, "error": "Hermes REST base is not verified"}
-        query = urllib.parse.urlencode({"city": city})
-        request = urllib.request.Request(f"{VERIFIED_HERMES_BASE}/weather?{query}", method="GET")
-        result = self._read_json(request)
-        if not isinstance(result, dict):
-            return {"ok": False, "error": "weather service returned invalid data"}
-        return result
+        return self._call_hermes_tool("get_weather", city)
+
+    def _get_stock_price(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt (stock name or code) is required"}
+        return self._call_hermes_tool("get_stock_price", prompt)
+
+    def _get_stock_detail(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        return self._call_hermes_tool("get_stock_detail", prompt)
+
+    def _get_portfolio_stocks(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._call_hermes_tool("get_portfolio_stocks", "")
+
+    def _add_portfolio_stock(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = str(arguments.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        return self._call_hermes_tool("add_portfolio_stock", name)
+
+    def _remove_portfolio_stock(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = str(arguments.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        return self._call_hermes_tool("remove_portfolio_stock", name)
+
+    def _get_stock_advice(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        return self._call_hermes_tool("get_stock_advice", prompt)
 
     def _get_device_state(self, arguments: dict[str, Any]) -> dict[str, Any]:
         device = str(arguments.get("device") or "").strip()
