@@ -41,6 +41,32 @@
             <small id="status-uptime">--</small>
             <small id="status-sys" class="muted">--</small>
           </div>
+          <div class="status-item">
+            <span>Daemon</span>
+            <b id="daemon-state">--</b>
+            <small id="daemon-motors">--</small>
+            <div class="status-actions">
+              <button id="daemon-wake" class="mini-button" type="button">唤醒</button>
+              <button id="daemon-sleep" class="mini-button" type="button">睡眠</button>
+              <button id="daemon-restart" class="mini-button" type="button">重启</button>
+            </div>
+          </div>
+          <div class="status-item">
+            <span>App Lock</span>
+            <b id="daemon-app">--</b>
+            <small id="daemon-transport">--</small>
+          </div>
+          <div class="status-item">
+            <span>DoA</span>
+            <b id="daemon-doa">--</b>
+            <small id="daemon-speech">--</small>
+          </div>
+          <div class="status-item">
+            <span>追踪</span>
+            <b id="tracking-source">--</b>
+            <small id="tracking-target">--</small>
+            <small id="tracking-face" class="muted">--</small>
+          </div>
         </div>
       </section>
       <section id="camera-panel" class="panel camera-panel">
@@ -115,6 +141,26 @@
         </div>
         <div id="motion-grid" class="motion-grid"><p class="muted">加载中…</p></div>
       </section>
+            <section class="panel backend-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">CONVERSATION</p><h2>对话后端</h2></div>
+          <span id="backend-status" class="pill">读取中</span>
+        </div>
+        <div class="backend-picker" role="group" aria-label="选择对话后端">
+          <button type="button" data-backend="xiaozhi">XIAOZHI</button>
+          <button type="button" data-backend="qwen">QWEN</button>
+        </div>
+        <p id="backend-detail" class="hint">每次只运行一个后端；保存后需重启 YRobot。</p>
+        <div class="voice-section">
+          <div class="voice-heading">QWEN 配音</div>
+          <div class="voice-row">
+            <select id="voice-select" class="voice-select" aria-label="选择 QWEN 配音"></select>
+            <button id="voice-preview" class="icon-button" type="button" title="试听当前选中的配音" disabled>试听</button>
+          </div>
+          <p id="voice-detail" class="hint">修改配音需重启 YRobot；切换后端时同步生效。</p>
+        </div>
+      </section>
+
       <section id="log-panel" class="panel log-panel">
         <div class="panel-heading compact">
           <div><p class="step">LOG</p><h2>运行 Log</h2></div>
@@ -140,7 +186,8 @@
           <button id="log-jump" class="log-jump hidden" type="button" title="跳到最新">跳到最新 ▾</button>
         </div>
         <p id="log-meta" class="hint">每 2 秒刷新一次；向上滚动可暂停自动滚动。</p>
-      </section>
+
+            </section>
       </div>
       <div id="restart-banner" class="notice success hidden">
         <b>设置已安全保存。</b> 请在应用中心停止并重新启动 YRobot。

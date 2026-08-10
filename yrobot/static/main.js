@@ -3,7 +3,27 @@ const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
 const statusSys = document.getElementById("status-sys");
+const daemonState = document.getElementById("daemon-state");
+const daemonMotors = document.getElementById("daemon-motors");
+const daemonApp = document.getElementById("daemon-app");
+const daemonTransport = document.getElementById("daemon-transport");
+const daemonDoa = document.getElementById("daemon-doa");
+const daemonSpeech = document.getElementById("daemon-speech");
+const daemonWake = document.getElementById("daemon-wake");
+const daemonSleep = document.getElementById("daemon-sleep");
+const daemonRestart = document.getElementById("daemon-restart");
+const trackingSource = document.getElementById("tracking-source");
+const trackingTarget = document.getElementById("tracking-target");
+const trackingFace = document.getElementById("tracking-face");
 const chatMiniEntries = document.getElementById("chat-mini-entries");
+const backendButtons = Array.from(document.querySelectorAll("[data-backend]"));
+const backendStatus = document.getElementById("backend-status");
+const backendDetail = document.getElementById("backend-detail");
+const voiceSelect = document.getElementById("voice-select");
+const voicePreview = document.getElementById("voice-preview");
+const voiceDetail = document.getElementById("voice-detail");
+let voiceAvailable = [];
+const restartBanner = document.getElementById("restart-banner");
 const volumeSlider = document.getElementById("volume-slider");
 const volumeMute = document.getElementById("volume-mute");
 const audioVolumeValue = document.getElementById("audio-volume-value");
@@ -58,12 +78,163 @@ function stateText(enabled, configured = true) {
   return configured ? "已启用" : "未配置";
 }
 
+function renderBackend(data) {
+  const configured = data.configured_backend;
+  const running = data.running_backend;
+  for (const button of backendButtons) {
+    button.classList.toggle("active", button.dataset.backend === configured);
+  }
+  backendStatus.textContent = running ? `运行中：${running.toUpperCase()}` : "未运行";
+  backendStatus.classList.toggle("warning", Boolean(data.error));
+  backendDetail.textContent = data.error
+    ? `连接失败：${data.error}`
+    : `当前配置 ${configured.toUpperCase()} · 连接 ${data.connection_state || "未知"}`;
+}
+
+async function loadBackend() {
+  try {
+    const response = await fetch("/api/conversation/backend", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "读取失败");
+    renderBackend(data);
+  } catch (error) {
+    backendStatus.textContent = "读取失败";
+    backendDetail.textContent = error.message;
+  }
+}
+
+async function saveBackend(button) {
+  for (const item of backendButtons) item.disabled = true;
+  try {
+    const response = await fetch("/api/conversation/backend", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backend: button.dataset.backend }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "保存失败");
+    for (const item of backendButtons) {
+      item.classList.toggle("active", item === button);
+    }
+    backendDetail.textContent = `已保存 ${data.configured_backend.toUpperCase()}，重启后生效。`;
+    restartBanner.classList.remove("hidden");
+  } catch (error) {
+    backendDetail.textContent = `保存失败：${error.message}`;
+  } finally {
+    for (const item of backendButtons) item.disabled = false;
+  }
+}
+
+for (const button of backendButtons) {
+  button.addEventListener("click", () => saveBackend(button));
+}
+
+function renderVoice(data) {
+  const configured = data.configured_voice;
+  // Lazy-populate select options from backend-reported available voices.
+  voiceAvailable = Array.isArray(data.available_voices) ? data.available_voices.slice() : [];
+  if (voiceSelect.options.length === 0 && voiceAvailable.length > 0) {
+    for (const voice of voiceAvailable) {
+      const option = document.createElement("option");
+      option.value = voice;
+      option.textContent = voice;
+      voiceSelect.appendChild(option);
+    }
+  }
+  voiceSelect.value = configured;
+  voicePreview.disabled = false;
+  voiceDetail.textContent = `当前 ${configured} · 重启后生效`;
+}
+
+async function loadVoice() {
+  try {
+    const response = await fetch("/api/conversation/voice", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "读取失败");
+    renderVoice(data);
+  } catch (error) {
+    voiceDetail.textContent = `读取失败：${error.message}`;
+  }
+}
+
+async function saveVoice(voice) {
+  voiceSelect.disabled = true;
+  voicePreview.disabled = true;
+  try {
+    const response = await fetch("/api/conversation/voice", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voice }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "保存失败");
+    voiceDetail.textContent = `已保存 ${data.configured_voice}，重启后生效。`;
+    restartBanner.classList.remove("hidden");
+  } catch (error) {
+    voiceDetail.textContent = `保存失败：${error.message}`;
+  } finally {
+    voiceSelect.disabled = false;
+    voicePreview.disabled = false;
+  }
+}
+
+voiceSelect.addEventListener("change", () => saveVoice(voiceSelect.value));
+voicePreview.addEventListener("click", () => previewVoice(voiceSelect.value));
+
+async function previewVoice(voice) {
+  if (!voice) return;
+  voicePreview.disabled = true;
+  voiceSelect.disabled = true;
+  const originalLabel = voicePreview.textContent;
+  voicePreview.textContent = "试听中...";
+  try {
+    const response = await fetch(`/api/conversation/voice/preview?voice=${encodeURIComponent(voice)}`, {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: "试听失败" }));
+      throw new Error(err.detail || "试听失败");
+    }
+    const payload = await response.json();
+    const pcmBytes = base64ToPCM16Bytes(payload.pcm_base64);
+    const sampleRate = payload.sample_rate || 24000;
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+    const audioBuffer = audioCtx.createBuffer(1, pcmBytes.length / 2, sampleRate);
+    const channel = audioBuffer.getChannelData(0);
+    for (let i = 0; i < pcmBytes.length; i += 2) {
+      const sample = pcmBytes[i] | (pcmBytes[i + 1] << 8);
+      channel[i / 2] = sample < 0x8000 ? sample / 0x8000 : (sample - 0x10000) / 0x8000;
+    }
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+    source.start();
+    voiceDetail.textContent = `试听 ${voice} · ${(audioBuffer.duration).toFixed(1)}s`;
+  } catch (error) {
+    voiceDetail.textContent = `试听失败：${error.message}`;
+  } finally {
+    voicePreview.textContent = originalLabel;
+    voicePreview.disabled = false;
+    voiceSelect.disabled = false;
+  }
+}
+
+function base64ToPCM16Bytes(b64) {
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
 function showStatus(status) {
   const stateLabels = { active: "活跃", sleeping: "待机", deep_sleep: "休眠", safe_mode: "安全模式" };
   statusService.textContent = stateLabels[status.service.state] || status.service.state;
   statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
 
   statusPanel.classList.remove("hidden");
+  renderDaemon(status.daemon);
+  renderTracking(status.motion && status.motion.tracking);
   if (status.system) renderSystem(status.system, status.motion);
 }
 
@@ -620,7 +791,73 @@ powerOff.addEventListener("click", () => {
   );
 });
 
+function renderDaemon(daemon) {
+  if (!daemon || !daemon.available) {
+    daemonState.textContent = "不可用";
+    daemonMotors.textContent = "无法读取官方 daemon";
+    daemonApp.textContent = "--";
+    daemonTransport.textContent = "--";
+    daemonDoa.textContent = "--";
+    daemonSpeech.textContent = "--";
+    return;
+  }
+  daemonState.textContent = daemon.daemon_state || "未知";
+  const motor = daemon.motor_mode || "未知";
+  const awake = daemon.awake === true ? "已唤醒" : daemon.awake === false ? "睡眠" : "未知";
+  daemonMotors.textContent = `电机 ${motor} · ${awake}`;
+  daemonApp.textContent = daemon.active_app || daemon.app_lock_state || "空闲";
+  daemonTransport.textContent = daemon.remote_session_active ? "远程会话占用" : (daemon.active_app_transport || "本地/空闲");
+  if (typeof daemon.doa_angle_rad === "number") {
+    daemonDoa.textContent = `${Math.round(daemon.doa_angle_rad * 180 / Math.PI)}°`;
+  } else {
+    daemonDoa.textContent = "--";
+  }
+  daemonSpeech.textContent = daemon.doa_speech_detected === true ? "检测到说话" : daemon.doa_speech_detected === false ? "未检测到说话" : "无 DoA 数据";
+}
+
+function setDaemonButtonsBusy(button, busy) {
+  for (const item of [daemonWake, daemonSleep, daemonRestart]) {
+    if (!item) continue;
+    item.disabled = busy;
+    item.classList.toggle("busy", busy && item === button);
+  }
+}
+
+async function requestDaemonAction(action, button, confirmText) {
+  if (!window.confirm(confirmText)) return;
+  setDaemonButtonsBusy(button, true);
+  try {
+    const response = await fetch("/api/reachy-daemon/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      window.alert(`命令失败：${result.detail || result.message || `HTTP ${response.status}`}`);
+      return;
+    }
+    await loadStatus();
+  } catch (error) {
+    window.alert(`请求失败：${error.message}`);
+  } finally {
+    setDaemonButtonsBusy(button, false);
+  }
+}
+
+daemonWake.addEventListener("click", () => {
+  requestDaemonAction("wake", daemonWake, "确认唤醒 Reachy daemon？");
+});
+daemonSleep.addEventListener("click", () => {
+  requestDaemonAction("sleep", daemonSleep, "确认让 Reachy 进入睡眠？");
+});
+daemonRestart.addEventListener("click", () => {
+  requestDaemonAction("restart", daemonRestart, "确认重启 Reachy daemon？");
+});
+
 loadStatus();
+loadBackend();
+loadVoice();
 loadVolume();
 loadVad();
 loadCameraState();
@@ -651,6 +888,30 @@ function renderSystem(sys, motion) {
   el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C${power}${gaze}`;
 }
 
+function angleLabel(rad) {
+  if (rad === null || rad === undefined || Number.isNaN(Number(rad))) return "--";
+  return `${Math.round(Number(rad) * 180 / Math.PI)}°`;
+}
+
+function renderTracking(tracking) {
+  if (!trackingSource || !trackingTarget || !trackingFace) return;
+  if (!tracking) {
+    trackingSource.textContent = "--";
+    trackingTarget.textContent = "--";
+    trackingFace.textContent = "等待追踪数据";
+    return;
+  }
+  const sourceLabels = { audio: "声音", "audio+visual": "声音+视觉", idle: "待机" };
+  trackingSource.textContent = sourceLabels[tracking.source] || tracking.source || "--";
+  trackingTarget.textContent = `目标 ${angleLabel(tracking.target_yaw_rad)} · 声音 ${angleLabel(tracking.audio_yaw_rad)}`;
+  const visual = tracking.visual_yaw_rad === null || tracking.visual_yaw_rad === undefined
+    ? "视觉 --"
+    : `视觉 ${angleLabel(tracking.visual_yaw_rad)}`;
+  const face = tracking.face_detected ? "已看到脸" : "未看到脸";
+  const age = tracking.age_s === null || tracking.age_s === undefined ? "" : ` · ${tracking.age_s}s`;
+  trackingFace.textContent = `${face} · ${visual}${age}`;
+}
+
 let _chatMiniLastRendered = "";
 
 async function loadChatMini() {
@@ -659,41 +920,47 @@ async function loadChatMini() {
     const result = await response.json();
     if (!response.ok) return;
     const lines = (result.logs || []).map(l => l.message || l.text || String(l));
-    // Extract stt/tts pairs: find last 6 turns
+    // Extract stt/tts pairs: find last 6 turns.
+    // Recognize both legacy xiaozhi markers and current qwen markers.
+    const isStt = (line) => /xz stt:/.test(line) || /qwen stt:/.test(line);
+    const isTts = (line) => /xz tts text:/.test(line) || /qwen response:/.test(line);
     const turns = [];
     let i = lines.length - 1;
     while (i >= 0 && turns.length < 6) {
       let ttsLine = null, sttLine = null;
-      // scan backward for tts
+      // scan backward for bot reply (tts / response)
       while (i >= 0) {
         const line = lines[i--];
-        if (/xz tts text:/.test(line)) { ttsLine = line; break; }
+        if (isTts(line)) { ttsLine = line; break; }
       }
-      // scan backward for matching stt
+      // scan backward for matching user speech
       while (i >= 0) {
         const line = lines[i];
-        if (/xz stt:/.test(line)) { sttLine = line; i--; break; }
-        if (/xz tts text:/.test(line)) { i--; continue; }
+        if (isStt(line)) { sttLine = line; i--; break; }
+        if (isTts(line)) { i--; continue; }
         i--;
       }
       if (ttsLine || sttLine) turns.unshift({ stt: sttLine, tts: ttsLine });
     }
     if (turns.length === 0) {
-      // Keep existing entries; don't overwrite with empty placeholder.
       if (!_chatMiniLastRendered) {
         chatMiniEntries.innerHTML = '<span class="muted">暂无对话记录</span>';
       }
       return;
     }
+    const stripPrefix = (line) =>
+      line.replace(/^.*?xz stt:\s*/, "")
+          .replace(/^.*?xz tts text:\s*/, "")
+          .replace(/^.*?qwen stt:\s*/, "")
+          .replace(/^.*?qwen response:\s*/, "")
+          .replace(/^\[.*?\]\s*/, "");
     const html = turns.map(t => {
       let h = "";
       if (t.stt) {
-        const text = t.stt.replace(/^.*xz stt:\s*/, "").replace(/^\[.*?\]\s*/, "");
-        h += `<div class="chat-entry chat-entry-user">👤 ${escapeHtml(text)}</div>`;
+        h += `<div class="chat-entry chat-entry-user">👤 ${escapeHtml(stripPrefix(t.stt))}</div>`;
       }
       if (t.tts) {
-        const text = t.tts.replace(/^.*xz tts text:\s*/, "").replace(/^\[.*?\]\s*/, "");
-        h += `<div class="chat-entry chat-entry-bot">🤖 ${escapeHtml(text)}</div>`;
+        h += `<div class="chat-entry chat-entry-bot">🤖 ${escapeHtml(stripPrefix(t.tts))}</div>`;
       }
       return h;
     }).join("");

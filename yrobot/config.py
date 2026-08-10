@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 # The duplex template was trained with this exact first line; keep persona and
@@ -23,10 +22,10 @@ PROACTIVE_POLICY = (
     "不抢用户的话，非紧急主动发言保持克制。"
 )
 HA_CONTROL_POLICY = (
-    "家电控制：当且仅当用户明确要求控制某台家电时才执行。"
-    "回复必须包含完整设备名和动作（例如“关闭书台灯”或“打开厨房灯”），"
-    "以便后端识别并调用；不要只说“关灯”“去关灯”或“好了”。"
-    "不要重复或确认刚执行过的操作。"
+    "家电控制：机器人本地白名单会根据用户语音独立执行低风险设备控制。"
+    "当用户要求控制灯、风扇等家电时，不要回答无法控制这个设备。"
+    "如果你没有收到工具返回结果，只能简短说“好的，我交给本地控制”，"
+    "不要声称已经成功，也不要说设备不在白名单里。"
 )
 HERMES_TOOLS_POLICY = (
     "外部工具：以下查询直接交给后端处理，回复中必须包含触发词，否则后端无法识别：\n"
@@ -47,6 +46,44 @@ LOCAL_INFO_POLICY = (
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
 DEFAULT_REALTIME_URL = "wss://minicpmo45.modelbest.cn/v1/realtime?mode=video"
+SUPPORTED_CONVERSATION_BACKENDS = frozenset({"xiaozhi", "qwen"})
+QWEN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime"
+QWEN_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+
+# Voices for the DashScope Qwen-Omni Realtime WebSocket API.
+# DashScope `qwen3.5-omni-flash-realtime` WebSocket endpoint verified 2026-08-10
+# against `192.168.1.14` (production) by hitting
+# POST /api/conversation/voice/preview and inspecting the returned audio:
+#
+# All 14 below returned 200 with 195K-420K bytes of real PCM audio (78-90%
+# non-zero samples) - these voices actually produce speech.
+#
+# Names rejected with 400 "Voice 'X' is not supported": Cherry, Chelsie,
+# Liora, Mira, Cassian, Jada. They are documented at
+# https://help.aliyun.com/zh/model-studio/omni-voice-list but not exposed
+# on the flash realtime WebSocket endpoint we use.
+#
+# Note: ws_state=connected alone is NOT proof a voice works - DashScope
+# accepts session.update for unsupported voices too, but produces no audio.
+# The preview endpoint is the ground truth.
+QWEN_VOICES: tuple[str, ...] = (
+    # Multilingual / Mandarin
+    "Ethan",    # Male, bright upbeat, warm approachable vibe. DashScope default.
+    "Serena",   # Female, gentle young woman.
+    "Tina",     # (DashScope Qwen3.5-Omni blog default)
+    "Cindy",    # (added by user; works)
+    "Raymond",  # (added by user; works)
+    "Mia",      # (added by user; works)
+    "Kiki",     # (added by user; works)
+    "Aiden",    # Male, warm laid-back American, gentle boyish charm.
+    # Mandarin regional dialects
+    "Sunny",    # Sichuanese dialect.
+    "Dylan",    # Beijing Mandarin dialect.
+    "Peter",    # Tianjin dialect.
+    "Eric",     # Sichuanese dialect.
+    "Marcus",   # Shaanxi dialect.
+    "Li",       # Nanjing dialect.
+)
 
 
 def build_system_prompt(persona: str, proactive: bool) -> str:
@@ -132,7 +169,7 @@ class Settings:
     barge_fast_confirm_ms: int = 140
     barge_fast_echo_similarity: float = 0.45
     barge_fast_unexplained_db: float = -36.0
-    head_tracking_weight: float = 0.4
+    head_tracking_weight: float = 0.7
     ref_audio_path: str | None = None
     tts_ref_audio_path: str | None = None
     proactive_enabled: bool = True
@@ -149,9 +186,15 @@ class Settings:
     # Profile-driven tool whitelist and instructions override.
     profile_name: str = "default"
     profile_dir: str = ""  # empty ⇒ use shipped profiles; override at runtime
-    conversation_backend: str = "minicpmo"  # "minicpmo" | "xiaozhi"
+    conversation_backend: str = "xiaozhi"
+    qwen_api_key: str | None = field(default=None, repr=False)
+    qwen_model: str = field(default=QWEN_REALTIME_MODEL, init=False)
+    qwen_url: str = QWEN_REALTIME_URL
+    qwen_voice: str = "Ethan"
 
     def __post_init__(self) -> None:
+        if self.conversation_backend not in SUPPORTED_CONVERSATION_BACKENDS:
+            raise ValueError("YROBOT_CONVERSATION_BACKEND must be 'xiaozhi' or 'qwen'")
         if self.chunk_ms != 1000:
             raise ValueError("YROBOT_CHUNK_MS must be 1000 for MiniCPM-o 4.5 duplex")
         if self.send_video and self.realtime_mode != "video":
@@ -174,6 +217,8 @@ class Settings:
             raise ValueError("YROBOT_SCENE_CHANGE_THRESHOLD must be between 0 and 1")
         if not 0.001 <= self.vad_rms_min <= 0.5:
             raise ValueError("YROBOT_VAD_RMS_MIN must be between 0.001 and 0.5")
+        if not 0.0 <= self.head_tracking_weight <= 1.0:
+            raise ValueError("YROBOT_HEAD_TRACKING_WEIGHT must be between 0 and 1")
 
     @property
     def realtime_mode(self) -> str:
@@ -240,7 +285,7 @@ class Settings:
             barge_fast_confirm_ms=int(_num("YROBOT_BARGE_FAST_CONFIRM_MS", 140, env)),
             barge_fast_echo_similarity=_num("YROBOT_BARGE_FAST_ECHO_SIMILARITY", 0.45, env),
             barge_fast_unexplained_db=_num("YROBOT_BARGE_FAST_UNEXPLAINED_DB", -36.0, env),
-            head_tracking_weight=_num("YROBOT_HEAD_TRACKING_WEIGHT", 0.4, env),
+            head_tracking_weight=_num("YROBOT_HEAD_TRACKING_WEIGHT", 0.7, env),
             ref_audio_path=env.get("YROBOT_REF_AUDIO_PATH") or None,
             tts_ref_audio_path=env.get("YROBOT_TTS_REF_AUDIO_PATH") or None,
             proactive_enabled=proactive,
@@ -263,5 +308,10 @@ class Settings:
             memory_path=env.get("YROBOT_MEMORY_PATH") or "~/.config/yrobot/memory.json",
             profile_name=env.get("YROBOT_PROFILE", "default").strip() or "default",
             profile_dir=env.get("YROBOT_PROFILE_DIR", "").strip(),
-            conversation_backend=env.get("YROBOT_CONVERSATION_BACKEND", "minicpmo").strip() or "minicpmo",
+            conversation_backend=(
+                env.get("YROBOT_CONVERSATION_BACKEND", "xiaozhi").strip() or "xiaozhi"
+            ),
+            qwen_api_key=env.get("DASHSCOPE_API_KEY") or None,
+            qwen_url=(env.get("YROBOT_QWEN_URL") or QWEN_REALTIME_URL).strip(),
+            qwen_voice=(env.get("YROBOT_QWEN_VOICE") or "Ethan").strip(),
         )

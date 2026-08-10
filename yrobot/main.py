@@ -14,6 +14,7 @@ import math
 import os
 import threading
 import time
+from typing import Any
 
 import numpy as np
 from dotenv import load_dotenv
@@ -38,6 +39,15 @@ XIAOZHI_DEVICE_ID = os.environ.get("XIAOZHI_DEVICE_ID", XIAOZHI_DEVICE_ID)
 XIAOZHI_CONV_URL = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
 XIAOZHI_TOKEN = os.environ.get("XIAOZHI_TOKEN", "test-token")
 
+# Configure logging early so both uvicorn (`python -m yrobot.main`) and
+# cli() (`python yrobot/main.py`) get a working root logger. The basicConfig
+# inside cli() below only runs in the second path.
+logging.basicConfig(
+    level=os.environ.get("YROBOT_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname).1s %(name)s: %(message)s",
+)
+
+
 logger = logging.getLogger(__name__)
 
 # ── Safe-mode startup guard ────────────────────────────────────────────────────
@@ -45,6 +55,35 @@ logger = logging.getLogger(__name__)
 # the threshold. A successful run() clears the counter.
 _STARTUP_FAIL_COUNTER_PATH = "/tmp/.yrobot_startup_failures"
 _MAX_STARTUP_FAILURES = 3
+_MOTION_SET_TARGET_RESTART_FAILURES = 1500  # ~30s at 50 Hz
+_QWEN_RECONNECT_MESSAGES = (
+    "no response was generated for 300 seconds",
+    "session was closed",
+    "internal service error",
+)
+
+
+class RecentTranscriptWindow:
+    """Build short ASR-fragment candidates without widening device control."""
+
+    def __init__(self, *, window_s: float = 1.5, max_items: int = 4) -> None:
+        self.window_s = window_s
+        self.max_items = max_items
+        self._items: list[tuple[float, str]] = []
+
+    def candidates(self, transcript: str, *, now: float | None = None) -> list[str]:
+        text = transcript.strip()
+        if not text:
+            return []
+        current = time.monotonic() if now is None else now
+        self._items = [
+            (at, value) for at, value in self._items if current - at <= self.window_s
+        ]
+        self._items.append((current, text))
+        self._items = self._items[-self.max_items :]
+        values = [value for _, value in self._items]
+        joined = "".join(values)
+        return [text] if joined == text else [text, joined]
 
 
 def _record_startup_failure() -> int:
@@ -71,8 +110,42 @@ def _clear_startup_failure_counter() -> None:
         pass
 
 
+def _start_motion_connection_watchdog(choreo, stop_event: threading.Event) -> threading.Thread:
+    """Restart YRobot when the SDK set_target connection is gone for ~30s."""
+    def _watch() -> None:
+        while not stop_event.wait(5.0):
+            try:
+                status = choreo.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("motion watchdog status failed: %s", exc)
+                continue
+            consecutive = int(status.get("set_target_consecutive_failures") or 0)
+            if consecutive >= _MOTION_SET_TARGET_RESTART_FAILURES:
+                logger.error(
+                    "motion set_target connection lost for %d consecutive writes; restarting YRobot",
+                    consecutive,
+                )
+                os._exit(70)
+    thread = threading.Thread(target=_watch, name="motion-connection-watchdog", daemon=True)
+    thread.start()
+    return thread
+
+
+def _qwen_should_reconnect(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(fragment in message for fragment in _QWEN_RECONNECT_MESSAGES)
+
+
 class _XiaozhiReconnect(Exception):
     """Expected Xiaozhi session close that should reconnect without traceback."""
+
+
+class _XiaozhiPaused(Exception):
+    """Local mic gate paused Xiaozhi; reconnect after input is enabled."""
+
+
+def _xiaozhi_should_pause_for_mic(input_enabled: bool) -> bool:
+    return not input_enabled
 
 
 def _websocket_close_code(exc: BaseException) -> int | None:
@@ -135,7 +208,8 @@ def _fuse_speaker_gaze(
     audio_yaw: float,
     visual_yaw: float | None,
     *,
-    max_visual_audio_delta: float = math.radians(28.0),
+    max_visual_audio_delta: float = math.radians(70.0),
+    visual_weight: float = 0.7,
 ) -> tuple[float, str]:
     """Use visual gaze only when it agrees with the audio speaker direction."""
     if visual_yaw is None:
@@ -143,7 +217,8 @@ def _fuse_speaker_gaze(
     delta = abs((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi)
     if delta > max_visual_audio_delta:
         return audio_yaw, "audio"
-    fused = audio_yaw + ((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi) * 0.45
+    weight = max(0.0, min(1.0, visual_weight))
+    fused = audio_yaw + ((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi) * weight
     return fused, "audio+visual"
 
 
@@ -163,15 +238,277 @@ class Yrobot(ReachyMiniApp):
         register_settings_routes(self.settings_app, media_holder=self._media_holder)
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
-        """Run YRobot with Xiaozhi cloud backend."""
+        """Run exactly one configured conversation backend."""
         try:
             self._media_holder.media = reachy_mini.media
-            self._run_xiaozhi(reachy_mini, stop_event)
+            settings = Settings.from_env()
+            RUNTIME_HEALTH.update(
+                backend=settings.conversation_backend,
+                last_error=None,
+            )
+            if settings.conversation_backend == "qwen":
+                self._run_qwen(reachy_mini, stop_event, settings)
+            else:
+                self._run_xiaozhi(reachy_mini, stop_event)
             _clear_startup_failure_counter()
         except Exception as exc:
             logger.exception("YRobot startup failed: %s", exc)
+            RUNTIME_HEALTH.update(ws_state="error", last_error=str(exc))
             ROBOT_STATE.set("safe_mode")
             _enter_safe_mode(self._media_holder, exc, stop_event)
+
+    def _run_qwen(
+        self,
+        reachy_mini: ReachyMini,
+        stop_event: threading.Event,
+        settings: Settings,
+    ) -> None:
+        """Run wake-gated Qwen PCM audio without touching the official daemon."""
+        if not settings.qwen_api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY is required for QWEN")
+
+        import asyncio
+
+        import numpy as np
+        import sounddevice as sd
+
+        from yrobot.app_config import motion_controller_singleton
+        from yrobot.audio import _publish_dashboard_mic, get_vad_rms_min
+        from yrobot.audio_runtime import PcmPlayback, WakeGate
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
+        from yrobot.qwen_realtime import QwenRealtimeClient
+        from yrobot.qwen_tools import ToolExecutor
+
+        startup_head_pose = None
+        startup_antennas = None
+        try:
+            startup_head_pose = reachy_mini.get_current_head_pose()
+            _, antenna_joints = reachy_mini.get_current_joint_positions()
+            startup_antennas = (float(antenna_joints[0]), float(antenna_joints[1]))
+        except Exception as exc:
+            logger.warning("could not capture QWEN startup pose: %s", exc)
+
+        motor_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                reachy_mini.enable_motors()
+                motor_error = None
+                break
+            except Exception as exc:
+                motor_error = exc
+                logger.warning("QWEN motor enable failed (attempt %d/3): %s", attempt, exc)
+                if attempt < 3:
+                    stop_event.wait(1.0)
+        if motor_error is not None:
+            RUNTIME_HEALTH.update(motor_ready=False)
+            raise RuntimeError("Reachy motors could not be enabled") from motor_error
+
+        RUNTIME_HEALTH.update(motor_ready=True)
+        choreo = Choreographer(
+            reachy_mini,
+            startup_head_pose=startup_head_pose,
+            startup_antennas=startup_antennas,
+            startup_blend_duration=4.0,
+        )
+        motion_controller_singleton().set(choreo)
+        choreo.start()
+        _start_motion_connection_watchdog(choreo, stop_event)
+
+        # ── SpeakerTracker: audio DoA + visual face (shared with XIAOZHI) ──
+        from yrobot.tracking import SpeakerTracker
+        tracker = SpeakerTracker(
+            reachy_mini,
+            choreo,
+            head_tracking_weight=settings.head_tracking_weight,
+        )
+        tracker.start()
+
+        try:
+            reachy_mini.media.stop_playing()
+        except Exception as exc:
+            logger.warning("could not release SDK speaker for QWEN: %s", exc)
+
+        mic_stream = sd.InputStream(
+            device="reachymini_audio_src",
+            samplerate=16000,
+            channels=1,
+            dtype="int16",
+            blocksize=960,
+        )
+        playback = PcmPlayback()
+        gate = WakeGate()
+        transcript_window = RecentTranscriptWindow()
+        mic_stream.start()
+        playback.start()
+
+        async def run_qwen() -> None:
+            response_started = False
+            client: QwenRealtimeClient
+
+            def on_audio(pcm: bytes) -> None:
+                nonlocal response_started
+                if not response_started:
+                    response_started = True
+                    choreo.set_mode(SPEAK)
+                    choreo.release_still()
+                    RUNTIME_HEALTH.update(tts_active=True)
+                playback.put(pcm)
+                RUNTIME_HEALTH.update(
+                    audio_queue=playback.pending,
+                    audio_dropped=playback.dropped,
+                    last_tts_packet_at=time.time(),
+                )
+
+            def on_interrupt() -> None:
+                nonlocal response_started
+                response_started = False
+                playback.flush()
+                choreo.set_mode(LISTEN)
+                RUNTIME_HEALTH.update(tts_active=False, audio_queue=0)
+
+            def on_user_speech() -> None:
+                gate.note_speech()
+                choreo.set_mode(LISTEN)
+                tracker.note_speech()  # pulse DoA window for head tracking
+
+            def on_response_done() -> None:
+                nonlocal response_started
+                response_started = False
+                choreo.set_mode(IDLE)
+                RUNTIME_HEALTH.update(tts_active=False)
+
+            async def activate_from_wake() -> None:
+                await client.set_turn_detection("semantic_vad")
+                await client.request_response()
+
+            async def execute_local_spoken_control(candidates: list[str]) -> None:
+                for candidate in candidates:
+                    result = await asyncio.to_thread(
+                        tool_executor.execute_spoken_control, candidate
+                    )
+                    if result is not None:
+                        logger.info(
+                            "qwen local spoken control: %s transcript=%r",
+                            result,
+                            candidate,
+                        )
+                        return
+
+            def on_input_transcript(transcript: str) -> None:
+                logger.info("qwen stt: %s", transcript[:120])
+                candidates = transcript_window.candidates(transcript)
+                if gate.observe_transcript(transcript):
+                    logger.info("QWEN wake word detected")
+                    choreo.play_move("nod")
+                    asyncio.create_task(activate_from_wake())
+                if gate.active and candidates:
+                    asyncio.create_task(execute_local_spoken_control(candidates))
+
+            def on_output_transcript(transcript: str) -> None:
+                logger.info("qwen response: %s", transcript[:160])
+
+            def on_state(state: str) -> None:
+                RUNTIME_HEALTH.update(ws_state=state)
+
+            def on_error(message: str) -> None:
+                RUNTIME_HEALTH.update(last_error=message)
+
+            tool_executor = ToolExecutor(settings)
+            client = QwenRealtimeClient(
+                settings,
+                tool_executor,
+                on_audio=on_audio,
+                on_input_transcript=on_input_transcript,
+                on_output_transcript=on_output_transcript,
+                on_interrupt=on_interrupt,
+                on_user_speech=on_user_speech,
+                on_response_done=on_response_done,
+                on_state=on_state,
+                on_error=on_error,
+            )
+            cloud_task = asyncio.create_task(client.run(stop_event))
+            ready_task = asyncio.create_task(client.ready.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {cloud_task, ready_task},
+                    timeout=15.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cloud_task in done:
+                    await cloud_task
+                if ready_task not in done:
+                    raise TimeoutError("QWEN session setup timed out")
+
+                threshold = max(500.0, get_vad_rms_min() * 32768.0)
+                manual_speaking = False
+                silence_frames = 0
+                turn_frames = 0
+                while not stop_event.is_set():
+                    if cloud_task.done():
+                        await cloud_task
+                    frame, _ = await asyncio.to_thread(mic_stream.read, 960)
+                    pcm = frame.astype("<i2", copy=False).tobytes()
+                    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+                    rms = float(np.sqrt(np.mean(np.square(samples))))
+                    _publish_dashboard_mic(rms / 32768.0)
+                    if not audio_input_controller_singleton().enabled():
+                        await asyncio.sleep(0)
+                        continue
+
+                    if gate.active:
+                        await client.append_pcm(pcm)
+                        if gate.expire():
+                            await client.set_turn_detection(None)
+                            playback.flush()
+                            choreo.set_mode(IDLE)
+                            logger.info("QWEN wake expired (60s timeout)")
+                        continue
+
+                    if rms >= threshold:
+                        manual_speaking = True
+                        silence_frames = 0
+                    elif manual_speaking:
+                        silence_frames += 1
+                    else:
+                        continue
+
+                    await client.append_pcm(pcm)
+                    turn_frames += 1
+                    if silence_frames >= 8 or turn_frames >= 167:
+                        await client.commit_turn()
+                        manual_speaking = False
+                        silence_frames = 0
+                        turn_frames = 0
+            finally:
+                ready_task.cancel()
+                cloud_task.cancel()
+                for task in (ready_task, cloud_task):
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+        try:
+            while not stop_event.is_set():
+                try:
+                    asyncio.run(run_qwen())
+                except Exception as exc:
+                    if not _qwen_should_reconnect(exc):
+                        raise
+                    logger.warning("QWEN session closed, reconnecting: %s", exc)
+                    RUNTIME_HEALTH.increment("reconnects")
+                    RUNTIME_HEALTH.update(ws_state="reconnecting", last_error=str(exc))
+                    playback.flush()
+                    choreo.set_mode(IDLE)
+                    stop_event.wait(2.0)
+        finally:
+            RUNTIME_HEALTH.update(ws_state="stopped", tts_active=False, audio_queue=0)
+            playback.close()
+            mic_stream.stop()
+            mic_stream.close()
+            tracker.stop()
+            choreo.close()
+            choreo.join(timeout=2.0)
 
     def _run_xiaozhi(
         self,
@@ -192,6 +529,7 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic
         from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
         import time as _sleep
+        settings = Settings.from_env()
 
         # ── Safe motor startup with slow Choreographer rise ───────
         # Snapshot the real pose before our 50 Hz writer starts. The first
@@ -253,154 +591,26 @@ class Yrobot(ReachyMiniApp):
             return _recorded_moves[0]
         motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
+        _start_motion_connection_watchdog(choreo, stop_event)
         # Wait for the slow initial rise unless shutdown was requested.
         if not stop_event.wait(timeout=8.0):
             choreo._gaze._max_vel = 2.5
             choreo._gaze._omega = 6.0
             logger.info("head rise complete, gaze speed restored")
 
-        # SoundCompass: track speaker direction via XVF3800 DoA
-        _user_speaking = [False]
-        def _current_head_yaw():
-            try:
-                import numpy as np
-                return head_yaw_of(np.asarray(reachy_mini.get_current_head_pose()))
-            except Exception:
-                return choreo.current_yaw()
-        SoundCompass.WINDOW_S = 2.0       # 2s smoothing window (was 1.0)
-        SoundCompass.MIN_CONFIDENCE = 6.0  # need 6+ confidence (was 3.0)
-        SoundCompass.DEADBAND_RAD = 0.20   # ~11° deadband (was 0.12)
-
-        # ── PersonTracker: fuse camera face detection with audio DoA ──────
-        # Runs at ~5 fps; when a face is confidently detected the visual
-        # yaw overrides the audio-only DoA estimate.
-        import threading as _th_face
-        _face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        # ── SpeakerTracker: audio DoA + visual face (shared with QWEN) ───
+        from yrobot.tracking import SpeakerTracker
+        tracker = SpeakerTracker(
+            reachy_mini,
+            choreo,
+            head_tracking_weight=settings.head_tracking_weight,
         )
-        _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
-        _last_gaze_log = [0.0]
-
-        def _set_speaker_gaze(audio_yaw: float) -> None:
-            visual_yaw = None
-            if _visual_gaze[0] is not None:
-                vy, vt = _visual_gaze[0]
-                if time.time() - vt < 0.8:
-                    visual_yaw = vy
-            target, source = _fuse_speaker_gaze(audio_yaw, visual_yaw)
-            choreo.set_gaze_target(target, source=source)
-            if time.time() - _last_gaze_log[0] > 2.0:
-                _last_gaze_log[0] = time.time()
-                visual_label = "none" if visual_yaw is None else f"{math.degrees(visual_yaw):.0f}°"
-                logger.info(
-                    "gaze target source=%s audio=%.0f° visual=%s target=%.0f°",
-                    source,
-                    math.degrees(audio_yaw),
-                    visual_label,
-                    math.degrees(target),
-                )
-
-        # Audio is the primary speaker signal. Vision only refines the target
-        # when a recent face agrees with the DoA direction; it never mutes DoA.
-        compass = SoundCompass(
-            reachy_mini.media,
-            current_head_yaw=_current_head_yaw,
-            user_active=lambda: _user_speaking[0],
-            on_target=_set_speaker_gaze,
-        )
-        compass.start()
-        _sleep.sleep(1.0)
-        _vis_frames = 0  # consecutive face detections (2 required to override DoA)
-        _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
-        _vis_stop = _th_face.Event()
-
-        def _handle_emotion(choreo: Any, emo: str, last: dict[str, float], rec_provider: Any) -> None:
-            """Map Xiaozhi emotion to a bounded built-in move."""
-            _handle_xiaozhi_emotion(choreo, emo, last, rec_provider, prefer_recorded=False)
-
-
-        def _face_tracker():
-            nonlocal _vis_frames
-            import json as _json, urllib.request as _ur
-            frame_url = "http://127.0.0.1:8042/api/camera/frame"
-            state_url = "http://127.0.0.1:8042/api/camera/state"
-            _last_cam_check = 0.0
-            def _ensure_camera():
-                """Re-enable camera via HTTP; called at startup then every 30s."""
-                nonlocal _last_cam_check
-                now = time.time()
-                if now - _last_cam_check < 30:
-                    return
-                _last_cam_check = now
-                try:
-                    _r = _ur.Request(state_url, method="PUT",
-                        data=_json.dumps({"running": True}).encode(),
-                        headers={"Content-Type": "application/json"})
-                    _ur.urlopen(_r, timeout=3)
-                except Exception:
-                    pass
-            while not _vis_stop.is_set():
-                _ensure_camera()
-                try:
-                    req = _ur.Request(frame_url)
-                    with _ur.urlopen(req, timeout=3) as resp:
-                        jpeg = resp.read()
-                    arr = np.frombuffer(jpeg, dtype=np.uint8)
-                    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    if bgr is None:
-                        _vis_stop.wait(0.5)
-                        continue
-                    # Downscale to 320px wide: Haar detection cost scales with
-                    # pixels; 320 keeps ~2-3 fps on the low-power board while
-                    # still tracking a face across the ~80° FOV.
-                    scale = bgr.shape[1] / 320.0
-                    if scale > 1.0:
-                        small = cv2.resize(bgr, (320, int(bgr.shape[0] / scale)))
-                    else:
-                        small = bgr
-                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-                    faces = _face_cascade.detectMultiScale(
-                        gray, scaleFactor=1.15, minNeighbors=4,
-                        minSize=(24, 24),
-                    )
-                    if len(faces) == 0:
-                        # No face seen this frame; let audio DoA dominate.
-                        _visual_gaze[0] = None
-                        _vis_frames = 0
-                        _vis_stop.wait(0.5)
-                        continue
-                    # Require 2 consecutive detections before the visual gaze
-                    # overrides the audio DoA: a single spurious Haar hit at
-                    # the frame edge would otherwise yank the head around.
-                    _vis_frames += 1
-                    if _vis_frames < 2:
-                        _vis_stop.wait(0.5)
-                        continue
-                    # Use the largest face.
-                    x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
-                    cx = (x + w / 2) * scale
-                    # Camera-relative angle via pinhole model: atan2 of the
-                    # pixel offset divided by focal length.  This is exact
-                    # and uses the real camera calibration, no FOV guess.
-                    try:
-                        K = reachy_mini.media.camera.K
-                        fx = float(K[0, 0])
-                        cx_princ = float(K[0, 2])
-                        cam_rad = math.atan2(cx - cx_princ, fx)
-                    except Exception:
-                        cam_rad = math.radians(
-                            (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1]))
-                    # Convert to world yaw using head pose.
-                    try:
-                        head_yaw = _current_head_yaw()
-                    except Exception:
-                        head_yaw = choreo.current_yaw()
-                    _visual_gaze[0] = (head_yaw + cam_rad, time.time())
-                    _vis_stop.wait(0.5)   # ~2 fps, keep CPU low
-                except Exception:
-                    _vis_stop.wait(0.5)
-        _vis_thread = _th_face.Thread(target=_face_tracker, name="face-tracker", daemon=True)
-        _vis_thread.start()
+        tracker.start()
+        # Backward-compat alias so the existing _user_speaking[0] = True/False
+        # assignments in the XIAOZHI VAD path below still update the same list
+        # that SoundCompass.user_active reads.
+        _user_speaking = tracker._user_speaking
+        _last_emotion_move: dict[str, float] = {}
 
         # Reduce SoundCompass jitter: log raw angles, use longer window
         _compass_log = [0.0]  # last logged angle to avoid spam
@@ -561,7 +771,7 @@ class Yrobot(ReachyMiniApp):
                 _waked = False
                 _wake_deadline = 0.0
                 _wake_at = 0.0  # discard stale TTS from before wake
-                WAKE_WORDS = ("小白", "阿皮", "reachy", "hey reachy", "嘿")
+                WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿")
                 WAKE_TIMEOUT = 60.0  # reset on every speech burst
 
                 async def recv():
@@ -621,7 +831,7 @@ class Yrobot(ReachyMiniApp):
                                 if choreo.current_move() is not None or choreo.current_recorded() is not None:
                                     logger.info("xz emotion %s ignored (move in progress)", emo)
                                 else:
-                                    _handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
+                                    _handle_xiaozhi_emotion(choreo, emo, tracker._last_emotion_move, _get_recorded, prefer_recorded=False)
                             if t == "stt":
                                 text = d.get("text","")
                                 logger.info("xz stt: %s", text)
@@ -733,10 +943,8 @@ class Yrobot(ReachyMiniApp):
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0)
                             continue
-                        if not audio_input_controller_singleton().enabled():
-                            await _a.to_thread(mic_stream.read, 960)
-                            await _a.sleep(0.1)
-                            continue
+                        if _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled()):
+                            raise _XiaozhiPaused("mic input disabled")
                         frames = []
                         rms_max = 0
                         for _ in range(16):
@@ -794,8 +1002,23 @@ class Yrobot(ReachyMiniApp):
 
         try:
             while not stop_event.is_set():
+                if _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled()):
+                    RUNTIME_HEALTH.update(ws_state="paused", session_id=None, tts_active=False)
+                    logger.info("xiaozhi paused while mic input disabled")
+                    while (
+                        not stop_event.is_set()
+                        and _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled())
+                    ):
+                        stop_event.wait(0.5)
+                    if stop_event.is_set():
+                        break
+                    logger.info("xiaozhi resuming after mic input enabled")
                 try:
                     _a.run(run())
+                except _XiaozhiPaused as e:
+                    RUNTIME_HEALTH.update(ws_state="paused", session_id=None, tts_active=False)
+                    logger.info("xiaozhi paused: %s", e)
+                    continue
                 except _XiaozhiReconnect as e:
                     RUNTIME_HEALTH.update(ws_state="reconnecting", session_id=None, tts_active=False)
                     logger.warning("xiaozhi session closed, reconnecting: %s", e)

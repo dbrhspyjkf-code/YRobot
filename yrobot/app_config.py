@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -25,9 +26,10 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Response
 
-from yrobot.config import Settings
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
+from yrobot.config import SUPPORTED_CONVERSATION_BACKENDS, QWEN_VOICES, Settings
 from yrobot.env_store import update_env_value
+from yrobot.qwen_realtime import _model_url
 from yrobot.state import RUNTIME_HEALTH
 
 logger = logging.getLogger(__name__)
@@ -246,6 +248,13 @@ CAMERA_LONG_EDGE = 640
 CAMERA_JPEG_QUALITY = 70
 CAMERA_INTERVAL_S = 0.5
 SYSTEM_SERVICE_NAME = "yrobot.service"
+REACHY_DAEMON_BASE_URL = "http://127.0.0.1:8000"
+REACHY_DAEMON_ENDPOINTS = (
+    "/api/daemon/status",
+    "/api/daemon/robot-app-lock-status",
+    "/api/state/doa",
+)
+REACHY_DAEMON_ACTIONS = {"wake", "sleep", "restart"}
 SYSTEM_POWER_ACTIONS = {
     "reboot": {
         "command": ["sudo", "-n", "systemctl", "reboot"],
@@ -258,6 +267,143 @@ SYSTEM_POWER_ACTIONS = {
 }
 
 
+def _fetch_reachy_daemon_json(base_url: str, path: str) -> tuple[Any | None, str | None]:
+    url = f"{base_url.rstrip('/')}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            return json.loads(resp.read().decode("utf-8")), None
+    except Exception as exc:  # noqa: BLE001 — dashboard status is best-effort
+        return None, str(exc)
+
+
+def _derive_reachy_awake(motor_mode: str | None, daemon_state: str | None) -> bool | None:
+    if daemon_state is not None and daemon_state != "running":
+        return False
+    if motor_mode is None:
+        return None
+    return motor_mode in {"enabled", "gravity_compensation"}
+
+
+def _derive_reachy_app_slot(state: str | None, holder: str | None) -> dict[str, Any]:
+    if state == "local_app":
+        return {
+            "active_app": holder,
+            "active_app_transport": "local",
+            "remote_session_active": False,
+        }
+    if state == "remote_session":
+        return {
+            "active_app": holder,
+            "active_app_transport": "webrtc",
+            "remote_session_active": True,
+        }
+    if state == "free":
+        return {
+            "active_app": None,
+            "active_app_transport": None,
+            "remote_session_active": False,
+        }
+    return {
+        "active_app": None,
+        "active_app_transport": None,
+        "remote_session_active": None,
+    }
+
+
+def _read_reachy_daemon_status(
+    base_url: str = REACHY_DAEMON_BASE_URL,
+    fetch: Callable[[str, str], tuple[Any | None, str | None]] = _fetch_reachy_daemon_json,
+) -> dict[str, Any]:
+    results = {path: fetch(base_url, path) for path in REACHY_DAEMON_ENDPOINTS}
+    status, _ = results["/api/daemon/status"]
+    app_lock, _ = results["/api/daemon/robot-app-lock-status"]
+    doa, _ = results["/api/state/doa"]
+    errors = {path: err for path, (_, err) in results.items() if err}
+    daemon: dict[str, Any] = {
+        "available": any(payload is not None for payload, _ in results.values()),
+        "base_url": base_url,
+        "firmware_version": None,
+        "hardware_id": None,
+        "robot_name": None,
+        "daemon_state": None,
+        "motor_mode": None,
+        "awake": None,
+        "app_lock_state": None,
+        "active_app": None,
+        "active_app_transport": None,
+        "remote_session_active": None,
+        "doa_angle_rad": None,
+        "doa_speech_detected": None,
+        "errors": errors,
+    }
+    if isinstance(status, dict):
+        daemon_state = status.get("state")
+        backend = status.get("backend_status") or {}
+        motor_mode = backend.get("motor_control_mode")
+        daemon.update(
+            {
+                "firmware_version": status.get("version"),
+                "hardware_id": status.get("hardware_id"),
+                "robot_name": status.get("robot_name"),
+                "daemon_state": daemon_state,
+                "motor_mode": motor_mode,
+                "awake": _derive_reachy_awake(motor_mode, daemon_state),
+            }
+        )
+    if isinstance(app_lock, dict):
+        daemon["app_lock_state"] = app_lock.get("state")
+        daemon.update(_derive_reachy_app_slot(app_lock.get("state"), app_lock.get("holder_name")))
+    if isinstance(doa, dict):
+        daemon["doa_angle_rad"] = doa.get("angle")
+        daemon["doa_speech_detected"] = doa.get("speech_detected")
+    return daemon
+
+
+class ReachyDaemonController:
+    """Small wrapper around the official Reachy Mini daemon lifecycle endpoints."""
+
+    def __init__(
+        self,
+        base_url: str = REACHY_DAEMON_BASE_URL,
+        status_reader: Callable[[], dict[str, Any]] | None = None,
+        post: Callable[[str], None] | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._status_reader = status_reader or (lambda: _read_reachy_daemon_status(self._base_url))
+        self._post = post or self._post_path
+
+    def _post_path(self, path: str) -> None:
+        url = f"{self._base_url}{path}"
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req, timeout=5.0):
+            pass
+
+    def action(self, action: str) -> dict[str, Any]:
+        if action not in REACHY_DAEMON_ACTIONS:
+            raise ValueError("unsupported reachy daemon action")
+        if action == "wake":
+            if self._status_reader().get("daemon_state") == "running":
+                self._post("/api/motors/set_mode/enabled")
+                self._post("/api/move/play/wake_up")
+            else:
+                self._post("/api/daemon/start?wake_up=true")
+        elif action == "sleep":
+            self._post("/api/daemon/stop?goto_sleep=true")
+        else:
+            self._post("/api/daemon/restart")
+        return {"ok": True, "action": action}
+
+
+def _request_reachy_sleep_before_power() -> None:
+    req = urllib.request.Request(
+        f"{REACHY_DAEMON_BASE_URL}/api/daemon/stop?goto_sleep=true",
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10.0):
+        pass
+    time.sleep(1.0)
+
+
 class SystemController:
     """Operate the systemd unit that runs this dashboard.
 
@@ -268,8 +414,13 @@ class SystemController:
     process SIGTERM; otherwise the browser sees a 503 / empty reply.
     """
 
-    def __init__(self, service: str = SYSTEM_SERVICE_NAME) -> None:
+    def __init__(
+        self,
+        service: str = SYSTEM_SERVICE_NAME,
+        before_power_action: Callable[[], None] | None = _request_reachy_sleep_before_power,
+    ) -> None:
         self._service = service
+        self._before_power_action = before_power_action
 
     def state(self) -> dict[str, Any]:
         return {
@@ -310,8 +461,18 @@ class SystemController:
         }
 
     @staticmethod
-    def _dispatch_power(command: list[str], action: str) -> None:
+    @staticmethod
+    def _dispatch_power(
+        command: list[str],
+        action: str,
+        before_power_action: Callable[[], None] | None,
+    ) -> None:
         try:
+            if before_power_action is not None:
+                try:
+                    before_power_action()
+                except Exception as exc:  # noqa: BLE001 — shutdown must continue
+                    logger.warning("pre-power sleep failed before %s: %s", action, exc)
             subprocess.run(
                 command,
                 stdout=subprocess.DEVNULL,
@@ -328,7 +489,7 @@ class SystemController:
             raise ValueError("unsupported system power action")
         threading.Thread(
             target=self._dispatch_power,
-            args=(spec["command"], action),
+            args=(spec["command"], action, self._before_power_action),
             name=f"yrobot-system-power-{action}",
             daemon=True,
         ).start()
@@ -530,8 +691,18 @@ class LogReader:
     ) -> tuple[list[dict[str, Any]], str | None]:
         lines = max(1, min(self.MAX_LINES, int(lines)))
         min_priority = self._priority_for(min_level)
-        # "chat" filter: keep only Xiaozhi conversation lines (STT + TTS text).
-        chat_markers = ("xz stt:", "xz tts text:")
+        # "chat" filter: keep only user STT and bot reply lines, for any backend.
+        # Each backend writes its own logger lines; we list their markers here.
+        #   XIAOZHI:  "xz stt: <text>"          (user speech-to-text)
+        #             "xz tts text: <text>"     (bot reply text, before audio)
+        #   QWEN:     "qwen stt: <text>"        (user speech-to-text)
+        #             "qwen response: <text>"   (bot reply text)
+        # Connection / audio meta lines ("xz audio packets=", "xz tts start",
+        # "xiaozhi ready", "QWEN wake word detected", etc.) are intentionally
+        # excluded - they describe transport, not dialogue. To add a new
+        # backend, follow the "<name> stt:" / "<name> response:" or
+        # "<name> tts text:" convention and append its markers here.
+        chat_markers = ("qwen stt:", "qwen response:", "xz stt:", "xz tts text:")
         try:
             proc = subprocess.run(
                 [
@@ -739,6 +910,7 @@ def build_status(
             "uptime_s": max(0, int(time.monotonic() - STARTED_AT)),
         },
         "system": _read_system_metrics(),
+        "daemon": _read_reachy_daemon_status(),
         "motion": motion_controller_singleton().status(),
         "runtime": RUNTIME_HEALTH.snapshot(),
         "conversation": {
@@ -792,6 +964,146 @@ def register_settings_routes(
     audio_input = audio_input_controller or audio_input_controller_singleton()
 
     motion = motion_controller_singleton()
+    configured_backend = Settings.from_env(os.environ).conversation_backend
+    configured_voice = Settings.from_env(os.environ).qwen_voice
+
+    @app.get("/api/conversation/backend")
+    def get_conversation_backend() -> dict[str, Any]:
+        runtime = RUNTIME_HEALTH.snapshot()
+        return {
+            "configured_backend": configured_backend,
+            "running_backend": runtime.get("backend", "xiaozhi"),
+            "connection_state": runtime.get("ws_state", "not_started"),
+            "error": runtime.get("last_error"),
+        }
+
+    @app.put("/api/conversation/backend")
+    def put_conversation_backend(document: dict[str, Any]) -> dict[str, Any]:
+        nonlocal configured_backend
+        backend = document.get("backend")
+        if not isinstance(backend, str) or backend not in SUPPORTED_CONVERSATION_BACKENDS:
+            raise HTTPException(status_code=422, detail="backend must be 'xiaozhi' or 'qwen'")
+        try:
+            update_env_value(vad_env_path, "YROBOT_CONVERSATION_BACKEND", backend)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"could not save backend env: {exc}"
+            ) from exc
+        configured_backend = backend
+        return {"configured_backend": backend, "restart_required": True}
+
+    @app.get("/api/conversation/voice")
+    def get_conversation_voice() -> dict[str, Any]:
+        """QWEN voice picker: returns the configured voice and the available list."""
+        return {
+            "configured_voice": configured_voice,
+            "available_voices": list(QWEN_VOICES),
+        }
+
+    @app.put("/api/conversation/voice")
+    def put_conversation_voice(document: dict[str, Any]) -> dict[str, Any]:
+        nonlocal configured_voice
+        voice = document.get("voice")
+        if not isinstance(voice, str) or voice not in QWEN_VOICES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"voice must be one of {', '.join(QWEN_VOICES)}",
+            )
+        try:
+            update_env_value(vad_env_path, "YROBOT_QWEN_VOICE", voice)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"could not save voice env: {exc}"
+            ) from exc
+        configured_voice = voice
+        return {"configured_voice": voice, "restart_required": True}
+
+    @app.post("/api/conversation/voice/preview")
+    async def post_voice_preview(voice: str) -> dict[str, Any]:
+        """Generate a short audio sample for the given voice (no restart needed).
+
+        Connects a short-lived DashScope realtime WebSocket session using the
+        configured model, asks the model to speak a single greeting in the
+        requested voice, and returns the collected PCM deltas as base64 so the
+        dashboard can play them in-browser without restarting YRobot.
+        """
+        if voice not in QWEN_VOICES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"voice must be one of {', '.join(QWEN_VOICES)}",
+            )
+        settings = Settings.from_env(os.environ)
+        if not settings.qwen_api_key:
+            raise HTTPException(status_code=503, detail="DASHSCOPE_API_KEY not configured")
+        try:
+            import websockets  # type: ignore[import-not-found]
+            import base64 as _b64
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail=f"websockets not installed: {exc}") from exc
+        sample_text = "你好，这是一段试听。"
+        ws_url = _model_url(settings.qwen_url, settings.qwen_model)
+        session_payload = {
+            "type": "session.update",
+            "session": {
+                "modalities": ["text", "audio"],
+                "voice": voice,
+                "input_audio_format": "pcm",
+                "output_audio_format": "pcm",
+                "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"},
+                "turn_detection": None,
+            },
+        }
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": f"Bearer {settings.qwen_api_key}"},
+                max_size=10_000_000,
+            ) as ws:
+                await ws.send(json.dumps(session_payload))
+                await ws.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": sample_text}],
+                    },
+                }))
+                await ws.send(json.dumps({"type": "response.create"}))
+                audio_chunks: list[bytes] = []
+                while True:
+                    raw_msg = await ws.recv()
+                    try:
+                        msg = json.loads(raw_msg)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    evt = msg.get("type", "")
+                    if evt == "response.audio.delta":
+                        b64 = msg.get("delta") or ""
+                        if b64:
+                            audio_chunks.append(_b64.b64decode(b64))
+                    elif evt == "response.done":
+                        break
+                    elif evt == "error":
+                        err = msg.get("error") or {}
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"DashScope error: {err.get('message', err)}",
+                        )
+                pcm_bytes = b"".join(audio_chunks)
+                sample_rate = 24000
+                return {
+                    "pcm_base64": _b64.b64encode(pcm_bytes).decode("ascii"),
+                    "sample_rate": sample_rate,
+                    "duration_s": len(pcm_bytes) / 2 / sample_rate,
+                    "voice": voice,
+                    "text": sample_text,
+                }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"preview failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
     @app.get("/api/motion")
     def get_motion() -> dict[str, Any]:
@@ -817,6 +1129,7 @@ def register_settings_routes(
     volume_controller = VolumeController()
 
     system_controller = SystemController()
+    reachy_daemon_controller = ReachyDaemonController()
 
     @app.get("/api/system/state")
     def get_system_state() -> dict[str, Any]:
@@ -832,6 +1145,16 @@ def register_settings_routes(
         if action not in SYSTEM_POWER_ACTIONS:
             raise HTTPException(status_code=422, detail="action must be 'reboot' or 'poweroff'")
         return system_controller.power(str(action))
+
+    @app.post("/api/reachy-daemon/action")
+    def post_reachy_daemon_action(document: dict[str, Any]) -> dict[str, Any]:
+        action = str(document.get("action") or "")
+        if action not in REACHY_DAEMON_ACTIONS:
+            raise HTTPException(status_code=422, detail="action must be 'wake', 'sleep', or 'restart'")
+        try:
+            return reachy_daemon_controller.action(action)
+        except Exception as exc:  # noqa: BLE001 — surface daemon action failures
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/volume")
     def get_volume() -> dict[str, Any]:
