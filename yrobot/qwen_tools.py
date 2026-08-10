@@ -212,6 +212,7 @@ class ToolExecutor:
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        logger.info("tool call: %s args=%r", name, arguments)
         handlers = {
             "get_weather": self._get_weather,
             "get_device_state": self._get_device_state,
@@ -242,6 +243,7 @@ class ToolExecutor:
         if not text:
             return None
         timestamp = time.monotonic() if now is None else now
+        logger.info("spoken control scan: text=%r", text)
         for phrase, (device, action) in sorted(
             self._phrases.items(), key=lambda item: len(item[0]), reverse=True
         ):
