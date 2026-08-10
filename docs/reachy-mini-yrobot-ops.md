@@ -418,6 +418,21 @@ with backup `/home/pollen/.local/state/yrobot/backups/qwen-ha-policy-20260810-18
 The restarted service reports QWEN connected, HA enabled, and a healthy motion
 loop. Physical voice acceptance remains pending.
 
+### 2026-08-10 HA voice tool-call repair
+
+After the policy repair, QWEN heard `关闭书灯` and replied that it was closing
+`书台灯`, but a read-only Home Assistant state check still reported `on`. The
+new root cause was event handling: Qwen Realtime can return function calls in
+`response.done.response.output[]`, while YRobot only executed
+`response.function_call_arguments.done`.
+
+A regression test first failed with zero tool executions. The fix routes
+`response.done` function-call output through the existing local whitelist tool
+executor, then requests the final model response. The focused
+QWEN/tool/runtime/config/backend suite passed (74 tests), Ruff passed, and the
+service was restarted. Production commit: `8931388`; feature worktree commit:
+`fd280b2`. Re-run the spoken `书台灯` acceptance next.
+
 Deployment backup:
 
 ```text
