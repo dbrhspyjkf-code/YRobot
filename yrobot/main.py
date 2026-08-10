@@ -1,24 +1,20 @@
-"""Application wiring: Reachy Mini app, session lifecycle and CLI.
+"""Application wiring: Reachy Mini Xiaozhi cloud integration.
 
-Thread map (all communication is immutable data + atomic flags):
-
-    main loop      microphone → VAD → turn controller → bounded audio queue
-    yrobot-uplink  audio queue + latest JPEG → websocket (may block safely)
-    yrobot-camera  camera → resize/JPEG → replaceable latest-frame slot
-    yrobot-recv    gateway deltas → gate check → speaker queue / captions
-    yrobot-speaker paced, interruptible playback (owns the audio pipeline)
-    yrobot-motion  50 Hz choreographer (owns the robot pose)
-    yrobot-doa     12 Hz sound compass → gaze targets
+Thread map:
+    asyncio       mic → Opus encode → WebSocket → TTS decode → aplay
+    face-tracker  OpenCV Haar cascade (~2 fps) → visual gaze target
+    yrobot-motion 50 Hz Choreographer (owns the robot pose)
+    yrobot-doa    12 Hz SoundCompass → audio gaze target
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
-import queue
 import threading
 import time
-from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from dotenv import load_dotenv
@@ -26,667 +22,165 @@ from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
 from yrobot.app_config import (
-    AppConfig,
     _MediaHolder,
     audio_input_controller_singleton,
     register_settings_routes,
 )
-from yrobot.audio import Microphone, Speaker, UplinkGain, VoiceDetector, apply_audio_startup_config
-from yrobot.barge import BargeConfig, BargeDecision, BargeDetector
 from yrobot.config import Settings
-from yrobot.hermes_tools import HermesToolsController
-from yrobot.home_assistant import HomeAssistantController
-from yrobot.local_info import LocalInfoController
-from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
-from yrobot.realtime import Delta, RealtimeClient, ThinkFilter
-from yrobot.session import ConversationMemory, RotationPolicy
-from yrobot.tts import synthesize_speech_24k
-from yrobot.turn import TurnGate
-from yrobot.vision import LatestCamera, VisionStats
+from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
+
+# ── Xiaozhi cloud device identity (read from network interface) ──────────────
+try:
+    with open("/sys/class/net/wlan0/address") as f:
+        XIAOZHI_DEVICE_ID = f.read().strip()
+except Exception:
+    XIAOZHI_DEVICE_ID = ""
+XIAOZHI_DEVICE_ID = os.environ.get("XIAOZHI_DEVICE_ID", XIAOZHI_DEVICE_ID)
+XIAOZHI_CONV_URL = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
+XIAOZHI_TOKEN = os.environ.get("XIAOZHI_TOKEN", "test-token")
 
 logger = logging.getLogger(__name__)
 
-FRAME_S = 0.02
-AUDIO_PIPELINE_WARMUP_S = 1.0
-ACTIVE_WINDOW_S = 10.0  # camera stays at 1 fps this long after the user spoke
-# kv-cache burn rates measured on the live gateway (tokens/second, per frame).
-# "Active chat ~85 tok/s" was measured WITH 1 fps vision; frames are counted
-# separately here, so busy audio-only burn is ~28. Estimating 85 rotated
-# sessions every ~85 s and wiped the model's memory mid-conversation
-# (hardware log 2026-07-24).
-KV_PER_S_IDLE, KV_PER_S_BUSY, KV_PER_FRAME = 13.0, 28.0, 64.0
+# ── Safe-mode startup guard ────────────────────────────────────────────────────
+# Persisted across systemd restarts so a deterministic boot loop counts toward
+# the threshold. A successful run() clears the counter.
+_STARTUP_FAIL_COUNTER_PATH = "/tmp/.yrobot_startup_failures"
+_MAX_STARTUP_FAILURES = 3
+_MOTION_SET_TARGET_RESTART_FAILURES = 1500  # ~30s at 50 Hz
 
 
-@dataclass(frozen=True)
-class UplinkPacket:
-    """One captured audio unit waiting for the network sender."""
+def _record_startup_failure() -> int:
+    """Increment the persisted failure counter and return the new value."""
+    try:
+        with open(_STARTUP_FAIL_COUNTER_PATH, encoding="utf-8") as f:
+            count = int((f.read() or "0").strip() or "0")
+    except (FileNotFoundError, ValueError):
+        count = 0
+    count += 1
+    try:
+        with open(_STARTUP_FAIL_COUNTER_PATH, "w", encoding="utf-8") as f:
+            f.write(str(count))
+    except OSError:
+        pass
+    return count
 
-    audio: np.ndarray
-    force_listen: bool
-    captured_at: float
-    input_id: str
+
+def _clear_startup_failure_counter() -> None:
+    """Clear the persisted counter only after a complete run returns."""
+    try:
+        os.remove(_STARTUP_FAIL_COUNTER_PATH)
+    except FileNotFoundError:
+        pass
 
 
-class Conversation:
-    """One full-duplex conversation across rotating gateway sessions."""
-
-    def __init__(self, settings: Settings, mini: ReachyMini, stop: threading.Event) -> None:
-        self._s = settings
-        self._mini = mini
-        self._stop = stop
-        self._mic = Microphone(mini.media)
-        self._detector = VoiceDetector(settings.vad_aggressiveness)
-        self._speaker = Speaker(mini.media)
-        self._gate = TurnGate()
-        self._turn_lock = threading.Lock()
-        self._agc = UplinkGain()
-        self._home_assistant = HomeAssistantController.from_settings(settings)
-        self._hermes_tools = HermesToolsController.from_settings(settings)
-        self._local_info = LocalInfoController(enabled=settings.local_info_enabled)
-        self._audio_input_enabled = audio_input_controller_singleton().enabled
-        self._muted_response_ids: set[str] = set()
-        self._suppressed_response_ids: set[str] = set()
-        self._barge = BargeDetector(
-            BargeConfig(
-                echo_similarity=settings.barge_echo_similarity,
-                unexplained_db=settings.barge_unexplained_db,
-                confirm_ms=settings.barge_confirm_ms,
-                fast_confirm_ms=settings.barge_fast_confirm_ms,
-                fast_echo_similarity=settings.barge_fast_echo_similarity,
-                fast_unexplained_db=settings.barge_fast_unexplained_db,
-            )
-        )
-        self._rotation = RotationPolicy(settings.session_budget_s, settings.kv_budget_tokens)
-        self._memory = ConversationMemory()
-        self._choreo = Choreographer(mini)
-        self._compass = SoundCompass(
-            mini.media,
-            current_head_yaw=self._current_head_yaw,
-            user_active=self._confirmed_user_active,
-            on_target=self._choreo.set_gaze_target,
-        )
-        self._captions = ThinkFilter()
-        self._session_dead = threading.Event()
-        # Lightweight silence gate: keep audio uplink live only while conversation is active.
-        self._uplink_live = True
-        self._last_delta_at = 0.0
-        self._last_voice_at = -1e9
-        self._last_user_onset_at = -1e9
-        self._confirmed_voice_until = -1e9
-        self._server_kv: float | None = None
-        self._video_kv_est = 0.0
-        self._last_logged_audio_onset_at = -1e9
-        self._input_sequence = 0
-        self._session_sequence = 0
-        self._last_session_ended_at: float | None = None
-        self._camera = (
-            LatestCamera(
-                mini.media,
-                active=lambda now: (
-                    now - self._last_voice_at < ACTIVE_WINDOW_S or self._speaker.audible(now)
-                ),
-                capture_period_s=settings.frame_period_active_s,
-                idle_heartbeat_s=settings.frame_period_idle_s,
-                scene_threshold=settings.scene_change_threshold,
-            )
-            if settings.send_video
-            else None
-        )
-
-    def run(self) -> None:
-        self._mini.media.start_recording()
-        self._mini.media.start_playing()
-        # Pollen's reference waits for the GStreamer pipelines to materialize
-        # before writing/reading back XVF controls.
-        self._stop.wait(AUDIO_PIPELINE_WARMUP_S)
-        apply_audio_startup_config(self._mini.media)
-        self._mini.enable_wobbling()
-        if self._s.head_tracking_weight > 0:
-            self._mini.start_head_tracking(weight=self._s.head_tracking_weight)
-        self._speaker.start()
-        self._choreo.start()
-        self._compass.start()
-        if self._camera is not None:
-            self._camera.start()
-        try:
-            while not self._stop.is_set():
-                self._one_session()
-                self._stop.wait(self._s.reconnect_delay_s)
-        finally:
-            self._compass.close()
-            self._choreo.close()
-            self._speaker.close()
-            if self._camera is not None:
-                self._camera.close()
-            self._compass.join(timeout=2)
-            self._choreo.join(timeout=2)
-            self._speaker.join(timeout=2)
-            if self._camera is not None:
-                self._camera.join(timeout=2)
-                self._log_vision_stats("total", self._camera.stats())
-            self._mini.media.stop_recording()
-
-    # -- session ------------------------------------------------------------
-
-    def _one_session(self) -> None:
-        self._session_dead.clear()
-        self._captions = ThinkFilter()
-        self._server_kv = None
-        self._video_kv_est = 0.0
-        self._last_logged_audio_onset_at = -1e9
-        self._input_sequence = 0
-        self._barge.reset()
-        self._rotation.reset()
-        self._session_sequence += 1
-        session_sequence = self._session_sequence
-        with self._turn_lock:
-            self._gate = TurnGate()
-        client = RealtimeClient(
-            self._s,
-            on_delta=lambda delta: self._on_delta(delta, session_sequence),
-            on_closed=lambda reason: self._on_closed(reason, session_sequence),
-            system_prompt=self._memory.prompt(
-                self._s.effective_system_prompt
-            ),
-        )
-        try:
-            client.open()
-        except Exception as exc:  # noqa: BLE001 — queue/backend failures are routine
-            logger.warning("session open failed: %s", exc)
-            client.close()
-            return
-        if self._last_session_ended_at is not None:
-            logger.info(
-                "session %d handoff gap %.0f ms",
-                session_sequence,
-                (time.monotonic() - self._last_session_ended_at) * 1000,
-            )
-        try:
-            self._uplink_loop(client)
-        finally:
-            self._last_session_ended_at = time.monotonic()
-            # A transport/session boundary is also a playback boundary.
-            # Never let buffered deltas from a dead session leak into the
-            # reconnecting one.
-            with self._turn_lock:
-                final_epoch = self._speaker.interrupt()
-            client.close(reason="rollover" if not self._stop.is_set() else "user_stop")
-            self._speaker.wait_flushed(final_epoch, timeout=0.5)
-
-    def _uplink_loop(self, client: RealtimeClient) -> None:
-        chunk_frames = self._s.chunk_ms // 20
-        frames: list[np.ndarray] = []
-        packets: queue.Queue[UplinkPacket] = queue.Queue(maxsize=4)
-        sender_halt = threading.Event()
-        camera = self._camera
-        vision_start = camera.stats() if camera is not None else None
-        sender = threading.Thread(
-            target=self._send_loop,
-            args=(client, packets, sender_halt, camera),
-            name="yrobot-uplink",
-            daemon=True,
-        )
-        sender.start()
-        while self._mic.read_frames():  # drop audio captured during session setup
-            pass
-        t0 = time.monotonic()
-        kv_est = 0.0
-        last_poll = time.monotonic()
-        last_gap_log = -1e9
-        try:
-            while not self._stop.is_set() and not self._session_dead.is_set():
-                poll_at = time.monotonic()
-                capture_gap = poll_at - last_poll
-                last_poll = poll_at
-                if capture_gap > 0.06 and poll_at - last_gap_log > 2.0:
-                    logger.warning("microphone loop gap %.0f ms", capture_gap * 1000)
-                    last_gap_log = poll_at
-                frames.extend(self._process_mic())
-                now = time.monotonic()
-                with self._turn_lock:
-                    timed_out = self._gate.timed_out(now)
-                if timed_out:
-                    logger.error("barge-in boundary timed out; reconnecting instead of replaying")
-                    return
-                # MiniCPM-o 4.5 only advances on complete one-second units.
-                # A partial force packet can produce a synthetic listen while
-                # never executing the force override, so never flush early.
-                if len(frames) < chunk_frames:
-                    continue
-                raw_chunk = np.concatenate(frames[:chunk_frames])
-                del frames[:chunk_frames]
-                if not self._audio_input_enabled():
-                    continue
-                # ---------- silence gate ----------
-                # Activate instantly on any user voice; suspend after
-                # 15 s of mutual silence to prevent echo loops.
-                if not self._uplink_live:
-                    if self._confirmed_user_active(now):
-                        self._uplink_live = True
-                        self._last_delta_at = now
-                        logger.info("silence gate: uplink resumed (user voice)")
-                    else:
-                        continue
-                elif (
-                    now - self._last_delta_at > 15.0
-                    and not self._speaker.audible(now)
-                    and not self._confirmed_user_active(now)
-                ):
-                    self._uplink_live = False
-                    logger.info(
-                        "silence gate: uplink paused (%.0f s of mutual silence)",
-                        now - self._last_delta_at,
-                    )
-                    continue
-                # ---------- end silence gate ----------
-                chunk = self._agc.process(
-                    raw_chunk,
-                    playback_active=self._speaker.playing(now),
-                    confirmed_user_voice=self._confirmed_user_active(now),
-                )
-                self._input_sequence += 1
-                input_id = f"input_{self._input_sequence:08d}"
-                with self._turn_lock:
-                    force_listen = self._gate.chunk_force_listen(now)
-                self._enqueue_packet(
-                    packets,
-                    UplinkPacket(
-                        chunk,
-                        force_listen=force_listen,
-                        captured_at=now,
-                        input_id=input_id,
-                    ),
-                    # Prioritize the first causally valid force unit over stale
-                    # queued silence/echo on a congested wireless uplink.
-                    flush_backlog=force_listen,
-                )
-                busy = self._speaker.audible(now) or self._confirmed_user_active(now)
-                kv_est += (KV_PER_S_BUSY if busy else KV_PER_S_IDLE) * len(raw_chunk) / 16_000
-                rotation_kv = self._server_kv
-                if rotation_kv is None:
-                    rotation_kv = kv_est + self._video_kv_est
-                if self._should_rotate(now - t0, rotation_kv, now):
-                    logger.info(
-                        "rotating session (%.0f s, %.0f kv tokens%s)",
-                        now - t0,
-                        rotation_kv,
-                        " server" if self._server_kv is not None else " estimated",
-                    )
-                    return
-        finally:
-            sender_halt.set()
-            sender.join(timeout=2)
-            if camera is not None:
-                assert vision_start is not None
-                self._log_vision_stats("session", _stats_delta(camera.stats(), vision_start))
-
-    def _speak_text(self, text: str) -> None:
-        text = text.strip()
-        if not text:
-            return
-
-        def run() -> None:
+def _start_motion_connection_watchdog(choreo, stop_event: threading.Event) -> threading.Thread:
+    """Restart YRobot when the SDK set_target connection is gone for ~30s."""
+    def _watch() -> None:
+        while not stop_event.wait(5.0):
             try:
-                pcm = synthesize_speech_24k(text)
-            except Exception as exc:  # noqa: BLE001 - status TTS should not stop conversation
-                logger.warning("status TTS failed: %s", exc)
-                return
-            epoch = self._speaker.epoch
-            self._speaker.play(epoch, pcm)
-            self._speaker.utterance_end()
-
-        threading.Thread(target=run, name="yrobot-status-tts", daemon=True).start()
-
-    def _send_loop(
-        self,
-        client: RealtimeClient,
-        packets: queue.Queue[UplinkPacket],
-        halt: threading.Event,
-        camera: LatestCamera | None,
-    ) -> None:
-        """Serialize network writes without ever blocking mic capture."""
-        while not halt.is_set() and not self._session_dead.is_set():
-            try:
-                packet = packets.get(timeout=0.05)
-            except queue.Empty:
-                continue
-            jpeg = camera.take_latest() if camera is not None else None
-            started = time.monotonic()
-            queue_ms = (started - packet.captured_at) * 1000
-            try:
-                client.send_chunk(
-                    packet.audio,
-                    jpeg,
-                    packet.force_listen,
-                    packet.input_id,
-                )
+                status = choreo.get_status()
             except Exception as exc:  # noqa: BLE001
-                logger.info("uplink ended: %s", exc)
-                self._session_dead.set()
-                return
-            sent_at = time.monotonic()
-            send_ms = (sent_at - started) * 1000
-            if packet.force_listen:
-                with self._turn_lock:
-                    self._gate.force_sent(packet.input_id, sent_at)
-                logger.info(
-                    "force_listen sent: %.0f ms from user onset, %.0f ms queue age, "
-                    "%.0f ms websocket",
-                    (sent_at - self._last_user_onset_at) * 1000,
-                    queue_ms,
-                    send_ms,
+                logger.debug("motion watchdog status failed: %s", exc)
+                continue
+            consecutive = int(status.get("set_target_consecutive_failures") or 0)
+            if consecutive >= _MOTION_SET_TARGET_RESTART_FAILURES:
+                logger.error(
+                    "motion set_target connection lost for %d consecutive writes; restarting YRobot",
+                    consecutive,
                 )
-            if jpeg is not None:
-                self._video_kv_est += KV_PER_FRAME
-                if camera is not None:
-                    camera.mark_sent()
-            if send_ms > 300 or queue_ms > 150:
-                logger.warning(
-                    "slow uplink: websocket %.0f ms, queue age %.0f ms, depth %d, video=%s",
-                    send_ms,
-                    queue_ms,
-                    packets.qsize(),
-                    jpeg is not None,
-                )
+                os._exit(70)
+    thread = threading.Thread(target=_watch, name="motion-connection-watchdog", daemon=True)
+    thread.start()
+    return thread
 
-    @staticmethod
-    def _enqueue_packet(
-        packets: queue.Queue[UplinkPacket],
-        packet: UplinkPacket,
-        *,
-        flush_backlog: bool = False,
-    ) -> None:
-        """Bound realtime backlog; retain the freshest audio under overload."""
-        if flush_backlog:
-            discarded = 0
-            while True:
-                try:
-                    packets.get_nowait()
-                    discarded += 1
-                except queue.Empty:
-                    break
-            if discarded:
-                logger.info("barge-in dropped %d stale queued uplink chunks", discarded)
-        try:
-            packets.put_nowait(packet)
+
+class _XiaozhiReconnect(Exception):
+    """Expected Xiaozhi session close that should reconnect without traceback."""
+
+
+class _XiaozhiPaused(Exception):
+    """Local mic gate paused Xiaozhi; reconnect after input is enabled."""
+
+
+def _xiaozhi_should_pause_for_mic(input_enabled: bool) -> bool:
+    return not input_enabled
+
+
+def _websocket_close_code(exc: BaseException) -> int | None:
+    for attr in ("code",):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    for attr in ("rcvd", "sent"):
+        frame = getattr(exc, attr, None)
+        value = getattr(frame, "code", None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _is_expected_xiaozhi_disconnect(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        if current.__class__.__name__ == "ConnectionClosedOK":
+            return True
+        code = _websocket_close_code(current)
+        if code in {1000, 1001, 1005}:
+            return True
+        current = current.__cause__
+    return False
+
+
+def _handle_xiaozhi_emotion(
+    choreo: Any,
+    emo: str,
+    last: dict[str, float],
+    rec_provider: Any = None,
+    *,
+    prefer_recorded: bool = False,
+) -> None:
+    """Map Xiaozhi emotion to a safe move with per-move cooldown."""
+    from yrobot.motion import EMOTION_FALLBACK_MOVE, EMOTION_TO_MOVE
+
+    rec_name = EMOTION_TO_MOVE.get(emo)
+    fb_name = EMOTION_FALLBACK_MOVE.get(emo)
+    target = rec_name if prefer_recorded and rec_name else fb_name
+    now = time.monotonic()
+    if not target:
+        logger.info("xz emotion %s (no safe move)", emo or "?")
+        return
+    if now - last.get(target, -1e9) < 5.0:
+        logger.info("xz emotion %s -> %s (cooldown)", emo, target)
+        return
+    last[target] = now
+    if prefer_recorded and rec_name:
+        rec = rec_provider() if callable(rec_provider) else None
+        if rec is not None and choreo.play_recorded(rec_name, rec):
+            logger.info("xz emotion %s -> recorded %s", emo, rec_name)
             return
-        except queue.Full:
-            pass
-        try:
-            packets.get_nowait()
-        except queue.Empty:
-            pass
-        packets.put_nowait(packet)
-        logger.error("uplink backlog full: dropped oldest audio chunk")
-
-    def _process_mic(self) -> list[np.ndarray]:
-        """Read mic frames; run VAD, barge-in and posture per 20 ms frame.
-
-        The XVF3800 profile conditions double-talk before WebRTC VAD. Clear,
-        speech-shaped near-end evidence takes the fast path; ambiguous sound
-        keeps the longer echo-aware confirmation that rejects motor knocks.
-        """
-        out = self._mic.read_frames()
-        # A device read may return several frames. Approximate their capture
-        # times instead of assigning the oldest frame a timestamp in the
-        # future after a delayed device read.
-        now = time.monotonic() - FRAME_S * max(0, len(out) - 1)
-        for frame in out:
-            robot_sounding = self._speaker.sounding(now)
-            robot_turn_live = self._speaker.audible(now)
-            voiced = self._detector.process(frame, now, floor_frozen=robot_sounding)
-            if robot_turn_live and not self._gate_latched():
-                decision = self._barge.process(
-                    frame,
-                    voiced=voiced,
-                    raw_streak=self._detector.streak,
-                    now=now,
-                    echo_match=self._speaker.echo_match,
-                )
-                if decision is not None:
-                    self._begin_barge(now, decision=decision)
-            else:
-                self._barge.reset()
-            # Once a barge is latched, every voiced frame keeps force sticky.
-            # While the robot is silent, ordinary user speech still drives
-            # DoA/camera activity without creating an interruption.
-            if voiced and (not robot_sounding or self._gate_latched()):
-                self._mark_user_voice(now)
-                with self._turn_lock:
-                    self._gate.user_frame(True, False, now)
-            now += FRAME_S
-        now = time.monotonic()
-        if self._speaker.playing(now):
-            self._choreo.set_mode(SPEAK)
-        elif self._confirmed_user_active(now) or self._gate_latched():
-            self._choreo.set_mode(LISTEN)
-        else:
-            self._choreo.set_mode(IDLE)
-        return out
-
-    def _begin_barge(
-        self,
-        now: float,
-        *,
-        decision: BargeDecision | None = None,
-    ) -> None:
-        """Atomically suppress output and hard-stop the interrupted local turn."""
-        with self._turn_lock:
-            started = self._gate.user_frame(True, True, now)
-            if started:
-                self._captions = ThinkFilter()
-                epoch = self._speaker.interrupt()
-        if started:
-            onset_at = decision.onset_at if decision is not None else now
-            self._mark_user_voice(onset_at)
-            if decision is None:
-                logger.info(
-                    "barge-in: local playback discarded at epoch %d (mic %.1f dB); "
-                    "force latched for next complete unit",
-                    epoch,
-                    self._detector.last_db,
-                )
-            else:
-                match = decision.match
-                logger.info(
-                    "barge-in %s path: playback discarded at epoch %d after %.0f ms "
-                    "(mic %.1f dB, similarity %.2f, unexplained %.1f dB, lag %.0f ms); "
-                    "force latched for next complete unit",
-                    decision.path,
-                    epoch,
-                    decision.evidence_ms,
-                    self._detector.last_db,
-                    match.similarity,
-                    match.unexplained_db,
-                    match.lag_ms,
-                )
-
-    def _mark_user_voice(self, now: float) -> None:
-        if now - self._last_voice_at >= VoiceDetector.HANGOVER_S:
-            self._last_user_onset_at = now
-        self._last_voice_at = now
-        self._confirmed_voice_until = max(
-            self._confirmed_voice_until,
-            now + VoiceDetector.HANGOVER_S,
-        )
-
-    def _confirmed_user_active(self, now: float | None = None) -> bool:
-        now = time.monotonic() if now is None else now
-        return now < self._confirmed_voice_until
-
-    def _gate_latched(self) -> bool:
-        with self._turn_lock:
-            return self._gate.latched
-
-    def _current_head_yaw(self) -> float:
-        """Read the daemon's cached physical pose; fall back during startup."""
-        try:
-            return head_yaw_of(np.asarray(self._mini.get_current_head_pose()))
-        except Exception:  # noqa: BLE001
-            return self._choreo.current_yaw()
-
-    def _should_rotate(self, elapsed: float, kv_est: float, now: float) -> bool:
-        quiet = (
-            not self._gate_latched()
-            and not self._speaker.audible(now)
-            and not self._confirmed_user_active(now)
-        )
-        return self._rotation.should_rotate(elapsed_s=elapsed, kv_tokens=kv_est, quiet=quiet)
-
-    # -- gateway callbacks (yrobot-recv thread) -------------------------------
-
-    def _on_delta(self, delta: Delta, session_sequence: int | None = None) -> None:
-        if session_sequence is not None and session_sequence != self._session_sequence:
-            logger.debug("ignored delta from stale session %d", session_sequence)
-            return
-        now = delta.received_at
-        self._last_delta_at = now
-        kv = delta.metrics.get("kv_cache_length")
-        if isinstance(kv, int | float):
-            self._server_kv = float(kv)
-        if delta.kind == "listen":
-            with self._turn_lock:
-                was_latched = self._gate.latched
-                acknowledged = self._gate.model_listen(now, delta.input_id)
-                if not self._gate.latched:
-                    self._speaker.utterance_end()
-            if acknowledged:
-                logger.info(
-                    "force_listen acknowledged by %s: waiting for user turn end",
-                    delta.input_id or "causal fallback",
-                )
-            elif was_latched:
-                logger.info(
-                    "ignored unmatched listen from %s; interrupted turn remains suppressed",
-                    delta.input_id or "missing input_id",
-                )
-        elif delta.kind == "audio":
-            with self._turn_lock:
-                was_latched = self._gate.latched
-                allowed = self._gate.model_audio(now, delta.response_id)
-                allowed = (
-                    allowed
-                    and delta.response_id not in self._muted_response_ids
-                    and delta.response_id not in self._suppressed_response_ids
-                )
-                if allowed:
-                    epoch = self._speaker.epoch
-                    self._speaker.play(epoch, delta.audio)
-            if was_latched and allowed:
-                logger.info("barge-in boundary complete: accepting new model response")
-            if (
-                allowed
-                and self._last_user_onset_at > self._last_logged_audio_onset_at
-                and now - self._last_user_onset_at < 30.0
-            ):
-                self._last_logged_audio_onset_at = self._last_user_onset_at
-                logger.info(
-                    "first accepted audio %.0f ms after confirmed voice onset (response %s)",
-                    (now - self._last_user_onset_at) * 1000,
-                    delta.response_id or "unknown",
-                )
-        elif delta.kind == "text":
-            if delta.response_id in self._suppressed_response_ids:
-                return
-            with self._turn_lock:
-                was_latched = self._gate.latched
-                allowed = self._gate.model_text(now, delta.response_id)
-                fragment = self._captions.feed(delta.text) if allowed else ""
-                caption = fragment.strip()
-            if was_latched and allowed:
-                logger.info("barge-in boundary complete: accepting new model response")
-            if caption:
-                logger.info("robot: %s", caption)
-                # Only process commands when user actually spoke recently.
-                # This prevents the model's own words from triggering HA/Hermes
-                # when wake was caused by noise/echo rather than user intent.
-                user_voice_gap = now - self._last_user_onset_at
-                if user_voice_gap < 15.0:
-                    info_result = self._local_info.handle_text(caption, delta.response_id or "")
-                    if info_result is not None:
-                        if info_result.mute_model_audio and delta.response_id:
-                            self._suppress_response(delta.response_id)
-                        if info_result.ok:
-                            logger.info("Local info result: %s", info_result.message)
-                            self._speak_text(info_result.message)
-                        else:
-                            logger.warning(
-                                "Local info failed: %s: %s",
-                                info_result.name,
-                                info_result.message,
-                            )
-                    result = self._home_assistant.handle_text(caption, delta.response_id or "")
-                    if result is not None:
-                        if result.ok:
-                            logger.info("Home Assistant action succeeded: %s", result.action.name)
-                            if delta.response_id:
-                                self._suppress_response(delta.response_id)
-                            if result.action.response:
-                                self._speak_text(result.action.response)
-                        else:
-                            logger.warning(
-                                "Home Assistant action failed: %s: %s",
-                                result.action.name,
-                                result.detail,
-                            )
-                    tool_result = self._hermes_tools.handle_text(caption, delta.response_id or "")
-                    if tool_result is not None:
-                        if tool_result.mute_model_audio and delta.response_id:
-                            self._suppress_response(delta.response_id)
-                        if tool_result.ok:
-                            logger.info("Hermes tool result: %s", tool_result.message)
-                            self._speak_text(tool_result.message)
-                        else:
-                            logger.warning(
-                                "Hermes tool failed: %s: %s",
-                                tool_result.name,
-                                tool_result.message,
-                            )
-                else:
-                    logger.debug(
-                        "skipped command handlers (no user voice for %.0f s)",
-                        user_voice_gap,
-                    )
-                if delta.response_id not in self._suppressed_response_ids:
-                    self._memory.append_assistant(fragment)
-
-    def _suppress_response(self, response_id: str) -> None:
-        if not response_id:
-            return
-        self._muted_response_ids.add(response_id)
-        self._suppressed_response_ids.add(response_id)
-        self._captions = ThinkFilter()
-        self._speaker.interrupt()
-
-    def _on_closed(self, reason: str, session_sequence: int | None = None) -> None:
-        if session_sequence is not None and session_sequence != self._session_sequence:
-            logger.debug("ignored close from stale session %d: %s", session_sequence, reason)
-            return
-        logger.info("session closed: %s", reason)
-        self._session_dead.set()
-
-    @staticmethod
-    def _log_vision_stats(scope: str, stats: VisionStats) -> None:
-        logger.info(
-            "vision %s stats: captured=%d changed=%d published=%d selected=%d sent=%d failures=%d",
-            scope,
-            stats.captured,
-            stats.changed,
-            stats.published,
-            stats.selected,
-            stats.sent,
-            stats.failures,
-        )
+    if fb_name and choreo.play_move(fb_name):
+        logger.info("xz emotion %s -> safe move %s", emo, fb_name)
 
 
-def _stats_delta(after: VisionStats, before: VisionStats) -> VisionStats:
-    """Return per-session counters from a camera shared across sessions."""
-    return VisionStats(
-        **{
-            name: getattr(after, name) - getattr(before, name)
-            for name in VisionStats.__dataclass_fields__
-        }
-    )
+def _fuse_speaker_gaze(
+    audio_yaw: float,
+    visual_yaw: float | None,
+    *,
+    max_visual_audio_delta: float = math.radians(70.0),
+    visual_weight: float = 0.7,
+) -> tuple[float, str]:
+    """Use visual gaze only when it agrees with the audio speaker direction."""
+    if visual_yaw is None:
+        return audio_yaw, "audio"
+    delta = abs((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi)
+    if delta > max_visual_audio_delta:
+        return audio_yaw, "audio"
+    weight = max(0.0, min(1.0, visual_weight))
+    fused = audio_yaw + ((visual_yaw - audio_yaw + math.pi) % (2 * math.pi) - math.pi) * weight
+    return fused, "audio+visual"
+
+
+logger = logging.getLogger(__name__)
 
 
 class Yrobot(ReachyMiniApp):
@@ -697,55 +191,947 @@ class Yrobot(ReachyMiniApp):
     def __init__(self, running_on_wireless: bool = False) -> None:
         load_dotenv()
         super().__init__(running_on_wireless=running_on_wireless)
-        self._config = AppConfig()
         self._media_holder = _MediaHolder()
         assert self.settings_app is not None
-        register_settings_routes(
-            self.settings_app,
-            self._config,
-            media_holder=self._media_holder,
-        )
+        register_settings_routes(self.settings_app, media_holder=self._media_holder)
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
-        self._media_holder.media = reachy_mini.media
-        self._wake_up_if_needed(reachy_mini)
-        environment = self._config.effective_environment(os.environ)
-        Conversation(Settings.from_env(environment), reachy_mini, stop_event).run()
-
-    @staticmethod
-    def _wake_up_if_needed(reachy_mini: ReachyMini) -> None:
-        """Wake the robot head if it is still in the sleep pose at startup.
-
-        Mirrors the official conversation app lifecycle: after a cold boot the
-        head may stay lowered in the sleep pose, and the choreographer then
-        fights a dead/depowered pose. A short wake_up() brings it back to the
-        neutral position so speech/look animations have a valid baseline.
-        """
+        """Run exactly one configured conversation backend."""
         try:
-            from reachy_mini.reachy_mini import SLEEP_HEAD_POSE
-            from reachy_mini.utils.interpolation import distance_between_poses
+            self._media_holder.media = reachy_mini.media
+            settings = Settings.from_env()
+            RUNTIME_HEALTH.update(
+                backend=settings.conversation_backend,
+                last_error=None,
+            )
+            if settings.conversation_backend == "qwen":
+                self._run_qwen(reachy_mini, stop_event, settings)
+            else:
+                self._run_xiaozhi(reachy_mini, stop_event)
+            _clear_startup_failure_counter()
+        except Exception as exc:
+            logger.exception("YRobot startup failed: %s", exc)
+            RUNTIME_HEALTH.update(ws_state="error", last_error=str(exc))
+            ROBOT_STATE.set("safe_mode")
+            _enter_safe_mode(self._media_holder, exc, stop_event)
 
+    def _run_qwen(
+        self,
+        reachy_mini: ReachyMini,
+        stop_event: threading.Event,
+        settings: Settings,
+    ) -> None:
+        """Run wake-gated Qwen PCM audio without touching the official daemon."""
+        if not settings.qwen_api_key:
+            raise RuntimeError("DASHSCOPE_API_KEY is required for QWEN")
+
+        import asyncio
+
+        import numpy as np
+        import sounddevice as sd
+
+        from yrobot.app_config import motion_controller_singleton
+        from yrobot.audio import _publish_dashboard_mic, get_vad_rms_min
+        from yrobot.audio_runtime import PcmPlayback, WakeGate
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
+        from yrobot.qwen_realtime import QwenRealtimeClient
+        from yrobot.qwen_tools import ToolExecutor
+
+        startup_head_pose = None
+        startup_antennas = None
+        try:
+            startup_head_pose = reachy_mini.get_current_head_pose()
+            _, antenna_joints = reachy_mini.get_current_joint_positions()
+            startup_antennas = (float(antenna_joints[0]), float(antenna_joints[1]))
+        except Exception as exc:
+            logger.warning("could not capture QWEN startup pose: %s", exc)
+
+        motor_error: Exception | None = None
+        for attempt in range(1, 4):
             try:
                 reachy_mini.enable_motors()
-                logger.info("motors enabled for startup wake-up")
-            except Exception as exc:  # noqa: BLE001 - wake-up remains best effort
-                logger.warning("motor enable failed before wake-up: %s", exc)
-            pose = reachy_mini.get_current_head_pose()
-            if pose is None:
-                logger.info("head pose unavailable; skipping wake-up check")
+                motor_error = None
+                break
+            except Exception as exc:
+                motor_error = exc
+                logger.warning("QWEN motor enable failed (attempt %d/3): %s", attempt, exc)
+                if attempt < 3:
+                    stop_event.wait(1.0)
+        if motor_error is not None:
+            RUNTIME_HEALTH.update(motor_ready=False)
+            raise RuntimeError("Reachy motors could not be enabled") from motor_error
+
+        RUNTIME_HEALTH.update(motor_ready=True)
+        choreo = Choreographer(
+            reachy_mini,
+            startup_head_pose=startup_head_pose,
+            startup_antennas=startup_antennas,
+            startup_blend_duration=4.0,
+        )
+        motion_controller_singleton().set(choreo)
+        choreo.start()
+        _start_motion_connection_watchdog(choreo, stop_event)
+
+        try:
+            reachy_mini.media.stop_playing()
+        except Exception as exc:
+            logger.warning("could not release SDK speaker for QWEN: %s", exc)
+
+        mic_stream = sd.InputStream(
+            device="reachymini_audio_src",
+            samplerate=16000,
+            channels=1,
+            dtype="int16",
+            blocksize=960,
+        )
+        playback = PcmPlayback()
+        gate = WakeGate()
+        mic_stream.start()
+        playback.start()
+
+        async def run_qwen() -> None:
+            response_started = False
+            client: QwenRealtimeClient
+
+            def on_audio(pcm: bytes) -> None:
+                nonlocal response_started
+                if not response_started:
+                    response_started = True
+                    choreo.set_mode(SPEAK)
+                    choreo.release_still()
+                    RUNTIME_HEALTH.update(tts_active=True)
+                playback.put(pcm)
+                RUNTIME_HEALTH.update(
+                    audio_queue=playback.pending,
+                    audio_dropped=playback.dropped,
+                    last_tts_packet_at=time.time(),
+                )
+
+            def on_interrupt() -> None:
+                nonlocal response_started
+                response_started = False
+                playback.flush()
+                choreo.set_mode(LISTEN)
+                RUNTIME_HEALTH.update(tts_active=False, audio_queue=0)
+
+            def on_user_speech() -> None:
+                gate.note_speech()
+                choreo.set_mode(LISTEN)
+
+            def on_response_done() -> None:
+                nonlocal response_started
+                response_started = False
+                choreo.set_mode(IDLE)
+                RUNTIME_HEALTH.update(tts_active=False)
+
+            async def activate_from_wake() -> None:
+                await client.set_turn_detection("semantic_vad")
+                await client.request_response()
+
+            async def execute_local_spoken_control(transcript: str) -> None:
+                result = await asyncio.to_thread(tool_executor.execute_spoken_control, transcript)
+                if result is not None:
+                    logger.info("qwen local spoken control: %s", result)
+
+            def on_input_transcript(transcript: str) -> None:
+                logger.info("qwen stt: %s", transcript[:120])
+                if gate.observe_transcript(transcript):
+                    logger.info("QWEN wake word detected")
+                    choreo.play_move("nod")
+                    asyncio.create_task(activate_from_wake())
+                if gate.active:
+                    asyncio.create_task(execute_local_spoken_control(transcript))
+
+            def on_output_transcript(transcript: str) -> None:
+                logger.info("qwen response: %s", transcript[:160])
+
+            def on_state(state: str) -> None:
+                RUNTIME_HEALTH.update(ws_state=state)
+
+            def on_error(message: str) -> None:
+                RUNTIME_HEALTH.update(last_error=message)
+
+            tool_executor = ToolExecutor(settings)
+            client = QwenRealtimeClient(
+                settings,
+                tool_executor,
+                on_audio=on_audio,
+                on_input_transcript=on_input_transcript,
+                on_output_transcript=on_output_transcript,
+                on_interrupt=on_interrupt,
+                on_user_speech=on_user_speech,
+                on_response_done=on_response_done,
+                on_state=on_state,
+                on_error=on_error,
+            )
+            cloud_task = asyncio.create_task(client.run(stop_event))
+            ready_task = asyncio.create_task(client.ready.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {cloud_task, ready_task},
+                    timeout=15.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cloud_task in done:
+                    await cloud_task
+                if ready_task not in done:
+                    raise TimeoutError("QWEN session setup timed out")
+
+                threshold = max(500.0, get_vad_rms_min() * 32768.0)
+                manual_speaking = False
+                silence_frames = 0
+                turn_frames = 0
+                while not stop_event.is_set():
+                    if cloud_task.done():
+                        await cloud_task
+                    frame, _ = await asyncio.to_thread(mic_stream.read, 960)
+                    pcm = frame.astype("<i2", copy=False).tobytes()
+                    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+                    rms = float(np.sqrt(np.mean(np.square(samples))))
+                    _publish_dashboard_mic(rms / 32768.0)
+                    if not audio_input_controller_singleton().enabled():
+                        await asyncio.sleep(0)
+                        continue
+
+                    if gate.active:
+                        await client.append_pcm(pcm)
+                        if gate.expire():
+                            await client.set_turn_detection(None)
+                            playback.flush()
+                            choreo.set_mode(IDLE)
+                            logger.info("QWEN wake expired (60s timeout)")
+                        continue
+
+                    if rms >= threshold:
+                        manual_speaking = True
+                        silence_frames = 0
+                    elif manual_speaking:
+                        silence_frames += 1
+                    else:
+                        continue
+
+                    await client.append_pcm(pcm)
+                    turn_frames += 1
+                    if silence_frames >= 8 or turn_frames >= 167:
+                        await client.commit_turn()
+                        manual_speaking = False
+                        silence_frames = 0
+                        turn_frames = 0
+            finally:
+                ready_task.cancel()
+                cloud_task.cancel()
+                for task in (ready_task, cloud_task):
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+        try:
+            asyncio.run(run_qwen())
+        finally:
+            RUNTIME_HEALTH.update(ws_state="stopped", tts_active=False, audio_queue=0)
+            playback.close()
+            mic_stream.stop()
+            mic_stream.close()
+            choreo.close()
+            choreo.join(timeout=2.0)
+
+    def _run_xiaozhi(
+        self,
+        reachy_mini: ReachyMini,
+        stop_event: threading.Event,
+    ) -> None:
+        """Xiaozhi — sounddevice mic + OutputStream TTS."""
+        import asyncio as _a
+        import json as _j
+        import sounddevice as _sd
+        import subprocess as _sp
+        import websockets as _ws
+        import cv2
+        import math
+        import opuslib
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
+        from yrobot.app_config import audio_input_controller_singleton
+        from yrobot.audio import _publish_dashboard_mic
+        from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
+        import time as _sleep
+        settings = Settings.from_env()
+
+        # ── Safe motor startup with slow Choreographer rise ───────
+        # Snapshot the real pose before our 50 Hz writer starts. The first
+        # Choreographer targets blend from this pose so startup never snaps
+        # from sleep directly into the internal idle pose.
+        startup_head_pose = None
+        startup_antennas = None
+        try:
+            startup_head_pose = reachy_mini.get_current_head_pose()
+            _, antenna_joints = reachy_mini.get_current_joint_positions()
+            startup_antennas = (float(antenna_joints[0]), float(antenna_joints[1]))
+            logger.info("captured startup pose for smooth motor handoff")
+        except Exception as exc:
+            logger.warning("could not capture startup pose before motor enable: %s", exc)
+
+        # Avoid goto_target (defaults to a short snap). Enable the motors
+        # before starting the pose writer; a failed enable is not recoverable
+        # by repeatedly sending set_target commands.
+        motor_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                reachy_mini.enable_motors()
+                logger.info("motors enabled (attempt %d)", attempt)
+                motor_error = None
+                break
+            except Exception as exc:
+                motor_error = exc
+                logger.warning("motor enable failed (attempt %d/3): %s", attempt, exc)
+                if attempt < 3:
+                    stop_event.wait(1.0)
+        if motor_error is not None:
+            RUNTIME_HEALTH.update(motor_ready=False)
+            raise RuntimeError("Reachy motors could not be enabled") from motor_error
+        RUNTIME_HEALTH.update(motor_ready=True)
+
+        choreo = Choreographer(
+            reachy_mini,
+            startup_head_pose=startup_head_pose,
+            startup_antennas=startup_antennas,
+            startup_blend_duration=4.0,
+        )
+        # Keep the low-speed parameters active during the complete startup
+        # rise. Restore normal tracking only after the worker has run for 8s.
+        choreo._gaze._max_vel = 0.3
+        choreo._gaze._omega = 2.0
+        from yrobot.app_config import motion_controller_singleton
+        motion_controller_singleton().set(choreo)
+        # Official emotion library (85 recorded moves) — lazy singleton so
+        # playback works even if the library is slow to load on first use.
+        _recorded_moves = [None]
+        def _get_recorded():
+            if _recorded_moves[0] is None:
+                try:
+                    from reachy_mini.motion.recorded_move import RecordedMoves
+                    _recorded_moves[0] = RecordedMoves(
+                        "pollen-robotics/reachy-mini-emotions-library")
+                except Exception as exc:
+                    logger.warning("emotion library unavailable: %s", exc)
+            return _recorded_moves[0]
+        motion_controller_singleton().set_recorded_provider(_get_recorded)
+        choreo.start()
+        _start_motion_connection_watchdog(choreo, stop_event)
+        # Wait for the slow initial rise unless shutdown was requested.
+        if not stop_event.wait(timeout=8.0):
+            choreo._gaze._max_vel = 2.5
+            choreo._gaze._omega = 6.0
+            logger.info("head rise complete, gaze speed restored")
+
+        # SoundCompass: track speaker direction via XVF3800 DoA
+        _user_speaking = [False]
+        def _current_head_yaw():
+            try:
+                import numpy as np
+                return head_yaw_of(np.asarray(reachy_mini.get_current_head_pose()))
+            except Exception:
+                return choreo.current_yaw()
+        SoundCompass.WINDOW_S = 2.0       # 2s smoothing window (was 1.0)
+        SoundCompass.MIN_CONFIDENCE = 6.0  # need 6+ confidence (was 3.0)
+        SoundCompass.DEADBAND_RAD = 0.20   # ~11° deadband (was 0.12)
+
+        # ── PersonTracker: fuse camera face detection with audio DoA ──────
+        # Runs at ~5 fps; when a face is confidently detected the visual
+        # yaw overrides the audio-only DoA estimate.
+        import threading as _th_face
+        _face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
+        _last_gaze_log = [0.0]
+
+        def _set_speaker_gaze(audio_yaw: float) -> None:
+            visual_yaw = None
+            if _visual_gaze[0] is not None:
+                vy, vt = _visual_gaze[0]
+                if time.time() - vt < 0.8:
+                    visual_yaw = vy
+            target, source = _fuse_speaker_gaze(
+                audio_yaw,
+                visual_yaw,
+                visual_weight=settings.head_tracking_weight,
+            )
+            choreo.set_gaze_target(target, source=source)
+            choreo.set_tracking_debug(
+                audio_yaw=audio_yaw,
+                visual_yaw=visual_yaw,
+                target_yaw=target,
+                source=source,
+            )
+            if time.time() - _last_gaze_log[0] > 2.0:
+                _last_gaze_log[0] = time.time()
+                visual_label = "none" if visual_yaw is None else f"{math.degrees(visual_yaw):.0f}°"
+                logger.info(
+                    "gaze target source=%s audio=%.0f° visual=%s target=%.0f°",
+                    source,
+                    math.degrees(audio_yaw),
+                    visual_label,
+                    math.degrees(target),
+                )
+
+        # Audio is the primary speaker signal. Vision only refines the target
+        # when a recent face agrees with the DoA direction; it never mutes DoA.
+        compass = SoundCompass(
+            reachy_mini.media,
+            current_head_yaw=_current_head_yaw,
+            user_active=lambda: _user_speaking[0],
+            on_target=_set_speaker_gaze,
+        )
+        compass.start()
+        _sleep.sleep(1.0)
+        _vis_frames = 0  # consecutive face detections (2 required to override DoA)
+        _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
+        _vis_stop = _th_face.Event()
+
+        def _handle_emotion(choreo: Any, emo: str, last: dict[str, float], rec_provider: Any) -> None:
+            """Map Xiaozhi emotion to a bounded built-in move."""
+            _handle_xiaozhi_emotion(choreo, emo, last, rec_provider, prefer_recorded=False)
+
+
+        def _face_tracker():
+            nonlocal _vis_frames
+            import json as _json, urllib.request as _ur
+            frame_url = "http://127.0.0.1:8042/api/camera/frame"
+            state_url = "http://127.0.0.1:8042/api/camera/state"
+            _last_cam_check = 0.0
+            def _ensure_camera():
+                """Re-enable camera via HTTP; called at startup then every 30s."""
+                nonlocal _last_cam_check
+                now = time.time()
+                if now - _last_cam_check < 30:
+                    return
+                _last_cam_check = now
+                try:
+                    _r = _ur.Request(state_url, method="PUT",
+                        data=_json.dumps({"running": True}).encode(),
+                        headers={"Content-Type": "application/json"})
+                    _ur.urlopen(_r, timeout=3)
+                except Exception:
+                    pass
+            while not _vis_stop.is_set():
+                _ensure_camera()
+                try:
+                    req = _ur.Request(frame_url)
+                    with _ur.urlopen(req, timeout=3) as resp:
+                        jpeg = resp.read()
+                    arr = np.frombuffer(jpeg, dtype=np.uint8)
+                    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if bgr is None:
+                        _vis_stop.wait(0.5)
+                        continue
+                    # Downscale to 320px wide: Haar detection cost scales with
+                    # pixels; 320 keeps ~2-3 fps on the low-power board while
+                    # still tracking a face across the ~80° FOV.
+                    scale = bgr.shape[1] / 320.0
+                    if scale > 1.0:
+                        small = cv2.resize(bgr, (320, int(bgr.shape[0] / scale)))
+                    else:
+                        small = bgr
+                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                    faces = _face_cascade.detectMultiScale(
+                        gray, scaleFactor=1.15, minNeighbors=4,
+                        minSize=(24, 24),
+                    )
+                    if len(faces) == 0:
+                        # No face seen this frame; let audio DoA dominate.
+                        _visual_gaze[0] = None
+                        _vis_frames = 0
+                        _vis_stop.wait(0.5)
+                        continue
+                    # Require 2 consecutive detections before the visual gaze
+                    # overrides the audio DoA: a single spurious Haar hit at
+                    # the frame edge would otherwise yank the head around.
+                    _vis_frames += 1
+                    if _vis_frames < 2:
+                        _vis_stop.wait(0.5)
+                        continue
+                    # Use the largest face.
+                    x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
+                    cx = (x + w / 2) * scale
+                    # Camera-relative angle via pinhole model: atan2 of the
+                    # pixel offset divided by focal length.  This is exact
+                    # and uses the real camera calibration, no FOV guess.
+                    try:
+                        K = reachy_mini.media.camera.K
+                        fx = float(K[0, 0])
+                        cx_princ = float(K[0, 2])
+                        cam_rad = math.atan2(cx - cx_princ, fx)
+                    except Exception:
+                        cam_rad = math.radians(
+                            (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1]))
+                    # Convert to world yaw using head pose.
+                    try:
+                        head_yaw = _current_head_yaw()
+                    except Exception:
+                        head_yaw = choreo.current_yaw()
+                    _visual_gaze[0] = (head_yaw + cam_rad, time.time())
+                    _vis_stop.wait(0.5)   # ~2 fps, keep CPU low
+                except Exception:
+                    _vis_stop.wait(0.5)
+        _vis_thread = _th_face.Thread(target=_face_tracker, name="face-tracker", daemon=True)
+        _vis_thread.start()
+
+        # Reduce SoundCompass jitter: log raw angles, use longer window
+        _compass_log = [0.0]  # last logged angle to avoid spam
+
+        _sd.default.samplerate = 16000
+        _sd.default.channels = 1
+        _sd.default.dtype = "int16"
+        # Release the Reachy SDK's output stream so aplay can open
+        # /dev/snd/pcmC0D0p (the SDK held it via Speaker class).
+        try:
+            reachy_mini.media.stop_playing()
+            logger.info("released SDK speaker for aplay")
+        except Exception as e:
+            logger.warning("stop_playing failed: %s", e)
+
+        _sleep.sleep(1.0)
+
+        mic_stream = _sd.InputStream(device="reachymini_audio_src")
+        mic_stream.start()
+
+
+        # Playback is intentionally isolated from the WebSocket event loop.
+        # aplay writes can block on ALSA; the receive coroutine must never wait
+        # on that pipe or it will stall incoming TTS packets.
+        import queue as _pq
+        import threading as _th
+        _audio_q = BoundedLatestQueue[bytes | None](maxsize=50)
+        _writer_stop = _th.Event()
+        _audio_proc_lock = _th.Lock()
+        _audio_proc = [None]
+        _audio_stats = {"enqueued": 0, "written": 0, "dropped": 0, "restarts": 0}
+
+        def _open_aplay():
+            return _sp.Popen(
+                ["/usr/bin/aplay", "-r", "16000", "-f", "S16_LE", "-c", "2", "-q"],
+                stdin=_sp.PIPE,
+                stderr=_sp.DEVNULL,
+            )
+
+        def _audio_writer():
+            proc = None
+            try:
+                while not _writer_stop.is_set():
+                    try:
+                        chunk = _audio_q.get(timeout=0.5)
+                    except _pq.Empty:
+                        continue
+                    if chunk is None:
+                        break
+                    for attempt in range(2):
+                        try:
+                            if proc is None or proc.poll() is not None:
+                                proc = _open_aplay()
+                                with _audio_proc_lock:
+                                    _audio_proc[0] = proc
+                                _audio_stats["restarts"] += 1
+                                logger.info("audio-out: started aplay (%d)", _audio_stats["restarts"])
+                            proc.stdin.write(chunk)
+                            _audio_stats["written"] += 1
+                            break
+                        except (BrokenPipeError, OSError) as exc:
+                            logger.warning("audio-out: aplay write failed: %s", exc)
+                            if proc is not None:
+                                try:
+                                    proc.kill()
+                                except OSError:
+                                    pass
+                            with _audio_proc_lock:
+                                _audio_proc[0] = None
+                            proc = None
+                    else:
+                        _audio_stats["dropped"] += 1
+                        logger.error("audio-out: dropped chunk after aplay restart failure")
+            finally:
+                if proc is not None:
+                    try:
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                    except OSError:
+                        pass
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1.0)
+                    except (OSError, _sp.TimeoutExpired):
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                with _audio_proc_lock:
+                    _audio_proc[0] = None
+
+        _audio_thread = _th.Thread(target=_audio_writer, name="aplay-writer", daemon=True)
+        _audio_thread.start()
+
+        def _aplay_add(stereo_f32):
+            pcm = (np.clip(stereo_f32, -1, 1) * 32767).astype("<i2").tobytes()
+            before = _audio_q.dropped
+            _audio_q.put_latest(pcm)
+            _audio_stats["enqueued"] += 1
+            _audio_stats["dropped"] += _audio_q.dropped - before
+            RUNTIME_HEALTH.update(
+                audio_queue=_audio_q.qsize(),
+                audio_dropped=_audio_stats["dropped"],
+            )
+
+        def _aplay_flush():
+            # Drain stale audio from queue to prevent backlog.
+            _audio_stats["dropped"] += _audio_q.flush()
+            RUNTIME_HEALTH.update(
+                audio_queue=_audio_q.qsize(),
+                audio_dropped=_audio_stats["dropped"],
+            )
+
+        def _stop_audio_process() -> None:
+            """Interrupt a blocked aplay write during shutdown."""
+            with _audio_proc_lock:
+                proc = _audio_proc[0]
+            if proc is None or proc.poll() is not None:
                 return
-            pose = np.asarray(pose, dtype=np.float64)
-            if pose.shape != (4, 4):
-                logger.warning("unexpected head pose shape %s; skipping wake-up", pose.shape)
-                return
-            t_dist, r_dist, _ = distance_between_poses(pose, SLEEP_HEAD_POSE)
-            if t_dist <= 0.05 and r_dist <= 0.35:
-                logger.info("head in sleep pose; running wake-up movement")
-                reachy_mini.wake_up()
-            else:
-                logger.info("head not in sleep pose; skipping wake-up")
-        except Exception as exc:  # noqa: BLE001 - startup wake-up is best effort
-            logger.warning("wake-up check failed: %s", exc)
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.0)
+            except (_sp.TimeoutExpired, OSError):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+
+        async def run():
+            enc = opuslib.Encoder(16000, 1, "voip")
+            hdrs = {"Authorization": f"Bearer {XIAOZHI_TOKEN}", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
+            RUNTIME_HEALTH.update(ws_state="connecting")
+            async with _ws.connect(XIAOZHI_CONV_URL, additional_headers=hdrs, open_timeout=12, ping_interval=20, ping_timeout=10) as ws:
+                await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
+                    "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
+                data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
+                sid = data.get("session_id","")
+                params = data.get("audio_params", {})
+                tts_rate = int(params.get("sample_rate", 24000))
+                tts_duration = int(params.get("frame_duration", 60))
+                tts_frame_size = tts_rate * tts_duration // 1000
+                dec = opuslib.Decoder(tts_rate, 1)
+                tts_packets = 0
+                tts_decode_errors = 0
+                _tts_start_at = 0.0
+                logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
+                RUNTIME_HEALTH.update(
+                    ws_state="connected",
+                    session_id=sid,
+                    tts_active=False,
+                    tts_packets=0,
+                    last_rx_at=time.time(),
+                )
+                tts_active = False
+                tts_watchdog = TtsWatchdog()
+                _skip_audio_until = 0.0
+                # ── Wake word state ──────────────────────────────────
+                _waked = False
+                _wake_deadline = 0.0
+                _wake_at = 0.0  # discard stale TTS from before wake
+                WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿")
+                WAKE_TIMEOUT = 60.0  # reset on every speech burst
+
+                async def recv():
+                    nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
+                    nonlocal _waked, _wake_deadline, _wake_at, _skip_audio_until
+                    while not stop_event.is_set():
+                        try:
+                            raw = await ws.recv()
+                        except _a.TimeoutError:
+                            continue
+                        if isinstance(raw, bytes):
+                            if not _waked:
+                                continue
+                            if _skip_audio_until > 0 and time.time() < _skip_audio_until:
+                                continue
+                            tts_packets += 1
+                            tts_watchdog.packet()
+                            RUNTIME_HEALTH.update(
+                                last_rx_at=time.time(),
+                                tts_packets=tts_packets,
+                                last_tts_packet_at=time.time() if tts_watchdog.active else None,
+                            )
+                            if not hasattr(_aplay_add, "_count"):
+                                _aplay_add._count = 0
+                            _aplay_add._count += 1
+                            try:
+                                pcm = dec.decode(raw, tts_frame_size)
+                                pcm_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+                                ratio = tts_rate / 16000
+                                idx = np.arange(0, len(pcm_f32), ratio).astype(int)
+                                pcm_16k = pcm_f32[idx[:min(len(idx), len(pcm_f32))]]
+                                stereo = np.column_stack([pcm_16k, pcm_16k])
+                                _aplay_add(stereo)
+                                if tts_packets % 10 == 0:
+                                    logger.info("xz audio packets=%d latest=%dB", tts_packets, len(raw))
+                            except Exception as exc:
+                                tts_decode_errors += 1
+                                logger.warning(
+                                    "xz opus decode failed packet=%d bytes=%d error=%s",
+                                    tts_packets, len(raw), exc,
+                                )
+                        else:
+                            RUNTIME_HEALTH.update(last_rx_at=time.time())
+                            d = _j.loads(raw)
+                            t = d.get("type","")
+                            if t == "llm":
+                                # Xiaozhi sends the model's emotion/expression here
+                                # (e.g. {"type":"llm","emotion":"happy","text":"😀"});
+                                # Use bounded programmatic moves for automatic emotions.
+                                # Official recorded emotions can request unreachable
+                                # poses on this robot and make the daemon reject IK.
+                                # Per-move cooldown prevents the default 'happy'
+                                # emotion from firing on every reply.
+                                # If a manual/MCP move is playing, emotions are ignored
+                                # so a tool-triggered dance is never cut short.
+                                emo = (d.get("emotion") or "").strip().lower()
+                                if choreo.current_move() is not None or choreo.current_recorded() is not None:
+                                    logger.info("xz emotion %s ignored (move in progress)", emo)
+                                else:
+                                    _handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
+                            if t == "stt":
+                                text = d.get("text","")
+                                logger.info("xz stt: %s", text)
+                                # Wake word gate (skip if force-wake flag set).
+                                _force = False
+                                try:
+                                    _force = open("/tmp/yrobot_force_wake").read().strip() == "1"
+                                except Exception:
+                                    pass
+                                text_lower = text.lower()
+                                if _force or any(w.lower() in text_lower for w in WAKE_WORDS):
+                                    _waked = True
+                                    _wake_deadline = time.time() + WAKE_TIMEOUT
+                                    if not _force:
+                                        _wake_at = time.time()  # only gate stale for real wake
+                                    choreo.play_move("nod")
+                                    logger.info("wake word detected: %.60s", text)
+                                if not _waked:
+                                    logger.info("xz stt ignored (not waked): %.60s", text)
+                                    continue
+                                choreo.set_mode(LISTEN)
+                            elif t == "tts" and d.get("state")=="start":
+                                if not _waked:
+                                    continue
+                                now_ts = time.time()
+                                if _wake_at > 0 and now_ts - _wake_at < 1.5:
+                                    logger.info("xz tts start ignored (stale, %.1fs post-wake)", now_ts - _wake_at)
+                                    _skip_audio_until = now_ts + 1.5
+                                    continue
+                                logger.info("xz tts start")
+                                tts_active = True
+                                _tts_start_at = time.time()
+                                tts_watchdog.start()
+                                RUNTIME_HEALTH.update(
+                                    tts_active=True,
+                                    tts_packets=0,
+                                    last_tts_packet_at=None,
+                                )
+                                _user_speaking[0] = False
+                                tts_packets = 0
+                                tts_decode_errors = 0
+                                _aplay_add._count = 0
+                                choreo.set_mode(SPEAK)
+                                choreo.release_still()
+                            elif t == "tts" and d.get("state")=="sentence_start":
+                                logger.info("xz tts text: %s", d.get("text","")[:80])
+                            elif t == "tts" and d.get("state") == "sentence_end":
+                                logger.info(
+                                    "xz tts sentence_end packets=%d audio(enqueued=%d written=%d pending=%d)",
+                                    getattr(_aplay_add, "_count", 0),
+                                    _audio_stats["enqueued"],
+                                    _audio_stats["written"],
+                                    _audio_q.qsize(),
+                                )
+                            elif t == "tts" and d.get("state") == "stop":
+                                tts_active = False
+                                tts_watchdog.stop()
+                                RUNTIME_HEALTH.update(tts_active=False, tts_packets=tts_packets)
+                                logger.info(
+                                    "xz tts stop packets=%d audio(enqueued=%d written=%d pending=%d)",
+                                    getattr(_aplay_add, "_count", 0),
+                                    _audio_stats["enqueued"],
+                                    _audio_stats["written"],
+                                    _audio_q.qsize(),
+                                )
+                                logger.info("xz audio summary packets=%d decode_errors=%d", tts_packets, tts_decode_errors)
+                                _aplay_flush()
+                                choreo.set_mode(IDLE)
+
+                rt = _a.ensure_future(recv())
+                try:
+                    # Silence floor for the Xiaozhi uplink gate.  Higher =
+                    # louder speech required to trigger; normalized 0..1 value
+                    # from the shared config (default 2000/32768 ≈ 0.061).
+                    from yrobot.audio import get_vad_rms_min as _get_vad_min
+                    SILENCE_RMS = max(500, int(_get_vad_min() * 32768))
+                    logger.info("xz silence floor rms=%.0f", SILENCE_RMS)
+                    while not stop_event.is_set():
+                        if rt.done():
+                            if rt.cancelled():
+                                raise RuntimeError("xiaozhi receive task was cancelled")
+                            recv_error = rt.exception()
+                            if recv_error is not None:
+                                if _is_expected_xiaozhi_disconnect(recv_error):
+                                    raise _XiaozhiReconnect(str(recv_error)) from recv_error
+                                raise RuntimeError("xiaozhi receive task failed") from recv_error
+                            raise RuntimeError("xiaozhi receive task ended unexpectedly")
+                        # Auto-expire wake after conversation timeout.
+                        if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
+                            _waked = False
+                            logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
+                        if tts_active:
+                            # Recover both startup stalls and mid-stream
+                            # disconnects so one missing tts.stop cannot make
+                            # the robot deaf forever.
+                            if tts_watchdog.stalled():
+                                tts_active = False
+                                tts_watchdog.stop()
+                                logger.warning(
+                                    "tts stall: packets=%d age=%.1fs, forcing idle",
+                                    tts_watchdog.packets,
+                                    time.monotonic() - max(
+                                        tts_watchdog.last_packet_at or tts_watchdog.started_at,
+                                        0.0,
+                                    ),
+                                )
+                                _aplay_flush()
+                                choreo.set_mode(IDLE)
+                            await _a.to_thread(mic_stream.read, 960)
+                            await _a.sleep(0)
+                            continue
+                        if _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled()):
+                            raise _XiaozhiPaused("mic input disabled")
+                        frames = []
+                        rms_max = 0
+                        for _ in range(16):
+                            buf, _ = await _a.to_thread(mic_stream.read, 960)
+                            rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            _publish_dashboard_mic(float(rms) / 32768.0)
+                            if rms > rms_max: rms_max = rms
+                            frames.append(buf)
+                        if rms_max < SILENCE_RMS:
+                            continue
+                        # Refresh wake deadline on every speech burst.
+                        if _waked:
+                            _wake_deadline = time.time() + WAKE_TIMEOUT
+                        _user_speaking[0] = True
+                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
+                        sent = 0
+                        for buf in frames:
+                            try:
+                                await _a.wait_for(ws.send(enc.encode(buf.tobytes(), 960)), timeout=3)
+                                sent += 1
+                                await _a.sleep(0)
+                            except Exception: break
+                        deadline = time.monotonic() + 6.0
+                        min_deadline = time.monotonic() + 3.0
+                        while time.monotonic() < deadline and not stop_event.is_set():
+                            buf, _ = await _a.to_thread(mic_stream.read, 960)
+                            rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            _publish_dashboard_mic(float(rms) / 32768.0)
+                            try:
+                                await _a.wait_for(ws.send(enc.encode(buf.tobytes(), 960)), timeout=3)
+                                sent += 1
+                                await _a.sleep(0)
+                            except Exception: break
+                            if time.monotonic() > min_deadline and rms < 1000:
+                                break
+                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
+                        _user_speaking[0] = False
+                        if sent:
+                            logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
+                        for _ in range(20):
+                            if stop_event.is_set(): break
+                            await _a.sleep(0.2)
+                finally:
+                    if not rt.done():
+                        rt.cancel()
+                    try:
+                        await rt
+                    except _a.CancelledError:
+                        pass
+                    except Exception as exc:
+                        if _is_expected_xiaozhi_disconnect(exc):
+                            logger.warning("xiaozhi receive task closed, reconnecting: %s", exc)
+                        else:
+                            logger.warning("xiaozhi receive task closed with error: %s", exc)
+
+        try:
+            while not stop_event.is_set():
+                if _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled()):
+                    RUNTIME_HEALTH.update(ws_state="paused", session_id=None, tts_active=False)
+                    logger.info("xiaozhi paused while mic input disabled")
+                    while (
+                        not stop_event.is_set()
+                        and _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled())
+                    ):
+                        stop_event.wait(0.5)
+                    if stop_event.is_set():
+                        break
+                    logger.info("xiaozhi resuming after mic input enabled")
+                try:
+                    _a.run(run())
+                except _XiaozhiPaused as e:
+                    RUNTIME_HEALTH.update(ws_state="paused", session_id=None, tts_active=False)
+                    logger.info("xiaozhi paused: %s", e)
+                    continue
+                except _XiaozhiReconnect as e:
+                    RUNTIME_HEALTH.update(ws_state="reconnecting", session_id=None, tts_active=False)
+                    logger.warning("xiaozhi session closed, reconnecting: %s", e)
+                except Exception as e:
+                    RUNTIME_HEALTH.update(ws_state="error", session_id=None, tts_active=False)
+                    logger.exception("xiaozhi ended: %s", e)
+                if not stop_event.is_set():
+                    reconnects = RUNTIME_HEALTH.increment("reconnects")
+                    RUNTIME_HEALTH.update(ws_state="reconnecting")
+                    logger.info("xiaozhi reconnecting in 3s (attempt %d)...", reconnects)
+                    stop_event.wait(3)
+        except Exception as e:
+            logger.info("xiaozhi ended: %s", e)
+        finally:
+            RUNTIME_HEALTH.update(ws_state="stopped", session_id=None, tts_active=False)
+            _writer_stop.set()
+            _audio_q.put_latest(None)
+            _stop_audio_process()
+            _audio_thread.join(timeout=2)
+            _stop_audio_process()
+            mic_stream.stop()
+            mic_stream.close()
+            _vis_stop.set()
+            _vis_thread.join(timeout=2)
+            compass.close()
+            compass.join(timeout=2)
+            choreo.close()
+            choreo.join(timeout=2)
+
+
+def _enter_safe_mode(
+    media_holder: _MediaHolder,
+    exc: Exception,
+    stop_event: threading.Event,
+) -> None:
+    """Dashboard-only mode when Xiaozhi fails to start."""
+    fails = _record_startup_failure()
+    logger.error(
+        "YRobot safe mode: %d/%d consecutive startup failures (last: %s)",
+        fails, _MAX_STARTUP_FAILURES, exc,
+    )
+    if fails >= _MAX_STARTUP_FAILURES:
+        logger.error(
+            "YRobot safe mode: threshold reached; dashboard up, "
+            "refusing to retry until service restart."
+        )
+    while not stop_event.is_set():
+        stop_event.wait(timeout=1.0)
 
 
 def cli() -> None:
@@ -758,6 +1144,11 @@ def cli() -> None:
         app.wrapped_run()
     except KeyboardInterrupt:
         app.stop()
+    except Exception:
+        logger.exception("YRobot process crashed during startup/runtime")
+        app.stop()
+        logging.shutdown()
+        os._exit(1)
 
 
 if __name__ == "__main__":
