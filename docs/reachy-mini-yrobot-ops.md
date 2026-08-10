@@ -268,6 +268,56 @@ Recommended path:
 - Add a YRobot MCP bridge/controller if MCP tools are needed.
 - Do not hand arbitrary appliance control to a public remote MCP tool.
 
+## QWEN Backend Deployment (2026-08-10)
+
+YRobot now offers exactly two restart-based conversation backends in Settings:
+`XIAOZHI` and `QWEN`. QWEN is fixed to
+`qwen3.5-omni-flash-realtime`; there is no model text field and no silent
+fallback to XIAOZHI after a QWEN failure. The official Reachy Mini daemon was
+not modified.
+
+Required robot-local environment entries live in
+`/home/pollen/.config/yrobot/ha.env`:
+
+```text
+DASHSCOPE_API_KEY=...
+YROBOT_HA_URL=...
+YROBOT_HA_TOKEN=...
+```
+
+Never paste these values into progress notes, logs, Git, or the dashboard. The
+dashboard reports only whether a backend is configured and running.
+
+Appliance control is restricted to the local friendly-name whitelist and the
+three fixed tools `get_weather`, `get_device_state`, and
+`control_allowed_device`. High-risk device classes and arbitrary entity IDs or
+services are rejected before network access. The service at
+`192.168.1.200:8766` currently exposes working REST `/health` and `/weather`
+routes; `/mcp` and `/sse` return 404, so it is not treated as a standard MCP
+transport.
+
+Current deployment state:
+
+- reviewed QWEN source is installed in `/home/pollen/YRobot`;
+- production focused verification is `79 passed` with clean focused Ruff;
+- XIAOZHI remains selected and connected because the required QWEN and Home
+  Assistant credentials were absent at deployment preflight;
+- live QWEN interruption, multilingual speech, and appliance tests remain
+  pending until credentials are configured locally.
+
+Deployment backup:
+
+```text
+/home/pollen/.local/state/yrobot/backups/qwen-realtime-20260810-170954
+manifest SHA-256: a1340d1a3f23eff9ca6f2c26930c843dda69b459d40982027b9ed7205a9371e6
+```
+
+To continue, configure the three environment entries locally, select QWEN in
+YRobot Settings, and restart only `yrobot.service` once. To roll back the code,
+first stop `yrobot.service`, restore the 11 files listed by the backup manifest,
+then start the service and verify the backend/status, motion loop, and changing
+camera frames. Do not reset the robot or modify the official daemon.
+
 ## Git Workflow
 
 Main local repo:
@@ -307,4 +357,3 @@ For code changes, run focused checks first:
 Full `pytest` and `ruff check .` have had unrelated failures from in-progress
 local changes. Treat focused hardware-relevant checks as the immediate gate, and
 only clean full-suite issues when intentionally doing repo cleanup.
-

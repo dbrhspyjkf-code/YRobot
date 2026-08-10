@@ -11,7 +11,8 @@ local tools.
 
 ## Current status
 
-**Phase:** Planning complete; isolated implementation not started.
+**Phase:** Reviewed QWEN implementation is deployed. Production remains on
+XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 
 ## Completed
 
@@ -31,6 +32,66 @@ local tools.
   MCP endpoint.
 - Wrote the implementation plan at
   `docs/superpowers/plans/2026-08-10-yrobot-qwen-realtime-backend.md`.
+- Committed the plan and this progress log on production as `ba847a0`; no
+  runtime source or service configuration was included in that commit.
+- Created isolated worktree `/home/pollen/YRobot-qwen-realtime` on branch
+  `codex/qwen-realtime`.
+- Mirrored the active production source into the worktree while excluding
+  `.env`, `.venv`, caches, bytecode, `.bak` files, egg-info, and credential-
+  named artifacts. The dry comparison reported zero residual differences.
+- Committed that secret-free active runtime snapshot as `2a42070`.
+- Verified the active baseline configuration and motion suites: `40 passed`.
+- Added validated `xiaozhi|qwen` configuration, secret-safe QWEN settings,
+  restart-required backend APIs, runtime status, and a two-choice dashboard
+  selector in feature commit `41f1e61`.
+- Verified Task 2 with `48 passed`, `git diff --check`, a clean added-line
+  credential scan, and a live browser render. The browser showed exactly two
+  enabled choices, highlighted XIAOZHI correctly, and logged no warnings or
+  errors.
+- Added the isolated QWEN WebSocket protocol client in `31474fb`. It fixes the
+  model query to `qwen3.5-omni-flash-realtime`, keeps Bearer authorization in
+  the request header, configures PCM/transcription/semantic VAD/tools, drops
+  cancelled audio, and returns bounded Function Calling results.
+- Updated the plan to match the current official protocol: tool output is
+  followed by plain `{"type":"response.create"}` because modalities belong
+  in `session.update`. The legacy DashScope domain remains officially
+  functional, so a Workspace ID is not required for the initial deployment.
+- Verified Task 3 with `57 passed`; Ruff passed for both new protocol files,
+  `git diff --check` passed, and no real provider request was made.
+- Added mutually exclusive startup routing and the Reachy QWEN PCM runtime in
+  `abf2573`. QWEN starts in manual transcription mode, explicitly preserves
+  `你好小白`, switches to semantic VAD only after wake, and returns to the
+  wake gate after 60 seconds.
+- Added bounded 24 kHz mono PCM playback. Interruption drains queued audio and
+  terminates the current `aplay` process so buffered speech does not continue.
+  The official Reachy daemon remains untouched.
+- Verified Task 4 with `65 passed`; Ruff passed for the QWEN protocol/runtime
+  files and `git diff --check` passed. A temporary test hang was traced to an
+  incomplete fake Reachy object lacking `.media`; the test fixture was fixed
+  and fail-fast safe-mode handling now prevents recurrence.
+- Added the fixed Function Calling boundary in `eac6daf`: `get_weather`,
+  `get_device_state`, and `control_allowed_device` are the only schemas.
+  Appliance arguments use local friendly names, never raw entity IDs,
+  services, or credentials.
+- Added zero-network rejection for unknown tools/devices and locks, covers,
+  alarms, gas, and heating classes. Function `call_id` execution is idempotent,
+  local results are bounded, and provider replies cannot expose the HA token.
+- Verified Task 5 with `79 passed` and clean focused Ruff. Live read-only REST
+  checks returned healthy status and current Guangzhou weather from
+  `192.168.1.200:8766`; it remains documented as REST rather than MCP.
+- Completed deployment preflight without displaying secret values. The QWEN
+  API key and Home Assistant URL/token are not configured; the existing Home
+  Assistant whitelist file is present.
+- Backed up the exact production targets to
+  `/home/pollen/.local/state/yrobot/backups/qwen-realtime-20260810-170954`.
+  The 11-file backup manifest SHA-256 is
+  `a1340d1a3f23eff9ca6f2c26930c843dda69b459d40982027b9ed7205a9371e6`.
+- Deployed the reviewed files with zero copy mismatches. Production verification
+  passed all 79 focused tests, focused Ruff, and `git diff --check`.
+- Restarted `yrobot.service` once at 2026-08-10 17:10:30+08, intentionally
+  retaining XIAOZHI. The YRobot service and official daemon are active; XIAOZHI
+  is connected, the motion loop is approximately 50 Hz with no target failures,
+  and consecutive camera frames changed.
 
 ## Decisions that must remain stable
 
@@ -53,14 +114,19 @@ local tools.
   Native MCP integration remains gated on an exact endpoint and contract.
 - Real interruption quality depends on Reachy speaker echo behavior; automatic
   tests cannot replace an audible ten-interruption hardware test.
+- Live QWEN speech, interruption, language switching, and appliance control
+  acceptance remain blocked only by missing robot-local credentials. This is
+  not a source-code or daemon blocker.
 - Existing full pytest discovery references modules currently deleted from the
   production working tree. Feature-specific tests are authoritative until that
   unrelated migration is reconciled.
 
 ## Next action
 
-Create the isolated `codex/qwen-realtime` worktree and commit a secret-free
-snapshot of the active runtime before changing implementation files.
+Configure `DASHSCOPE_API_KEY`, `YROBOT_HA_URL`, and `YROBOT_HA_TOKEN` in
+`/home/pollen/.config/yrobot/ha.env` without sharing or displaying their values.
+Then select QWEN in YRobot Settings, restart YRobot once, and run the physical
+speech, interruption, language-switching, and allowlisted appliance checks.
 
 ## Verification log
 
@@ -70,6 +136,29 @@ snapshot of the active runtime before changing implementation files.
 | 2026-08-10 | YRobot source audit | SSH read-only inspection of branch and working tree | Dirty tree preserved |
 | 2026-08-10 | Hermes endpoint | `/health` 200; `/weather` live; `/mcp` and `/sse` 404 | REST only |
 | 2026-08-10 | Design | Commit `a4f238e` | Approved |
+| 2026-08-10 | Plan and progress docs | Production commit `ba847a0` | Saved |
+| 2026-08-10 | Isolated runtime baseline | Worktree commit `2a42070`; snapshot residual 0; secret scan clean | Saved |
+| 2026-08-10 | Active baseline tests | `tests/test_config.py tests/test_motion.py` | 40 passed |
+| 2026-08-10 | Historical test drift | `test_audio`, `test_app_config`, `test_main` import symbols removed by the pre-existing runtime restructure | Recorded; outside current scope |
+| 2026-08-10 | Backend selector tests | `test_backend_selection.py test_config.py test_motion.py` | 48 passed |
+| 2026-08-10 | Backend selector UI | Isolated port 18114, browser DOM/screenshot/console | Two choices rendered; no browser errors |
+| 2026-08-10 | Task 2 lint | Ruff reports 11 pre-existing findings in the active baseline; no new finding remains from Task 2 | Recorded; unrelated code untouched |
+| 2026-08-10 | Task 2 implementation | Feature commit `41f1e61`; added-line secret scan clean | Saved |
+| 2026-08-10 | QWEN protocol tests | Fake WebSocket plus prior focused suites | 57 passed |
+| 2026-08-10 | QWEN protocol lint | `ruff check yrobot/qwen_realtime.py tests/test_qwen_realtime.py` | Passed |
+| 2026-08-10 | Task 3 implementation | Feature commit `31474fb`; added-line secret scan clean | Saved |
+| 2026-08-10 | QWEN runtime tests | Routing, key guard, wake gate, 60-second expiry, playback interruption plus prior suites | 65 passed |
+| 2026-08-10 | QWEN runtime lint | QWEN protocol/runtime files and tests | Passed |
+| 2026-08-10 | Task 4 implementation | Feature commit `abf2573`; added-line secret scan clean | Saved |
+| 2026-08-10 | QWEN tool tests | Security, REST, HA mapping, timeout, bounded output plus prior suites | 79 passed |
+| 2026-08-10 | Hermes REST live read | `/health`; `/weather?city=广州` | Healthy; live weather returned |
+| 2026-08-10 | Task 5 implementation | Feature commit `eac6daf`; added-line secret scan clean | Saved |
+| 2026-08-10 | Deployment credential preflight | QWEN key and HA URL/token absent; HA whitelist present | XIAOZHI retained |
+| 2026-08-10 | Production backup | 11 targets; manifest SHA-256 `a1340d1a3f23eff9ca6f2c26930c843dda69b459d40982027b9ed7205a9371e6` | Saved |
+| 2026-08-10 | Production deployment | Feature-to-production comparison | Zero mismatches |
+| 2026-08-10 | Production verification | Focused suite, Ruff, diff check | 79 passed; clean |
+| 2026-08-10 | XIAOZHI restart validation | Service/API/motion/daemon/camera/journal | Connected and healthy |
+| 2026-08-10 | QWEN physical acceptance | Requires robot-local provider and HA credentials | Pending |
 
 ## Update protocol
 

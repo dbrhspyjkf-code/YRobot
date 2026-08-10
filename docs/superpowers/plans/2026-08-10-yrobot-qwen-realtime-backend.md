@@ -252,7 +252,9 @@ Assert that function output is written as:
 }
 ```
 
-and followed by `response.create` with `modalities: ["audio", "text"]`.
+and followed by the current official client event `{"type": "response.create"}`.
+Output modalities are configured once in `session.update`; do not repeat
+unsupported response fields.
 
 - [ ] **Step 2: Run tests and confirm failure**
 
@@ -262,7 +264,13 @@ Expected: FAIL because `yrobot.qwen_realtime` does not exist.
 
 - [ ] **Step 3: Implement the smallest protocol state machine**
 
-Use `websockets.connect()` with `Authorization: Bearer <key>`. Send `session.update` after `session.created`; set PCM formats, `Ethan`, input transcription, bilingual instructions, turn detection, and the fixed tool list. Handle:
+Use `websockets.connect()` with `Authorization: Bearer <key>` and append the
+fixed model as the `model` query parameter. The legacy
+`wss://dashscope.aliyuncs.com` domain remains officially supported; a
+workspace-specific URL can be supplied through `YROBOT_QWEN_URL`. Send
+`session.update` after `session.created`; set PCM formats, `Ethan`, input
+transcription, bilingual instructions, turn detection, and the fixed tool
+list. Handle:
 
 - `conversation.item.input_audio_transcription.completed`
 - `input_audio_buffer.speech_started`
