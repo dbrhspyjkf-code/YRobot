@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 # The duplex template was trained with this exact first line; keep persona and
@@ -22,25 +22,33 @@ PROACTIVE_POLICY = (
     "不抢用户的话，非紧急主动发言保持克制。"
 )
 HA_CONTROL_POLICY = (
-    "家电控制：当用户要求控制家电时，回复必须包含完整设备名和动作，"
-    "例如“关闭书台灯”或“打开厨房灯”；不要只说“关灯”“去关灯”或“好了”。"
+    "家电控制：机器人本地白名单会根据用户语音独立执行低风险设备控制。"
+    "当用户要求控制灯、风扇等家电时，不要回答无法控制这个设备。"
+    "如果你没有收到工具返回结果，只能简短说“好的，我交给本地控制”，"
+    "不要声称已经成功，也不要说设备不在白名单里。"
 )
 HERMES_TOOLS_POLICY = (
-    "外部工具：当用户询问 DeepSeek 余额时，回复必须包含“DeepSeek余额”这几个字。"
+    "外部工具：以下查询直接交给后端处理，回复中必须包含触发词，否则后端无法识别：\n"
+    "· 天气（任意城市）—— 回复中必须含“天气”字样。\n"
+    "· 股票价格（如“平安股票多少钱”）—— 必须含“股价”或“价格”或“行情”。\n"
+    "· 股票分析建议（如“比亚迪怎么样”）—— 必须含“怎么样”或“建议”。\n"
+    "· 我的持仓（“我的股票”）—— 必须含“我的股票”。\n"
+    "· 汇率（“美元兑人民币”）—— 必须含“汇率”。\n"
+    "· DeepSeek余额 —— 必须含“DeepSeek余额”。\n"
+    "· 如果用户报出 6 位股票代码（如“600600”“688018”），回复必须原样复述该代码（保持阿拉伯数字格式如“600600”，不要转成中文读法“六零零六零零”）；后端用代码精确查询。\n"
+    "· 查询股票时不要转述用户原话（不要用“你问”“你说”“你的问题”等说法），直接说出股票名称或代码本身，例如直接说“比亚迪怎么样”或“600600价格多少”。"
 )
 LOCAL_INFO_POLICY = (
     "日期时间：当用户询问今天日期、几号、星期几或当前时间时，"
     "只回复触发词“当前日期”或“当前时间”，不要编造具体日期时间。"
 )
-MEMORY_POLICY = (
-    "本地记忆：只有当用户明确要求记住某件事时，回复必须包含“记住：”和要保存的内容；"
-    "当用户要求忘掉某件事时，回复必须包含“忘掉：”和要删除的关键词；"
-    "当用户询问你记得什么时，回复必须包含“我记得什么”。"
-)
 
 # Public Gateway documented at:
 # https://minicpmo45.modelbest.cn/docs/zh/realtime-api/overview/
 DEFAULT_REALTIME_URL = "wss://minicpmo45.modelbest.cn/v1/realtime?mode=video"
+SUPPORTED_CONVERSATION_BACKENDS = frozenset({"xiaozhi", "qwen"})
+QWEN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime"
+QWEN_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 
 
 def build_system_prompt(persona: str, proactive: bool) -> str:
@@ -126,7 +134,7 @@ class Settings:
     barge_fast_confirm_ms: int = 140
     barge_fast_echo_similarity: float = 0.45
     barge_fast_unexplained_db: float = -36.0
-    head_tracking_weight: float = 0.4
+    head_tracking_weight: float = 0.7
     ref_audio_path: str | None = None
     tts_ref_audio_path: str | None = None
     proactive_enabled: bool = True
@@ -136,11 +144,22 @@ class Settings:
     ha_whitelist_path: str = "~/.config/yrobot/home_assistant_whitelist.json"
     hermes_tools_enabled: bool = False
     hermes_tools_url: str = "http://192.168.1.200:8766"
+    hermes_ios_api_url: str = "http://192.168.1.200:8900"
     local_info_enabled: bool = True
     memory_enabled: bool = True
     memory_path: str = "~/.config/yrobot/memory.json"
+    # Profile-driven tool whitelist and instructions override.
+    profile_name: str = "default"
+    profile_dir: str = ""  # empty ⇒ use shipped profiles; override at runtime
+    conversation_backend: str = "xiaozhi"
+    qwen_api_key: str | None = field(default=None, repr=False)
+    qwen_model: str = field(default=QWEN_REALTIME_MODEL, init=False)
+    qwen_url: str = QWEN_REALTIME_URL
+    qwen_voice: str = "Ethan"
 
     def __post_init__(self) -> None:
+        if self.conversation_backend not in SUPPORTED_CONVERSATION_BACKENDS:
+            raise ValueError("YROBOT_CONVERSATION_BACKEND must be 'xiaozhi' or 'qwen'")
         if self.chunk_ms != 1000:
             raise ValueError("YROBOT_CHUNK_MS must be 1000 for MiniCPM-o 4.5 duplex")
         if self.send_video and self.realtime_mode != "video":
@@ -163,6 +182,8 @@ class Settings:
             raise ValueError("YROBOT_SCENE_CHANGE_THRESHOLD must be between 0 and 1")
         if not 0.001 <= self.vad_rms_min <= 0.5:
             raise ValueError("YROBOT_VAD_RMS_MIN must be between 0.001 and 0.5")
+        if not 0.0 <= self.head_tracking_weight <= 1.0:
+            raise ValueError("YROBOT_HEAD_TRACKING_WEIGHT must be between 0 and 1")
 
     @property
     def realtime_mode(self) -> str:
@@ -181,8 +202,6 @@ class Settings:
             parts.append(HERMES_TOOLS_POLICY)
         if self.local_info_enabled and LOCAL_INFO_POLICY not in self.system_prompt:
             parts.append(LOCAL_INFO_POLICY)
-        if self.memory_enabled and MEMORY_POLICY not in self.system_prompt:
-            parts.append(MEMORY_POLICY)
         return "\n".join(parts)
 
     @classmethod
@@ -231,7 +250,7 @@ class Settings:
             barge_fast_confirm_ms=int(_num("YROBOT_BARGE_FAST_CONFIRM_MS", 140, env)),
             barge_fast_echo_similarity=_num("YROBOT_BARGE_FAST_ECHO_SIMILARITY", 0.45, env),
             barge_fast_unexplained_db=_num("YROBOT_BARGE_FAST_UNEXPLAINED_DB", -36.0, env),
-            head_tracking_weight=_num("YROBOT_HEAD_TRACKING_WEIGHT", 0.4, env),
+            head_tracking_weight=_num("YROBOT_HEAD_TRACKING_WEIGHT", 0.7, env),
             ref_audio_path=env.get("YROBOT_REF_AUDIO_PATH") or None,
             tts_ref_audio_path=env.get("YROBOT_TTS_REF_AUDIO_PATH") or None,
             proactive_enabled=proactive,
@@ -246,7 +265,18 @@ class Settings:
             hermes_tools_url=(
                 env.get("YROBOT_HERMES_TOOLS_URL") or "http://192.168.1.200:8766"
             ).rstrip("/"),
+            hermes_ios_api_url=(
+                env.get("YROBOT_IOS_API_URL") or "http://192.168.1.200:8900"
+            ).rstrip("/"),
             local_info_enabled=_flag("YROBOT_LOCAL_INFO_ENABLED", True, env),
             memory_enabled=_flag("YROBOT_MEMORY_ENABLED", True, env),
             memory_path=env.get("YROBOT_MEMORY_PATH") or "~/.config/yrobot/memory.json",
+            profile_name=env.get("YROBOT_PROFILE", "default").strip() or "default",
+            profile_dir=env.get("YROBOT_PROFILE_DIR", "").strip(),
+            conversation_backend=(
+                env.get("YROBOT_CONVERSATION_BACKEND", "xiaozhi").strip() or "xiaozhi"
+            ),
+            qwen_api_key=env.get("DASHSCOPE_API_KEY") or None,
+            qwen_url=(env.get("YROBOT_QWEN_URL") or QWEN_REALTIME_URL).strip(),
+            qwen_voice=(env.get("YROBOT_QWEN_VOICE") or "Ethan").strip(),
         )

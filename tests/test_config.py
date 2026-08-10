@@ -96,7 +96,7 @@ def test_local_info_prompt_uses_markers():
     assert "当前时间" in prompt
 
 
-def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):
+def test_home_assistant_prompt_uses_local_allowlist_language(monkeypatch):
     monkeypatch.setenv("YROBOT_HA_ENABLED", "1")
     monkeypatch.setenv("YROBOT_HA_URL", "http://192.168.1.133:8123")
     monkeypatch.setenv("YROBOT_HA_TOKEN", "secret-token")
@@ -104,8 +104,9 @@ def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):
     prompt = Settings.from_env().effective_system_prompt
 
     assert "家电控制" in prompt
-    assert "完整设备名" in prompt
-    assert "关闭书台灯" in prompt
+    assert "本地白名单" in prompt
+    assert "不要回答无法控制" in prompt
+    assert "不要声称已经成功" in prompt
 
 
 @pytest.mark.parametrize("url", ["https://example.com", "file:///tmp/socket", "wss:///missing"])
