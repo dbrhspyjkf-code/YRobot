@@ -337,18 +337,27 @@ class ToolExecutor:
         if extra:
             arguments.update(extra)
         payload = json.dumps({"name": name, "arguments": arguments}).encode("utf-8")
+        logger.info("hermes tool call: %s prompt=%r extra=%s", name, prompt, extra)
         request = urllib.request.Request(
             f"{ios_url}/api/tools/call",
             data=payload,
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        result = self._read_json(request)
+        try:
+            result = self._read_json(request)
+        except Exception as exc:
+            logger.warning("hermes tool call %s transport error: %s", name, exc)
+            raise
         if not isinstance(result, dict):
+            logger.warning("hermes tool call %s returned non-dict: %r", name, result)
             return {"ok": False, "error": "Hermes tool call returned invalid data"}
         if not result.get("ok"):
+            logger.warning("hermes tool call %s returned ok=false: %s", name, result.get("error"))
             return {"ok": False, "error": str(result.get("error") or "tool call failed")}
-        return {"ok": True, "result": str(result.get("result") or "")}
+        text = str(result.get("result") or "")
+        logger.info("hermes tool call %s -> %d chars", name, len(text))
+        return {"ok": True, "result": text}
 
     def _get_weather(self, arguments: dict[str, Any]) -> dict[str, Any]:
         city = str(arguments.get("city") or "").strip()
