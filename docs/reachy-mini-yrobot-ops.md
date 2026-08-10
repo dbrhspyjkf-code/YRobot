@@ -390,6 +390,13 @@ passed. The repaired QWEN service reconnected cleanly; final physical
 acceptance was performed by interrupting a long reply; the operator confirmed
 the old speech stopped promptly.
 
+### Camera acceptance
+
+Camera capture was disabled by dashboard state, not by the QWEN runtime. It was
+enabled for this acceptance check and resumed with two captured frames, zero
+failures, and differing consecutive frame hashes. QWEN remained connected and
+the motion loop stayed near 50 Hz with zero target failures.
+
 Deployment backup:
 
 ```text

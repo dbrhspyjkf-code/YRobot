@@ -175,6 +175,10 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   journal entries. Physical interruption confirmation remains pending.
 - The operator tested the repaired interruption path and confirmed it works.
   QWEN speech now stops instead of finishing buffered old content.
+- Camera capture was disabled by dashboard state rather than broken. It was
+  enabled for acceptance; capture resumed with `captured=2`, zero failures,
+  and two consecutive frame hashes differed. QWEN remained connected and the
+  motion loop remained about 50 Hz with zero target failures.
 
 ## Decisions that must remain stable
 
@@ -203,8 +207,7 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 - Existing full pytest discovery references modules currently deleted from the
   production working tree. Feature-specific tests are authoritative until that
   unrelated migration is reconciled.
-- Camera hardware verification remains incomplete while dashboard capture is
-  disabled; do not infer camera health from the active official media daemon.
+- Camera hardware verification passed after dashboard capture was enabled.
 
 ## Next action
 
@@ -251,7 +254,7 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN post-restart health | Official daemon active; motion ~50 Hz; target failures 0; journal errors 0 | Passed |
 | 2026-08-10 | Duplicate response regression | Test first failed, then QWEN runtime suite, full focused suite, Ruff | Fixed; `5c6bd29` / `a6bfb02` |
 | 2026-08-10 | QWEN repaired activation | QWEN connected/no error; motion 52.5 Hz; target failures 0; journal errors 0 | Passed |
-| 2026-08-10 | Camera state | Dashboard capture `running=false`; frame endpoint 404 | Pending enable and hash check |
+| 2026-08-10 | Camera state | Dashboard capture `running=false`; frame endpoint 404 | Diagnosed as disabled |
 | 2026-08-10 | QWEN audio-sink regression | Test first failed, then runtime suite, full focused suite, Ruff | Fixed; `9a098df` / `4190180` |
 | 2026-08-10 | QWEN post-audio restart | Connected/no error; motion 49.9 Hz; target failures 0; journal errors 0 | Passed |
 | 2026-08-10 | Speaker path | 440 Hz tone sent to `reachymini_audio_sink` | Pending audible confirmation |
@@ -262,7 +265,8 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN interruption regression | Speech after `response.done` did not flush local PCM; test first failed then focused suite and Ruff passed | Fixed; `07ca1b2` / `d42910a` |
 | 2026-08-10 | QWEN interruption post-restart | Connected/no error; motion 50.1 Hz; target failures 0; journal errors 0 | Ready for operator test |
 | 2026-08-10 | QWEN interruption acceptance | Long reply interrupted by new user speech | Operator confirmed working |
-| 2026-08-10 | Remaining QWEN acceptance | Allowlisted appliance state, camera | Pending targeted checks |
+| 2026-08-10 | Camera acceptance | Capture enabled; `captured=2`; failures 0; frame hashes changed | Passed |
+| 2026-08-10 | Remaining QWEN acceptance | One allowlisted low-risk appliance state change | Pending operator device choice |
 
 ## Update protocol
 
