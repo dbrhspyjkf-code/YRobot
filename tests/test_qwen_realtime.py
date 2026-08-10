@@ -211,6 +211,35 @@ def test_function_call_done_executes_and_writes_result():
     assert client.websocket.sent[1] == {"type": "response.create"}
 
 
+def test_response_done_function_call_executes_and_writes_result():
+    client, tools = make_client()
+
+    asyncio.run(
+        client.handle_event(
+            {
+                "type": "response.done",
+                "response": {
+                    "id": "resp_1",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "control_allowed_device",
+                            "call_id": "call_lamp",
+                            "arguments": '{"device":"书台灯","action":"turn_off"}',
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert tools.calls == [("control_allowed_device", {"device": "书台灯", "action": "turn_off"})]
+    assert client.websocket.sent[0]["type"] == "conversation.item.create"
+    assert client.websocket.sent[0]["item"]["type"] == "function_call_output"
+    assert client.websocket.sent[0]["item"]["call_id"] == "call_lamp"
+    assert client.websocket.sent[1] == {"type": "response.create"}
+
+
 def test_malformed_function_arguments_return_tool_error():
     client, tools = make_client()
 

@@ -163,9 +163,19 @@ class QwenRealtimeClient:
         elif event_type == "response.function_call_arguments.done":
             await self._complete_tool_call(event)
         elif event_type == "response.done":
-            response_id = (event.get("response") or {}).get("id")
+            response = event.get("response") or {}
+            response_id = response.get("id")
             if response_id is None or response_id == self._active_response_id:
                 self._active_response_id = None
+            function_calls = [
+                item
+                for item in response.get("output") or []
+                if isinstance(item, dict) and item.get("type") == "function_call"
+            ]
+            if function_calls:
+                for item in function_calls:
+                    await self._complete_tool_call(item)
+                return
             self._on_response_done()
         elif event_type == "error":
             error = event.get("error") or {}
