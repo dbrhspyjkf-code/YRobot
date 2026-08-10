@@ -364,7 +364,7 @@ conversion endpoint is `plug:reachymini_audio_sink`; it successfully opens at
 After restart, QWEN was connected with no runtime error and a 24 kHz mono 660
 Hz tone was sent using this exact conversion path. The operator confirmed it was
 audible, so the Reachy speaker route is accepted; QWEN spoken-response playback
-still needs its own short conversational confirmation.
+was then confirmed in a normal conversation.
 
 Deployment backup:
 

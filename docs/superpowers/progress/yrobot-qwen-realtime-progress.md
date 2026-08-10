@@ -153,6 +153,8 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   motion was about 51.4 Hz with zero target failures and no error-level journal
   entries. A 24 kHz mono 660 Hz tone was sent through the exact QWEN output
   path; the operator confirmed it was audible.
+- The operator then confirmed QWEN spoken replies are audible and normal
+  conversation works. This completes the baseline realtime speech acceptance.
 
 ## Decisions that must remain stable
 
@@ -235,7 +237,8 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | Speaker path | 440 Hz tone sent to `reachymini_audio_sink` | Pending audible confirmation |
 | 2026-08-10 | QWEN audio conversion regression | Direct sink rejected 24 kHz mono; test first failed, then suites and Ruff passed | Fixed; `60bd98d` / `b24af62` |
 | 2026-08-10 | QWEN converted audio path | 24 kHz mono 660 Hz tone sent to `plug:reachymini_audio_sink` | Operator confirmed audible |
-| 2026-08-10 | QWEN physical acceptance | Audible speech, interruption, languages, and appliance state | Ready for operator observation |
+| 2026-08-10 | QWEN baseline speech acceptance | Wake, spoken reply, and normal conversation | Operator confirmed working |
+| 2026-08-10 | Remaining QWEN acceptance | Interruption, multilingual switching, allowlisted appliance state, camera | Pending targeted checks |
 
 ## Update protocol
 
