@@ -137,6 +137,22 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   motion was about 49.9 Hz with zero target failures and no error-level journal
   entries. A short 440 Hz test tone was sent to `reachymini_audio_sink`; audible
   confirmation from the operator is still required.
+- The direct speaker test then exposed the remaining format mismatch:
+  `reachymini_audio_sink` accepts 16 kHz stereo, while QWEN supplies 24 kHz
+  mono. The direct command failed with `Channels count non available`.
+- Verified ALSA's `plug:reachymini_audio_sink` opens at QWEN's 24 kHz mono
+  format and converts to the hardware format. A new failing regression test was
+  added, then the QWEN playback device was changed to that conversion endpoint.
+  The runtime suite, full focused suite, and focused Ruff passed. Feature fix
+  commit: `60bd98d`; production fix commit: `b24af62`.
+- Backed up the two changed files at
+  `/home/pollen/.local/state/yrobot/backups/qwen-audio-convert-20260810-174913`
+  (manifest SHA-256
+  `af11e3d7304322dac60f0de3db03e72e95c0713cdd80145e85eb0e551b8c75c4`).
+- After the conversion restart, QWEN returned to `connected` with no error;
+  motion was about 51.4 Hz with zero target failures and no error-level journal
+  entries. A 24 kHz mono 660 Hz tone was sent through the exact QWEN output
+  path; the operator confirmed it was audible.
 
 ## Decisions that must remain stable
 
@@ -217,6 +233,8 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN audio-sink regression | Test first failed, then runtime suite, full focused suite, Ruff | Fixed; `9a098df` / `4190180` |
 | 2026-08-10 | QWEN post-audio restart | Connected/no error; motion 49.9 Hz; target failures 0; journal errors 0 | Passed |
 | 2026-08-10 | Speaker path | 440 Hz tone sent to `reachymini_audio_sink` | Pending audible confirmation |
+| 2026-08-10 | QWEN audio conversion regression | Direct sink rejected 24 kHz mono; test first failed, then suites and Ruff passed | Fixed; `60bd98d` / `b24af62` |
+| 2026-08-10 | QWEN converted audio path | 24 kHz mono 660 Hz tone sent to `plug:reachymini_audio_sink` | Operator confirmed audible |
 | 2026-08-10 | QWEN physical acceptance | Audible speech, interruption, languages, and appliance state | Ready for operator observation |
 
 ## Update protocol

@@ -349,6 +349,23 @@ restart, QWEN was connected with no runtime error, and a short 440 Hz tone was
 sent through `reachymini_audio_sink`. Record only an operator's audible report
 as proof that this physical path is working.
 
+The direct sink then rejected the QWEN output format: the hardware alias
+requires 16 kHz stereo while QWEN supplies 24 kHz mono. The correct ALSA
+conversion endpoint is `plug:reachymini_audio_sink`; it successfully opens at
+24 kHz mono and converts to the Reachy hardware format.
+
+- feature commit: `60bd98d`;
+- production commit: `b24af62`;
+- exact two-file rollback backup:
+  `/home/pollen/.local/state/yrobot/backups/qwen-audio-convert-20260810-174913`;
+- backup-manifest SHA-256:
+  `af11e3d7304322dac60f0de3db03e72e95c0713cdd80145e85eb0e551b8c75c4`.
+
+After restart, QWEN was connected with no runtime error and a 24 kHz mono 660
+Hz tone was sent using this exact conversion path. The operator confirmed it was
+audible, so the Reachy speaker route is accepted; QWEN spoken-response playback
+still needs its own short conversational confirmation.
+
 Deployment backup:
 
 ```text
