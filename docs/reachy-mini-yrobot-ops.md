@@ -618,6 +618,22 @@ passed (84 tests), `py_compile` passed, and Ruff passed. Production commit:
 connected, audio input enabled, and no runtime error. Local executor validation
 opened `厨房灯` and then bare `关闭` turned it off.
 
+### 2026-08-10 卫生间灯 open ASR aliases
+
+The operator reported that `卫生间灯` could not open. Logs showed the relevant
+open attempts were recognized as `打开卫生间`, `打开卫生间的`, and `打开卫生`.
+The whitelist only contained full `卫生间灯` open phrases, so no local HA action
+executed.
+
+Backed up `~/.config/yrobot/home_assistant_whitelist.json` to
+`~/.config/yrobot/home_assistant_whitelist.json.bak-bathroom-open-alias-20260810-195801`
+and added only the observed open aliases `打开卫生间`, `打开卫生间的`, and
+`打开卫生` to the `卫生间灯` `switch.turn_on` entry. Restarted only the YRobot
+Python process with the saved QWEN/HA environment. Local executor validation
+confirmed all three phrases open `卫生间灯`; each test was followed by a close
+command, leaving final HA state `off`. QWEN reported connected, audio input
+enabled, and no runtime error.
+
 Deployment backup:
 
 ```text
