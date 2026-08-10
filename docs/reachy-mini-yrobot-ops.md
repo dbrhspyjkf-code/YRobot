@@ -300,10 +300,14 @@ Current deployment state:
 
 - reviewed QWEN source is installed in `/home/pollen/YRobot`;
 - production focused verification is `79 passed` with clean focused Ruff;
-- XIAOZHI remains selected and connected because the required QWEN and Home
-  Assistant credentials were absent at deployment preflight;
-- live QWEN interruption, multilingual speech, and appliance tests remain
-  pending until credentials are configured locally.
+- all required QWEN and Home Assistant entries are configured in the robot-local
+  `ha.env` file, which remains mode `0600`;
+- QWEN is selected, running, and reports `connected` with no runtime error;
+- the QWEN activation restarted only `yrobot.service` once at
+  2026-08-10 17:34:32+08; the official daemon remained active and the post-start
+  motion loop was about 50 Hz with zero target failures;
+- audible interruption, multilingual speech, and a physical allowlisted-light
+  check remain operator acceptance tests; do not mark them passed from logs.
 
 Deployment backup:
 
@@ -312,10 +316,12 @@ Deployment backup:
 manifest SHA-256: a1340d1a3f23eff9ca6f2c26930c843dda69b459d40982027b9ed7205a9371e6
 ```
 
-To continue, configure the three environment entries locally, select QWEN in
-YRobot Settings, and restart only `yrobot.service` once. To roll back the code,
-first stop `yrobot.service`, restore the 11 files listed by the backup manifest,
-then start the service and verify the backend/status, motion loop, and changing
+To complete acceptance, say `你好小白`, test Chinese → English → Chinese,
+interrupt playback ten times, request weather, and operate one explicitly
+allowlisted low-risk light while observing its physical state. An unknown device
+and a blocked device class must cause no action. To roll back the code, first
+stop `yrobot.service`, restore the 11 files listed by the backup manifest, then
+start the service and verify the backend/status, motion loop, and changing
 camera frames. Do not reset the robot or modify the official daemon.
 
 ## Git Workflow

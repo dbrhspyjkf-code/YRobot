@@ -96,6 +96,13 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   `PUT /api/audio/input`; the service then logged `xiaozhi paused: mic input
   disabled`. This is the current reason the backend reports `paused`, not a
   WebSocket, motion, camera, or daemon failure. No second restart was performed.
+- Confirmed all three required robot-local QWEN/HA settings are configured and
+  that `ha.env` mode remains `0600`, without reading or recording their values.
+- Selected QWEN, enabled microphone input, and restarted `yrobot.service` once
+  at 2026-08-10 17:34:32+08. QWEN reports configured/running `qwen`,
+  connection `connected`, and no error; the official daemon remains active.
+- After the QWEN restart, motion is ready and alive at about 50 Hz with zero
+  target failures, and the post-restart error-level journal count is zero.
 
 ## Decisions that must remain stable
 
@@ -119,19 +126,19 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 - Real interruption quality depends on Reachy speaker echo behavior; automatic
   tests cannot replace an audible ten-interruption hardware test.
 - Live QWEN speech, interruption, language switching, and appliance control
-  acceptance remain blocked only by missing robot-local credentials. This is
-  not a source-code or daemon blocker.
+  need a person beside the robot for audible and physical confirmation. This is
+  a hardware acceptance step, not a source-code or daemon blocker.
 - Existing full pytest discovery references modules currently deleted from the
   production working tree. Feature-specific tests are authoritative until that
   unrelated migration is reconciled.
 
 ## Next action
 
-Configure `DASHSCOPE_API_KEY`, `YROBOT_HA_URL`, and `YROBOT_HA_TOKEN` in
-`/home/pollen/.config/yrobot/ha.env` without sharing or displaying their values.
-Enable microphone input, then select QWEN in YRobot Settings, restart YRobot
-once, and run the physical speech, interruption, language-switching, and
-allowlisted appliance checks.
+Perform the physical acceptance sequence with QWEN: say `你好小白`, converse in
+Chinese then English then Chinese, interrupt playback ten times, ask for the
+weather, operate one explicitly allowlisted low-risk light, and confirm an
+unknown device plus a blocked class take no action. Record the audible and
+physical observations before testing rollback to XIAOZHI.
 
 ## Verification log
 
@@ -164,7 +171,10 @@ allowlisted appliance checks.
 | 2026-08-10 | Production verification | Focused suite, Ruff, diff check | 79 passed; clean |
 | 2026-08-10 | XIAOZHI restart validation | Service/API/motion/daemon/camera/journal | Connected and healthy |
 | 2026-08-10 | Later XIAOZHI pause | LAN `PUT /api/audio/input`; journal says mic input disabled | Expected pause; no restart |
-| 2026-08-10 | QWEN physical acceptance | Requires robot-local provider and HA credentials | Pending |
+| 2026-08-10 | QWEN credential preflight | All three required entries configured; `ha.env` mode `0600`; whitelist present | Ready |
+| 2026-08-10 | QWEN activation | One YRobot restart; backend API reports QWEN connected/no error | Passed |
+| 2026-08-10 | QWEN post-restart health | Official daemon active; motion ~50 Hz; target failures 0; journal errors 0 | Passed |
+| 2026-08-10 | QWEN physical acceptance | Audible speech, interruption, languages, and appliance state | Pending operator observation |
 
 ## Update protocol
 
