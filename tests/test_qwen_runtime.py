@@ -94,10 +94,14 @@ def test_qwen_interrupt_flushes_queue_and_stops_playback():
     assert process.terminated is True
 
 
-def test_qwen_playback_targets_reachy_audio_sink():
+def test_qwen_playback_targets_conversion_capable_reachy_audio_sink():
     playback = PcmPlayback()
 
-    assert playback.command[:3] == ("/usr/bin/aplay", "-D", "reachymini_audio_sink")
+    assert playback.command[:3] == (
+        "/usr/bin/aplay",
+        "-D",
+        "plug:reachymini_audio_sink",
+    )
 
 
 def test_qwen_wake_list_contains_nihao_xiaobai():
