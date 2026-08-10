@@ -406,6 +406,18 @@ environment file remains mode `0600`; after the required QWEN restart, a
 read-only allowlisted call reported the lamp state as `on`. The next step is a
 spoken QWEN request to turn it off, followed by a read-only state check.
 
+### 2026-08-10 HA voice-control policy repair
+
+The first spoken `书台灯` requests did not call the tool: the transcript was
+fragmented and the QWEN session instructions omitted the enabled Home Assistant
+policy. A regression test reproduced the omission. The minimal fix passes
+`Settings.effective_system_prompt` into each QWEN session; QWEN/tool/runtime
+checks and the full focused suite passed (83 tests), as did Ruff. It was
+committed as `4086742` in the feature worktree and `33cf690` in production,
+with backup `/home/pollen/.local/state/yrobot/backups/qwen-ha-policy-20260810-181643`.
+The restarted service reports QWEN connected, HA enabled, and a healthy motion
+loop. Physical voice acceptance remains pending.
+
 Deployment backup:
 
 ```text
