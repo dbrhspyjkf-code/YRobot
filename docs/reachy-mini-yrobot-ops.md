@@ -397,6 +397,15 @@ enabled for this acceptance check and resumed with two captured frames, zero
 failures, and differing consecutive frame hashes. QWEN remained connected and
 the motion loop stayed near 50 Hz with zero target failures.
 
+### Home Assistant acceptance enablement
+
+The QWEN tool executor correctly refused appliance control until the explicit
+robot-local `YROBOT_HA_ENABLED=true` switch was enabled. The operator chose the
+allowlisted low-risk `书台灯` test, which authorized enabling that switch. The
+environment file remains mode `0600`; after the required QWEN restart, a
+read-only allowlisted call reported the lamp state as `on`. The next step is a
+spoken QWEN request to turn it off, followed by a read-only state check.
+
 Deployment backup:
 
 ```text

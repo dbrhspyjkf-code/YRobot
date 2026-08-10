@@ -179,6 +179,11 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   enabled for acceptance; capture resumed with `captured=2`, zero failures,
   and two consecutive frame hashes differed. QWEN remained connected and the
   motion loop remained about 50 Hz with zero target failures.
+- Before appliance acceptance, `YROBOT_HA_ENABLED` was found disabled. The
+  operator-selected test of `书台灯` authorized enabling this robot-local
+  whitelist switch; its environment file mode remains `0600`. QWEN reconnected
+  after the required restart, and a read-only whitelist call confirmed the
+  current `书台灯` state is `on`.
 
 ## Decisions that must remain stable
 
@@ -266,7 +271,9 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN interruption post-restart | Connected/no error; motion 50.1 Hz; target failures 0; journal errors 0 | Ready for operator test |
 | 2026-08-10 | QWEN interruption acceptance | Long reply interrupted by new user speech | Operator confirmed working |
 | 2026-08-10 | Camera acceptance | Capture enabled; `captured=2`; failures 0; frame hashes changed | Passed |
-| 2026-08-10 | Remaining QWEN acceptance | One allowlisted low-risk appliance state change | Pending operator device choice |
+| 2026-08-10 | HA whitelist enablement | `YROBOT_HA_ENABLED=true`; file mode 0600; QWEN reconnected | Passed |
+| 2026-08-10 | 书台灯 initial state | Read-only allowlisted HA call | `on` |
+| 2026-08-10 | Remaining QWEN acceptance | QWEN voice action and verified `书台灯` state change | Pending operator utterance |
 
 ## Update protocol
 
