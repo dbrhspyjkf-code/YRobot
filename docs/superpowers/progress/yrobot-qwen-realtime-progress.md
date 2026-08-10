@@ -92,6 +92,10 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   retaining XIAOZHI. The YRobot service and official daemon are active; XIAOZHI
   is connected, the motion loop is approximately 50 Hz with no target failures,
   and consecutive camera frames changed.
+- At 17:15:22, a LAN client at `192.168.1.181` explicitly called
+  `PUT /api/audio/input`; the service then logged `xiaozhi paused: mic input
+  disabled`. This is the current reason the backend reports `paused`, not a
+  WebSocket, motion, camera, or daemon failure. No second restart was performed.
 
 ## Decisions that must remain stable
 
@@ -125,8 +129,9 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 
 Configure `DASHSCOPE_API_KEY`, `YROBOT_HA_URL`, and `YROBOT_HA_TOKEN` in
 `/home/pollen/.config/yrobot/ha.env` without sharing or displaying their values.
-Then select QWEN in YRobot Settings, restart YRobot once, and run the physical
-speech, interruption, language-switching, and allowlisted appliance checks.
+Enable microphone input, then select QWEN in YRobot Settings, restart YRobot
+once, and run the physical speech, interruption, language-switching, and
+allowlisted appliance checks.
 
 ## Verification log
 
@@ -158,6 +163,7 @@ speech, interruption, language-switching, and allowlisted appliance checks.
 | 2026-08-10 | Production deployment | Feature-to-production comparison | Zero mismatches |
 | 2026-08-10 | Production verification | Focused suite, Ruff, diff check | 79 passed; clean |
 | 2026-08-10 | XIAOZHI restart validation | Service/API/motion/daemon/camera/journal | Connected and healthy |
+| 2026-08-10 | Later XIAOZHI pause | LAN `PUT /api/audio/input`; journal says mic input disabled | Expected pause; no restart |
 | 2026-08-10 | QWEN physical acceptance | Requires robot-local provider and HA credentials | Pending |
 
 ## Update protocol
