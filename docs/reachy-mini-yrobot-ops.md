@@ -587,6 +587,21 @@ environment. QWEN reported connected, audio input enabled, and no runtime
 error. Do not re-enable voice control for `走廊灯` until the electrical issue is
 physically resolved.
 
+### 2026-08-10 走廊灯 restore and close repair
+
+The operator clarified that the prior report was not an electrical safety
+issue: `走廊灯` could open but could not close. A direct Home Assistant
+`switch.turn_off` call to `switch.xiaomi_cn_2102538340_w1_on_p_2_1` returned
+HTTP 200 and changed HA state from `on` to `off`, proving the entity and service
+can close.
+
+Restored two `走廊灯` allowlist entries and added only specific close aliases:
+`关闭走廊`, `关掉走廊`, `走廊关闭`, and `走廊关灯`. Did not add bare `关闭`.
+Restarted only the YRobot Python process with the saved QWEN/HA environment.
+QWEN reported connected, audio input enabled, and no runtime error. Local
+executor validation for `关闭走廊灯`, `关闭走廊`, and `走廊关灯` returned success,
+with HA state remaining `off`.
+
 Deployment backup:
 
 ```text
