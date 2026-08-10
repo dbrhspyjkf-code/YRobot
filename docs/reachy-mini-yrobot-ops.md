@@ -499,6 +499,23 @@ input remained enabled, the aliases were loaded by `ToolExecutor`, and the
 pre-test HA state was still `on`. Re-run voice acceptance with
 `你好小白，关闭风`.
 
+### 2026-08-10 QWEN local-control reply policy
+
+The operator reported that fan control actually worked, but QWEN replied
+`抱歉，我无法控制这个设备`. Logs confirmed both `关闭风扇` and `打开风扇`
+triggered the local whitelist executor successfully for `落地扇`; the final
+read-only HA state was `on`, matching the final open command. The remaining
+bug was response policy: QWEN did not know the local ASR fallback had already
+executed the appliance action and judged device control by itself.
+
+Updated the HA prompt policy to describe the current architecture: local
+whitelist control handles appliance commands, and QWEN must not answer
+`无法控制` unless a tool/local result reports failure. A regression test first
+failed on the old prompt, then the focused QWEN/tool/runtime/config/backend
+suite passed (77 tests), `py_compile` passed, and the narrowed F401 Ruff check
+passed. Production commit: `26def16`; feature worktree commit: `0a190c3`.
+The service was restarted and reported QWEN connected with no runtime error.
+
 Deployment backup:
 
 ```text
