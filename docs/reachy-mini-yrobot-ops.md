@@ -634,6 +634,20 @@ confirmed all three phrases open `卫生间灯`; each test was followed by a clo
 command, leaving final HA state `off`. QWEN reported connected, audio input
 enabled, and no runtime error.
 
+### 2026-08-10 卫生间灯 close ASR aliases
+
+The operator reported that `卫生间灯` open works but close has issues. Logs
+showed close attempts recognized as `关闭卫生`; no local spoken-control action
+executed and HA state remained `on`.
+
+Backed up `~/.config/yrobot/home_assistant_whitelist.json` to
+`~/.config/yrobot/home_assistant_whitelist.json.bak-bathroom-close-alias-20260810-200136`
+and added only the specific close aliases `关闭卫生`, `关掉卫生`, `卫生关闭`, and
+`卫生关灯` to the `卫生间灯` `switch.turn_off` entry. Restarted only the YRobot
+Python process with the saved QWEN/HA environment. Local executor validation
+confirmed the observed aliases close `卫生间灯`; final HA state was `off`. QWEN
+reported connected, audio input enabled, and no runtime error.
+
 Deployment backup:
 
 ```text
