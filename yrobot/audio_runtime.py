@@ -96,6 +96,8 @@ class PcmPlayback:
         self,
         command: tuple[str, ...] = (
             "/usr/bin/aplay",
+            "-D",
+            "reachymini_audio_sink",
             "-r",
             "24000",
             "-f",
