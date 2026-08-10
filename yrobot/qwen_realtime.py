@@ -51,7 +51,7 @@ class QwenRealtimeClient:
     ) -> None:
         self.settings = settings
         self.tools = tools
-        self.instructions = DEFAULT_INSTRUCTIONS
+        self.instructions = f"{DEFAULT_INSTRUCTIONS}\n{settings.effective_system_prompt}"
         self.url = _model_url(settings.qwen_url, settings.qwen_model)
         self.websocket_factory = websockets.connect
         self.websocket: Any | None = None

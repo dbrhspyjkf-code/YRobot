@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from yrobot.config import Settings
+from yrobot.config import HA_CONTROL_POLICY, Settings
 from yrobot.qwen_realtime import QwenRealtimeClient
 
 
@@ -45,8 +45,9 @@ class FakeTools:
 
 def make_client(**callbacks):
     tools = callbacks.pop("tools", FakeTools())
+    settings = callbacks.pop("settings", Settings.from_env({"DASHSCOPE_API_KEY": "test-key"}))
     client = QwenRealtimeClient(
-        Settings.from_env({"DASHSCOPE_API_KEY": "test-key"}),
+        settings,
         tools,
         **callbacks,
     )
@@ -75,6 +76,15 @@ def test_session_update_uses_fixed_model_and_tools():
             },
         }
     ]
+
+
+def test_session_update_includes_enabled_home_assistant_policy():
+    settings = Settings.from_env(
+        {"DASHSCOPE_API_KEY": "test-key", "YROBOT_HA_ENABLED": "true"}
+    )
+    client, _ = make_client(settings=settings)
+
+    assert HA_CONTROL_POLICY in client.session_update()["session"]["instructions"]
 
 
 def test_session_updated_marks_client_ready():
