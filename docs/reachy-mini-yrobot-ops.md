@@ -572,6 +572,21 @@ passed, and narrowed Ruff passed. Production commit: `aa97eba`; feature
 worktree commit: `bd5e482`. The service was restarted and reported QWEN
 connected, audio input enabled, no runtime error, and VAD `0.065`.
 
+### 2026-08-10 走廊灯 safety removal
+
+The operator reported that `走廊灯` has an electrical/power issue. A read-only
+check confirmed two allowlist entries for `走廊灯`, both mapped to
+`switch.xiaomi_cn_2102538340_w1_on_p_2_1`: one `switch.turn_on` entry and one
+`switch.turn_off` entry.
+
+Backed up `~/.config/yrobot/home_assistant_whitelist.json` to
+`~/.config/yrobot/home_assistant_whitelist.json.bak-20260810-193907`, removed
+both `走廊灯` entries, verified the JSON remained valid and no longer contained
+`走廊`, then restarted only the YRobot Python process with the saved QWEN/HA
+environment. QWEN reported connected, audio input enabled, and no runtime
+error. Do not re-enable voice control for `走廊灯` until the electrical issue is
+physically resolved.
+
 Deployment backup:
 
 ```text
