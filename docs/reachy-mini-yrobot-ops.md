@@ -370,6 +370,26 @@ The operator also confirmed automatic language switching in a real QWEN
 conversation. Multilingual support is accepted; interruption and appliance
 actions remain separate physical acceptance checks.
 
+### QWEN interruption repair
+
+The initial interruption path cancelled only an active cloud response. When the
+cloud had already finished generating but PCM was still buffered in the local
+speaker process, user speech started a new turn without clearing that old audio.
+Every `input_audio_buffer.speech_started` event now flushes local playback
+immediately; cloud cancellation still runs when an active response exists.
+
+- feature commit: `07ca1b2`;
+- production commit: `d42910a`;
+- exact two-file rollback backup:
+  `/home/pollen/.local/state/yrobot/backups/qwen-interrupt-flush-20260810-180127`;
+- backup-manifest SHA-256:
+  `3f7dc03dd5c806ed446ff630d521b8a6b72d454e227ff6d0d6f5aeedd32ac4cd`.
+
+The regression test first failed, then the full focused suite and focused Ruff
+passed. The repaired QWEN service reconnected cleanly; final physical
+acceptance requires interrupting a long reply and confirming the old speech
+stops promptly.
+
 Deployment backup:
 
 ```text

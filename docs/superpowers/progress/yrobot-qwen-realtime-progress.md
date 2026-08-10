@@ -157,6 +157,22 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
   conversation works. This completes the baseline realtime speech acceptance.
 - The operator confirmed QWEN automatically switched languages during a real
   multilingual conversation. Multilingual acceptance is complete.
+- Diagnosed delayed interruption from the conversation timeline: after model
+  generation completes, buffered PCM can still be playing locally. A later
+  `speech_started` event previously did not invoke the flush callback because
+  there was no active cloud response left to cancel.
+- Added a failing regression test for speech beginning after `response.done`,
+  then made every `input_audio_buffer.speech_started` event flush the local
+  playback path immediately while retaining cloud cancellation when applicable.
+  The full focused suite and focused Ruff passed. Feature fix commit:
+  `07ca1b2`; production fix commit: `d42910a`.
+- Backed up the two changed files at
+  `/home/pollen/.local/state/yrobot/backups/qwen-interrupt-flush-20260810-180127`
+  (manifest SHA-256
+  `3f7dc03dd5c806ed446ff630d521b8a6b72d454e227ff6d0d6f5aeedd32ac4cd`).
+- After the interruption repair restart, QWEN returned to `connected` with no
+  error; motion was about 50.1 Hz with zero target failures and no error-level
+  journal entries. Physical interruption confirmation remains pending.
 
 ## Decisions that must remain stable
 
@@ -241,6 +257,8 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN converted audio path | 24 kHz mono 660 Hz tone sent to `plug:reachymini_audio_sink` | Operator confirmed audible |
 | 2026-08-10 | QWEN baseline speech acceptance | Wake, spoken reply, and normal conversation | Operator confirmed working |
 | 2026-08-10 | QWEN multilingual acceptance | Real conversation automatically switched languages | Operator confirmed working |
+| 2026-08-10 | QWEN interruption regression | Speech after `response.done` did not flush local PCM; test first failed then focused suite and Ruff passed | Fixed; `07ca1b2` / `d42910a` |
+| 2026-08-10 | QWEN interruption post-restart | Connected/no error; motion 50.1 Hz; target failures 0; journal errors 0 | Ready for operator test |
 | 2026-08-10 | Remaining QWEN acceptance | Interruption, allowlisted appliance state, camera | Pending targeted checks |
 
 ## Update protocol
