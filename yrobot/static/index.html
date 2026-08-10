@@ -13,7 +13,8 @@
         <h1 class="header-title">Reachy Mini 状态与设置</h1>
         <div class="connection"><i></i> Reachy Mini 应用设置</div>
         <div class="header-actions">
-          <button id="power-restart" class="header-icon-btn" type="button" title="重启 YRobot 服务">↻</button>
+          <button id="power-reboot" class="header-icon-btn" type="button" title="重启 Reachy Mini">↻</button>
+          <button id="power-off" class="header-icon-btn danger" type="button" title="关闭 Reachy Mini">⏻</button>
         </div>
       </header>
 
@@ -21,43 +22,50 @@
         <p class="eyebrow">ROBOT DASHBOARD</p>
       </section>
 
-      <div id="loading" class="notice">正在读取机器人配置…</div>
       <div class="dashboard-grid">
         <section id="status-panel" class="panel status-panel hidden">
         <div class="panel-heading compact">
           <div><p class="step">STATUS</p><h2>机器状态</h2></div>
           <button id="refresh-status" class="icon-button" type="button" title="刷新状态">刷新</button>
         </div>
+        <div id="chat-mini" class="chat-mini">
+          <div class="chat-mini-heading">最近对话</div>
+          <div id="chat-mini-entries" class="chat-mini-entries">
+            <span class="muted">--</span>
+          </div>
+        </div>
         <div class="status-grid">
           <div class="status-item">
-            <span>服务</span>
+            <span>状态</span>
             <b id="status-service">--</b>
             <small id="status-uptime">--</small>
+            <small id="status-sys" class="muted">--</small>
           </div>
           <div class="status-item">
-            <span>对话</span>
-            <b id="status-conversation">--</b>
-            <small id="status-proactive">--</small>
+            <span>Daemon</span>
+            <b id="daemon-state">--</b>
+            <small id="daemon-motors">--</small>
+            <div class="status-actions">
+              <button id="daemon-wake" class="mini-button" type="button">唤醒</button>
+              <button id="daemon-sleep" class="mini-button" type="button">睡眠</button>
+              <button id="daemon-restart" class="mini-button" type="button">重启</button>
+            </div>
           </div>
           <div class="status-item">
-            <span>家电控制</span>
-            <b id="status-ha">--</b>
-            <small id="status-ha-url">--</small>
+            <span>App Lock</span>
+            <b id="daemon-app">--</b>
+            <small id="daemon-transport">--</small>
           </div>
           <div class="status-item">
-            <span>Hermes 工具</span>
-            <b id="status-hermes">--</b>
-            <small id="status-hermes-url">--</small>
+            <span>DoA</span>
+            <b id="daemon-doa">--</b>
+            <small id="daemon-speech">--</small>
           </div>
           <div class="status-item">
-            <span>本地信息</span>
-            <b id="status-local-info">--</b>
-            <small>日期和时间由 Reachy 本机回答</small>
-          </div>
-          <div class="status-item">
-            <span>数据发送</span>
-            <b id="status-privacy">--</b>
-            <small id="status-refresh-time">--</small>
+            <span>追踪</span>
+            <b id="tracking-source">--</b>
+            <small id="tracking-target">--</small>
+            <small id="tracking-face" class="muted">--</small>
           </div>
         </div>
       </section>
@@ -118,6 +126,41 @@
           </p>
         </div>
       </section>
+      <section id="motion-panel" class="panel motion-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">MOTION</p><h2>动作面板</h2></div>
+          <div class="camera-controls">
+            <span id="motion-status" class="pill">--</span>
+            <button id="motion-refresh" class="icon-button" type="button" title="刷新动作列表">刷新</button>
+          </div>
+        </div>
+        <div class="motion-tabs">
+          <button class="motion-tab active" data-cat="basic">基础</button>
+          <button class="motion-tab" data-cat="emotion">情绪</button>
+          <button class="motion-tab" data-cat="dance">舞蹈</button>
+        </div>
+        <div id="motion-grid" class="motion-grid"><p class="muted">加载中…</p></div>
+      </section>
+            <section class="panel backend-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">CONVERSATION</p><h2>对话后端</h2></div>
+          <span id="backend-status" class="pill">读取中</span>
+        </div>
+        <div class="backend-picker" role="group" aria-label="选择对话后端">
+          <button type="button" data-backend="xiaozhi">XIAOZHI</button>
+          <button type="button" data-backend="qwen">QWEN</button>
+        </div>
+        <p id="backend-detail" class="hint">每次只运行一个后端；保存后需重启 YRobot。</p>
+        <div class="voice-section">
+          <div class="voice-heading">QWEN 配音</div>
+          <div class="voice-row">
+            <select id="voice-select" class="voice-select" aria-label="选择 QWEN 配音"></select>
+            <button id="voice-preview" class="icon-button" type="button" title="试听当前选中的配音" disabled>试听</button>
+          </div>
+          <p id="voice-detail" class="hint">修改配音需重启 YRobot；切换后端时同步生效。</p>
+        </div>
+      </section>
+
       <section id="log-panel" class="panel log-panel">
         <div class="panel-heading compact">
           <div><p class="step">LOG</p><h2>运行 Log</h2></div>
@@ -125,6 +168,7 @@
             <label class="log-level-picker">
               <span>级别</span>
               <select id="log-level">
+                <option value="chat">Chat</option>
                 <option value="debug">Debug</option>
                 <option value="info" selected>Info</option>
                 <option value="notice">Notice</option>
@@ -142,72 +186,13 @@
           <button id="log-jump" class="log-jump hidden" type="button" title="跳到最新">跳到最新 ▾</button>
         </div>
         <p id="log-meta" class="hint">每 2 秒刷新一次；向上滚动可暂停自动滚动。</p>
-      </section>
+
+            </section>
       </div>
       <div id="restart-banner" class="notice success hidden">
         <b>设置已安全保存。</b> 请在应用中心停止并重新启动 YRobot。
       </div>
 
-      <form id="settings-form" class="hidden">
-        <section class="panel">
-          <div class="panel-heading">
-            <div><p class="step">01 / CONNECTION</p><h2>实时服务</h2></div>
-            <span class="pill">WebSocket</span>
-          </div>
-          <label for="gateway-url">MiniCPM-o Gateway</label>
-          <input id="gateway-url" name="gateway_url" type="text" spellcheck="false" required />
-          <p class="hint">可填写主机名或完整的 ws:// / wss:// 地址；音频/视频模式会自动写入 URL。</p>
-
-          <div class="toggle-row">
-            <div><b>验证 TLS 证书</b><small>公网 Gateway 建议始终开启</small></div>
-            <label class="switch"><input id="tls-verify" type="checkbox" /><span></span></label>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-heading">
-            <div><p class="step">02 / PERCEPTION</p><h2>感知方式</h2></div>
-            <span class="pill mint">Live</span>
-          </div>
-          <div class="toggle-row">
-            <div><b>启用连续视觉</b><small>对话期间约 1 fps，并带空闲心跳</small></div>
-            <label class="switch"><input id="video-enabled" type="checkbox" /><span></span></label>
-          </div>
-          <div class="toggle-row">
-            <div><b>克制的主动观察</b><small>只在出现明确、重要变化时主动提醒</small></div>
-            <label class="switch"><input id="proactive-enabled" type="checkbox" /><span></span></label>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-heading">
-            <div><p class="step">03 / CHARACTER</p><h2>对话人格</h2></div>
-            <span class="pill">≤ 240</span>
-          </div>
-          <label for="persona">一句话 Persona</label>
-          <textarea id="persona" rows="3" maxlength="240"></textarea>
-          <div class="counter"><span id="persona-count">0</span> / 240</div>
-        </section>
-
-        <section class="privacy-card">
-          <div class="privacy-mark">◎</div>
-          <div>
-            <h2>发送前请了解</h2>
-            <p>
-              YRobot 运行时会把麦克风音频发送到上方配置的 Gateway。开启连续视觉后，摄像头
-              JPEG 画面也会发送。YRobot 不在本机保存录音或图像；远端数据如何处理取决于
-              Gateway 提供方。关闭连续视觉即可使用纯音频模式。
-            </p>
-            <label class="consent"><input id="privacy-confirm" type="checkbox" /> 我已了解上述数据传输方式</label>
-          </div>
-        </section>
-
-        <div id="override-warning" class="notice warning hidden"></div>
-        <div class="form-footer">
-          <div><b id="save-status">尚未修改</b><small id="config-path"></small></div>
-          <button id="save-button" type="submit">保存设置</button>
-        </div>
-      </form>
     </main>
     <script src="/static/main.js"></script>
   </body>

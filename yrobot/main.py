@@ -39,6 +39,15 @@ XIAOZHI_DEVICE_ID = os.environ.get("XIAOZHI_DEVICE_ID", XIAOZHI_DEVICE_ID)
 XIAOZHI_CONV_URL = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
 XIAOZHI_TOKEN = os.environ.get("XIAOZHI_TOKEN", "test-token")
 
+# Configure logging early so both uvicorn (`python -m yrobot.main`) and
+# cli() (`python yrobot/main.py`) get a working root logger. The basicConfig
+# inside cli() below only runs in the second path.
+logging.basicConfig(
+    level=os.environ.get("YROBOT_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname).1s %(name)s: %(message)s",
+)
+
+
 logger = logging.getLogger(__name__)
 
 # ── Safe-mode startup guard ────────────────────────────────────────────────────
@@ -305,6 +314,15 @@ class Yrobot(ReachyMiniApp):
         choreo.start()
         _start_motion_connection_watchdog(choreo, stop_event)
 
+        # ── SpeakerTracker: audio DoA + visual face (shared with XIAOZHI) ──
+        from yrobot.tracking import SpeakerTracker
+        tracker = SpeakerTracker(
+            reachy_mini,
+            choreo,
+            head_tracking_weight=settings.head_tracking_weight,
+        )
+        tracker.start()
+
         try:
             reachy_mini.media.stop_playing()
         except Exception as exc:
@@ -351,6 +369,7 @@ class Yrobot(ReachyMiniApp):
             def on_user_speech() -> None:
                 gate.note_speech()
                 choreo.set_mode(LISTEN)
+                tracker.note_speech()  # pulse DoA window for head tracking
 
             def on_response_done() -> None:
                 nonlocal response_started
@@ -487,6 +506,7 @@ class Yrobot(ReachyMiniApp):
             playback.close()
             mic_stream.stop()
             mic_stream.close()
+            tracker.stop()
             choreo.close()
             choreo.join(timeout=2.0)
 
@@ -578,158 +598,19 @@ class Yrobot(ReachyMiniApp):
             choreo._gaze._omega = 6.0
             logger.info("head rise complete, gaze speed restored")
 
-        # SoundCompass: track speaker direction via XVF3800 DoA
-        _user_speaking = [False]
-        def _current_head_yaw():
-            try:
-                import numpy as np
-                return head_yaw_of(np.asarray(reachy_mini.get_current_head_pose()))
-            except Exception:
-                return choreo.current_yaw()
-        SoundCompass.WINDOW_S = 2.0       # 2s smoothing window (was 1.0)
-        SoundCompass.MIN_CONFIDENCE = 6.0  # need 6+ confidence (was 3.0)
-        SoundCompass.DEADBAND_RAD = 0.20   # ~11° deadband (was 0.12)
-
-        # ── PersonTracker: fuse camera face detection with audio DoA ──────
-        # Runs at ~5 fps; when a face is confidently detected the visual
-        # yaw overrides the audio-only DoA estimate.
-        import threading as _th_face
-        _face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        # ── SpeakerTracker: audio DoA + visual face (shared with QWEN) ───
+        from yrobot.tracking import SpeakerTracker
+        tracker = SpeakerTracker(
+            reachy_mini,
+            choreo,
+            head_tracking_weight=settings.head_tracking_weight,
         )
-        _visual_gaze = [None]  # latest (world_yaw, timestamp) or None
-        _last_gaze_log = [0.0]
-
-        def _set_speaker_gaze(audio_yaw: float) -> None:
-            visual_yaw = None
-            if _visual_gaze[0] is not None:
-                vy, vt = _visual_gaze[0]
-                if time.time() - vt < 0.8:
-                    visual_yaw = vy
-            target, source = _fuse_speaker_gaze(
-                audio_yaw,
-                visual_yaw,
-                visual_weight=settings.head_tracking_weight,
-            )
-            choreo.set_gaze_target(target, source=source)
-            choreo.set_tracking_debug(
-                audio_yaw=audio_yaw,
-                visual_yaw=visual_yaw,
-                target_yaw=target,
-                source=source,
-            )
-            if time.time() - _last_gaze_log[0] > 2.0:
-                _last_gaze_log[0] = time.time()
-                visual_label = "none" if visual_yaw is None else f"{math.degrees(visual_yaw):.0f}°"
-                logger.info(
-                    "gaze target source=%s audio=%.0f° visual=%s target=%.0f°",
-                    source,
-                    math.degrees(audio_yaw),
-                    visual_label,
-                    math.degrees(target),
-                )
-
-        # Audio is the primary speaker signal. Vision only refines the target
-        # when a recent face agrees with the DoA direction; it never mutes DoA.
-        compass = SoundCompass(
-            reachy_mini.media,
-            current_head_yaw=_current_head_yaw,
-            user_active=lambda: _user_speaking[0],
-            on_target=_set_speaker_gaze,
-        )
-        compass.start()
-        _sleep.sleep(1.0)
-        _vis_frames = 0  # consecutive face detections (2 required to override DoA)
-        _last_emotion_move: dict[str, float] = {}  # move name -> last fire time
-        _vis_stop = _th_face.Event()
-
-        def _handle_emotion(choreo: Any, emo: str, last: dict[str, float], rec_provider: Any) -> None:
-            """Map Xiaozhi emotion to a bounded built-in move."""
-            _handle_xiaozhi_emotion(choreo, emo, last, rec_provider, prefer_recorded=False)
-
-
-        def _face_tracker():
-            nonlocal _vis_frames
-            import json as _json, urllib.request as _ur
-            frame_url = "http://127.0.0.1:8042/api/camera/frame"
-            state_url = "http://127.0.0.1:8042/api/camera/state"
-            _last_cam_check = 0.0
-            def _ensure_camera():
-                """Re-enable camera via HTTP; called at startup then every 30s."""
-                nonlocal _last_cam_check
-                now = time.time()
-                if now - _last_cam_check < 30:
-                    return
-                _last_cam_check = now
-                try:
-                    _r = _ur.Request(state_url, method="PUT",
-                        data=_json.dumps({"running": True}).encode(),
-                        headers={"Content-Type": "application/json"})
-                    _ur.urlopen(_r, timeout=3)
-                except Exception:
-                    pass
-            while not _vis_stop.is_set():
-                _ensure_camera()
-                try:
-                    req = _ur.Request(frame_url)
-                    with _ur.urlopen(req, timeout=3) as resp:
-                        jpeg = resp.read()
-                    arr = np.frombuffer(jpeg, dtype=np.uint8)
-                    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    if bgr is None:
-                        _vis_stop.wait(0.5)
-                        continue
-                    # Downscale to 320px wide: Haar detection cost scales with
-                    # pixels; 320 keeps ~2-3 fps on the low-power board while
-                    # still tracking a face across the ~80° FOV.
-                    scale = bgr.shape[1] / 320.0
-                    if scale > 1.0:
-                        small = cv2.resize(bgr, (320, int(bgr.shape[0] / scale)))
-                    else:
-                        small = bgr
-                    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-                    faces = _face_cascade.detectMultiScale(
-                        gray, scaleFactor=1.15, minNeighbors=4,
-                        minSize=(24, 24),
-                    )
-                    if len(faces) == 0:
-                        # No face seen this frame; let audio DoA dominate.
-                        _visual_gaze[0] = None
-                        _vis_frames = 0
-                        _vis_stop.wait(0.5)
-                        continue
-                    # Require 2 consecutive detections before the visual gaze
-                    # overrides the audio DoA: a single spurious Haar hit at
-                    # the frame edge would otherwise yank the head around.
-                    _vis_frames += 1
-                    if _vis_frames < 2:
-                        _vis_stop.wait(0.5)
-                        continue
-                    # Use the largest face.
-                    x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
-                    cx = (x + w / 2) * scale
-                    # Camera-relative angle via pinhole model: atan2 of the
-                    # pixel offset divided by focal length.  This is exact
-                    # and uses the real camera calibration, no FOV guess.
-                    try:
-                        K = reachy_mini.media.camera.K
-                        fx = float(K[0, 0])
-                        cx_princ = float(K[0, 2])
-                        cam_rad = math.atan2(cx - cx_princ, fx)
-                    except Exception:
-                        cam_rad = math.radians(
-                            (cx - bgr.shape[1] / 2) * (80.0 / bgr.shape[1]))
-                    # Convert to world yaw using head pose.
-                    try:
-                        head_yaw = _current_head_yaw()
-                    except Exception:
-                        head_yaw = choreo.current_yaw()
-                    _visual_gaze[0] = (head_yaw + cam_rad, time.time())
-                    _vis_stop.wait(0.5)   # ~2 fps, keep CPU low
-                except Exception:
-                    _vis_stop.wait(0.5)
-        _vis_thread = _th_face.Thread(target=_face_tracker, name="face-tracker", daemon=True)
-        _vis_thread.start()
+        tracker.start()
+        # Backward-compat alias so the existing _user_speaking[0] = True/False
+        # assignments in the XIAOZHI VAD path below still update the same list
+        # that SoundCompass.user_active reads.
+        _user_speaking = tracker._user_speaking
+        _last_emotion_move: dict[str, float] = {}
 
         # Reduce SoundCompass jitter: log raw angles, use longer window
         _compass_log = [0.0]  # last logged angle to avoid spam
@@ -950,7 +831,7 @@ class Yrobot(ReachyMiniApp):
                                 if choreo.current_move() is not None or choreo.current_recorded() is not None:
                                     logger.info("xz emotion %s ignored (move in progress)", emo)
                                 else:
-                                    _handle_emotion(choreo, emo, _last_emotion_move, _get_recorded)
+                                    _handle_xiaozhi_emotion(choreo, emo, tracker._last_emotion_move, _get_recorded, prefer_recorded=False)
                             if t == "stt":
                                 text = d.get("text","")
                                 logger.info("xz stt: %s", text)

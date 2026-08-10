@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -25,29 +26,22 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Response
 
-from yrobot.config import DEFAULT_PERSONA, Settings, normalize_url
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
+from yrobot.config import SUPPORTED_CONVERSATION_BACKENDS, QWEN_VOICES, Settings
+from yrobot.env_store import update_env_value
+from yrobot.qwen_realtime import _model_url
+from yrobot.state import RUNTIME_HEALTH
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH_ENV = "YROBOT_CONFIG_PATH"
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "yrobot" / "settings.json"
 DEFAULT_ENV_PATH = Path.home() / ".config" / "yrobot" / "ha.env"
-
-FIELD_TO_ENV = {
-    "gateway_url": "YROBOT_REALTIME_URL",
-    "tls_verify": "YROBOT_TLS_VERIFY",
-    "video_enabled": "YROBOT_SEND_VIDEO",
-    "proactive_enabled": "YROBOT_PROACTIVE",
-    "persona": "YROBOT_PERSONA",
-}
-REQUIRED_FIELDS = frozenset(FIELD_TO_ENV)
 STARTED_AT = time.monotonic()
 
 # Populated lazily for shared callers like ``build_status``; not coupled to
 # any particular request handler so the volume singleton survives reloads.
 _volume_controller_instance: VolumeController | None = None
 _audio_input_controller_instance: AudioInputController | None = None
+_motion_controller_instance: "MotionController | None" = None
 
 
 def volume_controller_singleton() -> VolumeController:
@@ -56,6 +50,87 @@ def volume_controller_singleton() -> VolumeController:
     if _volume_controller_instance is None:
         _volume_controller_instance = VolumeController()
     return _volume_controller_instance
+
+
+class MotionController:
+    """Runtime-only bridge to the active Choreographer for one-shot moves.
+
+    The Choreographer registers itself at startup (``motion_controller.set(choreo)``);
+    until then the API answers gracefully instead of crashing.
+    """
+
+    def __init__(self) -> None:
+        self._choreo: Any = None
+        self._recorded_provider: Any = None
+        self._lock = threading.Lock()
+
+    def set(self, choreo: Any) -> None:
+        with self._lock:
+            self._choreo = choreo
+
+    def set_recorded_provider(self, provider: Any) -> None:
+        with self._lock:
+            self._recorded_provider = provider
+
+    def get(self) -> Any | None:
+        with self._lock:
+            return self._choreo
+
+    def play(self, name: str) -> tuple[bool, str]:
+        choreo = self.get()
+        if choreo is None:
+            return False, "机器人动作系统尚未就绪"
+        if choreo.play_move(name):
+            return True, f"动作 {name} 开始播放"
+        # Official recorded-emotion library.
+        provider = self._recorded_provider
+        recorded = provider() if callable(provider) else None
+        if recorded is not None and choreo.play_recorded(name, recorded):
+            return True, f"情绪 {name} 开始播放"
+        # Official dances library.
+        if choreo.play_dance(name):
+            return True, f"舞蹈 {name} 开始播放"
+        return False, f"未知动作: {name}"
+
+    def current(self) -> str | None:
+        choreo = self.get()
+        if choreo is None:
+            return None
+        return choreo.current_move() or choreo.current_recorded()
+
+    def status(self) -> dict[str, Any]:
+        choreo = self.get()
+        if choreo is None:
+            return {"ready": False}
+        try:
+            return {"ready": True, **choreo.get_status()}
+        except Exception as exc:
+            logger.debug("motion status unavailable: %s", exc)
+            return {"ready": False, "error": str(exc)}
+
+    def list_moves(self) -> list[str]:
+        from yrobot.motion import MOVES
+        names = list(MOVES)
+        provider = self._recorded_provider
+        recorded = provider() if callable(provider) else None
+        if recorded is not None:
+            try:
+                names.extend(sorted(recorded.list_moves()))
+            except Exception:
+                pass
+        try:
+            from reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
+            names.extend(sorted(AVAILABLE_MOVES.keys()))
+        except Exception:
+            pass
+        return names
+
+
+def motion_controller_singleton() -> MotionController:
+    global _motion_controller_instance
+    if _motion_controller_instance is None:
+        _motion_controller_instance = MotionController()
+    return _motion_controller_instance
 
 
 class AudioInputController:
@@ -83,170 +158,6 @@ def audio_input_controller_singleton() -> AudioInputController:
     if _audio_input_controller_instance is None:
         _audio_input_controller_instance = AudioInputController()
     return _audio_input_controller_instance
-
-
-def persist_env_value(path: Path, key: str, value: str) -> None:
-    path = path.expanduser()
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    out: list[str] = []
-    updated = False
-    for line in lines:
-        if not line or line.lstrip().startswith("#") or "=" not in line:
-            out.append(line)
-            continue
-        current_key = line.split("=", 1)[0].strip()
-        if current_key == key:
-            out.append(f"{key}={value}")
-            updated = True
-        else:
-            out.append(line)
-    if not updated:
-        out.append(f"{key}={value}")
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        delete=False,
-    ) as handle:
-        handle.write("\n".join(out) + "\n")
-        temporary = Path(handle.name)
-    temporary.chmod(0o600)
-    temporary.replace(path)
-
-
-def _require_bool(document: Mapping[str, Any], name: str) -> bool:
-    value = document.get(name)
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a boolean")
-    return value
-
-
-def validate_document(document: Mapping[str, Any]) -> dict[str, str | bool]:
-    """Normalize one complete settings form into its persisted representation."""
-    if set(document) != REQUIRED_FIELDS:
-        missing = sorted(REQUIRED_FIELDS - set(document))
-        unknown = sorted(set(document) - REQUIRED_FIELDS)
-        detail = []
-        if missing:
-            detail.append(f"missing: {', '.join(missing)}")
-        if unknown:
-            detail.append(f"unknown: {', '.join(unknown)}")
-        raise ValueError("invalid settings fields (" + "; ".join(detail) + ")")
-
-    raw_url = document.get("gateway_url")
-    if not isinstance(raw_url, str) or not raw_url.strip():
-        raise ValueError("gateway_url must be a non-empty string")
-    video = _require_bool(document, "video_enabled")
-    tls_verify = _require_bool(document, "tls_verify")
-    proactive = _require_bool(document, "proactive_enabled")
-
-    persona = document.get("persona")
-    if not isinstance(persona, str):
-        raise ValueError("persona must be a string")
-    persona = persona.strip()
-    if "\n" in persona or "\r" in persona:
-        raise ValueError("persona must be a single line")
-    if len(persona) > 240:
-        raise ValueError("persona must be at most 240 characters")
-
-    url = normalize_url(raw_url.strip(), mode="video" if video else "audio")
-    settings_env = {
-        "YROBOT_REALTIME_URL": url,
-        "YROBOT_TLS_VERIFY": "1" if tls_verify else "0",
-        "YROBOT_SEND_VIDEO": "1" if video else "0",
-        "YROBOT_PROACTIVE": "1" if proactive and video else "0",
-        "YROBOT_PERSONA": persona,
-    }
-    # Exercise the same cross-field validation used by the actual app.
-    Settings.from_env(settings_env)
-    return {
-        "gateway_url": url,
-        "tls_verify": tls_verify,
-        "video_enabled": video,
-        "proactive_enabled": proactive and video,
-        "persona": persona,
-    }
-
-
-class AppConfig:
-    """Read and atomically persist dashboard-editable YRobot settings."""
-
-    def __init__(self, path: Path | None = None) -> None:
-        configured = os.environ.get(CONFIG_PATH_ENV)
-        self.path = Path(configured).expanduser() if path is None and configured else path
-        if self.path is None:
-            self.path = DEFAULT_CONFIG_PATH
-
-    def load(self) -> dict[str, str | bool]:
-        if not self.path.exists():
-            return {}
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(raw, dict):
-                raise ValueError("settings root must be an object")
-            return validate_document(raw)
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("ignoring invalid settings file %s: %s", self.path, exc)
-            return {}
-
-    @staticmethod
-    def as_environment(document: Mapping[str, str | bool]) -> dict[str, str]:
-        if not document:
-            return {}
-        return {
-            "YROBOT_REALTIME_URL": str(document["gateway_url"]),
-            "YROBOT_TLS_VERIFY": "1" if document["tls_verify"] else "0",
-            "YROBOT_SEND_VIDEO": "1" if document["video_enabled"] else "0",
-            "YROBOT_PROACTIVE": "1" if document["proactive_enabled"] else "0",
-            "YROBOT_PERSONA": str(document["persona"]),
-        }
-
-    def effective_environment(self, environ: Mapping[str, str]) -> dict[str, str]:
-        """Merge persisted values below the daemon/process environment."""
-        merged = self.as_environment(self.load())
-        merged.update(environ)
-        return merged
-
-    def view(self, environ: Mapping[str, str]) -> dict[str, Any]:
-        effective = self.effective_environment(environ)
-        settings = Settings.from_env(effective)
-        persona = effective.get("YROBOT_PERSONA", DEFAULT_PERSONA).strip()
-        overrides = [field for field, env_name in FIELD_TO_ENV.items() if env_name in environ]
-        return {
-            "gateway_url": settings.url,
-            "tls_verify": settings.tls_verify,
-            "video_enabled": settings.send_video,
-            "proactive_enabled": settings.proactive_enabled,
-            "persona": persona,
-            "environment_overrides": overrides,
-            "config_path": str(self.path),
-        }
-
-    def save(self, document: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
-        normalized = validate_document(document)
-        # Validate the saved values on their own even when daemon variables
-        # will take precedence at the next launch.
-        validation_env = dict(environ)
-        validation_env.update(self.as_environment(normalized))
-        Settings.from_env(validation_env)
-
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=self.path.parent,
-            prefix=f".{self.path.name}.",
-            delete=False,
-        ) as handle:
-            json.dump(normalized, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            temporary = Path(handle.name)
-        temporary.chmod(0o600)
-        temporary.replace(self.path)
-        return self.view(environ)
 
 
 class VolumeController:
@@ -337,6 +248,160 @@ CAMERA_LONG_EDGE = 640
 CAMERA_JPEG_QUALITY = 70
 CAMERA_INTERVAL_S = 0.5
 SYSTEM_SERVICE_NAME = "yrobot.service"
+REACHY_DAEMON_BASE_URL = "http://127.0.0.1:8000"
+REACHY_DAEMON_ENDPOINTS = (
+    "/api/daemon/status",
+    "/api/daemon/robot-app-lock-status",
+    "/api/state/doa",
+)
+REACHY_DAEMON_ACTIONS = {"wake", "sleep", "restart"}
+SYSTEM_POWER_ACTIONS = {
+    "reboot": {
+        "command": ["sudo", "-n", "systemctl", "reboot"],
+        "message": "正在重启 Reachy Mini…网络会短暂断开。",
+    },
+    "poweroff": {
+        "command": ["sudo", "-n", "systemctl", "poweroff"],
+        "message": "正在关闭 Reachy Mini…关机后需要手动按电源开机。",
+    },
+}
+
+
+def _fetch_reachy_daemon_json(base_url: str, path: str) -> tuple[Any | None, str | None]:
+    url = f"{base_url.rstrip('/')}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as resp:
+            return json.loads(resp.read().decode("utf-8")), None
+    except Exception as exc:  # noqa: BLE001 — dashboard status is best-effort
+        return None, str(exc)
+
+
+def _derive_reachy_awake(motor_mode: str | None, daemon_state: str | None) -> bool | None:
+    if daemon_state is not None and daemon_state != "running":
+        return False
+    if motor_mode is None:
+        return None
+    return motor_mode in {"enabled", "gravity_compensation"}
+
+
+def _derive_reachy_app_slot(state: str | None, holder: str | None) -> dict[str, Any]:
+    if state == "local_app":
+        return {
+            "active_app": holder,
+            "active_app_transport": "local",
+            "remote_session_active": False,
+        }
+    if state == "remote_session":
+        return {
+            "active_app": holder,
+            "active_app_transport": "webrtc",
+            "remote_session_active": True,
+        }
+    if state == "free":
+        return {
+            "active_app": None,
+            "active_app_transport": None,
+            "remote_session_active": False,
+        }
+    return {
+        "active_app": None,
+        "active_app_transport": None,
+        "remote_session_active": None,
+    }
+
+
+def _read_reachy_daemon_status(
+    base_url: str = REACHY_DAEMON_BASE_URL,
+    fetch: Callable[[str, str], tuple[Any | None, str | None]] = _fetch_reachy_daemon_json,
+) -> dict[str, Any]:
+    results = {path: fetch(base_url, path) for path in REACHY_DAEMON_ENDPOINTS}
+    status, _ = results["/api/daemon/status"]
+    app_lock, _ = results["/api/daemon/robot-app-lock-status"]
+    doa, _ = results["/api/state/doa"]
+    errors = {path: err for path, (_, err) in results.items() if err}
+    daemon: dict[str, Any] = {
+        "available": any(payload is not None for payload, _ in results.values()),
+        "base_url": base_url,
+        "firmware_version": None,
+        "hardware_id": None,
+        "robot_name": None,
+        "daemon_state": None,
+        "motor_mode": None,
+        "awake": None,
+        "app_lock_state": None,
+        "active_app": None,
+        "active_app_transport": None,
+        "remote_session_active": None,
+        "doa_angle_rad": None,
+        "doa_speech_detected": None,
+        "errors": errors,
+    }
+    if isinstance(status, dict):
+        daemon_state = status.get("state")
+        backend = status.get("backend_status") or {}
+        motor_mode = backend.get("motor_control_mode")
+        daemon.update(
+            {
+                "firmware_version": status.get("version"),
+                "hardware_id": status.get("hardware_id"),
+                "robot_name": status.get("robot_name"),
+                "daemon_state": daemon_state,
+                "motor_mode": motor_mode,
+                "awake": _derive_reachy_awake(motor_mode, daemon_state),
+            }
+        )
+    if isinstance(app_lock, dict):
+        daemon["app_lock_state"] = app_lock.get("state")
+        daemon.update(_derive_reachy_app_slot(app_lock.get("state"), app_lock.get("holder_name")))
+    if isinstance(doa, dict):
+        daemon["doa_angle_rad"] = doa.get("angle")
+        daemon["doa_speech_detected"] = doa.get("speech_detected")
+    return daemon
+
+
+class ReachyDaemonController:
+    """Small wrapper around the official Reachy Mini daemon lifecycle endpoints."""
+
+    def __init__(
+        self,
+        base_url: str = REACHY_DAEMON_BASE_URL,
+        status_reader: Callable[[], dict[str, Any]] | None = None,
+        post: Callable[[str], None] | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._status_reader = status_reader or (lambda: _read_reachy_daemon_status(self._base_url))
+        self._post = post or self._post_path
+
+    def _post_path(self, path: str) -> None:
+        url = f"{self._base_url}{path}"
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req, timeout=5.0):
+            pass
+
+    def action(self, action: str) -> dict[str, Any]:
+        if action not in REACHY_DAEMON_ACTIONS:
+            raise ValueError("unsupported reachy daemon action")
+        if action == "wake":
+            if self._status_reader().get("daemon_state") == "running":
+                self._post("/api/motors/set_mode/enabled")
+                self._post("/api/move/play/wake_up")
+            else:
+                self._post("/api/daemon/start?wake_up=true")
+        elif action == "sleep":
+            self._post("/api/daemon/stop?goto_sleep=true")
+        else:
+            self._post("/api/daemon/restart")
+        return {"ok": True, "action": action}
+
+
+def _request_reachy_sleep_before_power() -> None:
+    req = urllib.request.Request(
+        f"{REACHY_DAEMON_BASE_URL}/api/daemon/stop?goto_sleep=true",
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10.0):
+        pass
+    time.sleep(1.0)
 
 
 class SystemController:
@@ -349,8 +414,13 @@ class SystemController:
     process SIGTERM; otherwise the browser sees a 503 / empty reply.
     """
 
-    def __init__(self, service: str = SYSTEM_SERVICE_NAME) -> None:
+    def __init__(
+        self,
+        service: str = SYSTEM_SERVICE_NAME,
+        before_power_action: Callable[[], None] | None = _request_reachy_sleep_before_power,
+    ) -> None:
         self._service = service
+        self._before_power_action = before_power_action
 
     def state(self) -> dict[str, Any]:
         return {
@@ -389,6 +459,41 @@ class SystemController:
             "action": "restart",
             "message": "正在重启 YRobot…几秒后页面会自动重新连接。",
         }
+
+    @staticmethod
+    @staticmethod
+    def _dispatch_power(
+        command: list[str],
+        action: str,
+        before_power_action: Callable[[], None] | None,
+    ) -> None:
+        try:
+            if before_power_action is not None:
+                try:
+                    before_power_action()
+                except Exception as exc:  # noqa: BLE001 — shutdown must continue
+                    logger.warning("pre-power sleep failed before %s: %s", action, exc)
+            subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — fire-and-forget
+            logger.warning("system power %s failed: %s", action, exc)
+
+    def power(self, action: str) -> dict[str, Any]:
+        spec = SYSTEM_POWER_ACTIONS.get(action)
+        if spec is None:
+            raise ValueError("unsupported system power action")
+        threading.Thread(
+            target=self._dispatch_power,
+            args=(spec["command"], action, self._before_power_action),
+            name=f"yrobot-system-power-{action}",
+            daemon=True,
+        ).start()
+        return {"ok": True, "action": action, "message": spec["message"]}
 
 
 class _MediaHolder:
@@ -577,9 +682,27 @@ class LogReader:
             return False, (proc.stderr.strip() or f"journalctl rc={proc.returncode}")
         return True, None
 
-    def read(self, lines: int, min_level: str) -> tuple[list[dict[str, Any]], str | None]:
+    def read(
+        self,
+        lines: int,
+        min_level: str,
+        *,
+        filter_kind: str = "",
+    ) -> tuple[list[dict[str, Any]], str | None]:
         lines = max(1, min(self.MAX_LINES, int(lines)))
         min_priority = self._priority_for(min_level)
+        # "chat" filter: keep only user STT and bot reply lines, for any backend.
+        # Each backend writes its own logger lines; we list their markers here.
+        #   XIAOZHI:  "xz stt: <text>"          (user speech-to-text)
+        #             "xz tts text: <text>"     (bot reply text, before audio)
+        #   QWEN:     "qwen stt: <text>"        (user speech-to-text)
+        #             "qwen response: <text>"   (bot reply text)
+        # Connection / audio meta lines ("xz audio packets=", "xz tts start",
+        # "xiaozhi ready", "QWEN wake word detected", etc.) are intentionally
+        # excluded - they describe transport, not dialogue. To add a new
+        # backend, follow the "<name> stt:" / "<name> response:" or
+        # "<name> tts text:" convention and append its markers here.
+        chat_markers = ("qwen stt:", "qwen response:", "xz stt:", "xz tts text:")
         try:
             proc = subprocess.run(
                 [
@@ -613,6 +736,9 @@ class LogReader:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            message = str(record.get("MESSAGE") or "")
+            if filter_kind == "chat" and not any(m in message for m in chat_markers):
+                continue
             priority = self._coerce_priority(record.get("PRIORITY"))
             if priority > min_priority:
                 continue
@@ -623,7 +749,7 @@ class LogReader:
                     "level": _JOURNAL_PRIORITY_NAMES.get(priority, "info"),
                     "logger": str(record.get("SYSLOG_IDENTIFIER") or ""),
                     "pid": self._coerce_int(record.get("_PID")),
-                    "message": str(record.get("MESSAGE") or ""),
+                    "message": message,
                 }
             )
         entries.sort(key=lambda entry: entry["timestamp_us"])
@@ -653,14 +779,118 @@ class LogReader:
             return 0
 
 
+def _robot_state_read() -> str:
+    """Read the live robot state from yrobot.state (lazy import).
+
+    State can be 'active' / 'sleeping' / 'deep_sleep' / 'safe_mode'.
+    ``yrobot.main`` writes here, ``build_status`` reads. Lazy-imported so
+    dashboard requests stay lightweight and don't pull in the Reachy stack
+    on every poll.
+    """
+    try:
+        from yrobot.state import ROBOT_STATE
+
+        return ROBOT_STATE.current
+    except Exception:  # noqa: BLE001 — dashboard must not crash on import glitch
+        return "unknown"
+
+
+def _read_system_metrics() -> dict[str, Any]:
+    """Read lightweight system metrics (CPU, memory, disk, temperature)."""
+    try:
+        with open("/proc/loadavg") as f:
+            load = f.read().split()
+            cpu_pct = float(load[0]) / os.cpu_count() * 100 if os.cpu_count() else 0
+    except Exception:
+        cpu_pct = 0.0
+    try:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if "MemTotal" in line:
+                    mem["total_kb"] = int(line.split()[1])
+                elif "MemAvailable" in line:
+                    mem["available_kb"] = int(line.split()[1])
+                if len(mem) == 2:
+                    break
+        mem_used_pct = (1 - mem.get("available_kb", 0) / max(mem.get("total_kb", 1), 1)) * 100
+    except Exception:
+        mem_used_pct = 0.0
+    try:
+        stat = os.statvfs("/")
+        disk_pct = (1 - stat.f_bavail / max(stat.f_blocks, 1)) * 100
+    except Exception:
+        disk_pct = 0.0
+    temp_c = 0.0
+    try:
+        for p in ["/sys/class/thermal/thermal_zone0/temp",
+                  "/sys/class/thermal/thermal_zone1/temp"]:
+            try:
+                with open(p) as f:
+                    temp_c = float(f.read().strip()) / 1000.0
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return {
+        "cpu_percent": round(cpu_pct, 1),
+        "memory_percent": round(mem_used_pct, 1),
+        "disk_percent": round(disk_pct, 1),
+        "temperature_c": round(temp_c, 1),
+        "power": _read_pi_power_state(),
+    }
+
+
+def _read_pi_power_state() -> dict[str, Any]:
+    """Read Raspberry Pi throttling flags from vcgencmd when available."""
+    state: dict[str, Any] = {
+        "available": False,
+        "raw": None,
+        "under_voltage": False,
+        "under_voltage_seen": False,
+        "throttled": False,
+        "throttled_seen": False,
+        "frequency_capped": False,
+        "frequency_capped_seen": False,
+    }
+    try:
+        proc = subprocess.run(
+            ["vcgencmd", "get_throttled"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+    except Exception:
+        return state
+    if proc.returncode != 0:
+        return state
+    raw = proc.stdout.strip()
+    match = re.search(r"throttled=(0x[0-9a-fA-F]+|\d+)", raw)
+    if match is None:
+        return state
+    flags = int(match.group(1), 0)
+    state.update(
+        {
+            "available": True,
+            "raw": match.group(1),
+            "under_voltage": bool(flags & (1 << 0)),
+            "frequency_capped": bool(flags & (1 << 1)),
+            "throttled": bool(flags & (1 << 2)),
+            "under_voltage_seen": bool(flags & (1 << 16)),
+            "frequency_capped_seen": bool(flags & (1 << 17)),
+            "throttled_seen": bool(flags & (1 << 18)),
+        }
+    )
+    return state
+
 def build_status(
-    store: AppConfig,
     environ: Mapping[str, str],
     audio_input_controller: AudioInputController | None = None,
 ) -> dict[str, Any]:
     """Return safe runtime status for the dashboard."""
-    effective = store.effective_environment(environ)
-    settings = Settings.from_env(effective)
+    settings = Settings.from_env(environ)
     audio_input = audio_input_controller or audio_input_controller_singleton()
     input_enabled = audio_input.enabled()
     volume_percent: int | None = None
@@ -671,19 +901,25 @@ def build_status(
         volume_error = str(exc)
     mic_state = dashboard_mic_signal()
     mic_state["available"] = mic_state.get("updated_at", 0.0) > 0.0
+    xiaozhi_url = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
     return {
         "service": {
             "name": "YRobot",
-            "state": "running",
+            "state": _robot_state_read(),
             "pid": os.getpid(),
             "uptime_s": max(0, int(time.monotonic() - STARTED_AT)),
         },
+        "system": _read_system_metrics(),
+        "daemon": _read_reachy_daemon_status(),
+        "motion": motion_controller_singleton().status(),
+        "runtime": RUNTIME_HEALTH.snapshot(),
         "conversation": {
-            "gateway_url": settings.url,
-            "realtime_mode": settings.realtime_mode,
-            "tls_verify": settings.tls_verify,
-            "video_enabled": settings.send_video,
-            "proactive_enabled": settings.proactive_enabled,
+            "gateway_url": xiaozhi_url,
+            "realtime_mode": "audio",
+            "tls_verify": xiaozhi_url.startswith("wss://"),
+            "video_enabled": False,
+            "proactive_enabled": False,
+            "backend": "xiaozhi",
         },
         "audio": {
             "volume_percent": volume_percent,
@@ -700,10 +936,6 @@ def build_status(
                 "url": settings.ha_url,
                 "whitelist_path": settings.ha_whitelist_path,
             },
-            "hermes_tools": {
-                "enabled": settings.hermes_tools_enabled,
-                "url": settings.hermes_tools_url,
-            },
             "local_info": {
                 "enabled": settings.local_info_enabled,
             },
@@ -714,53 +946,190 @@ def build_status(
             "local_media_recording": False,
         },
         "config": {
-            "path": str(store.path),
-            "environment_overrides": [
-                field for field, env_name in FIELD_TO_ENV.items() if env_name in environ
-            ],
+            "path": "N/A",
+            "environment_overrides": [],
         },
     }
 
 
 def register_settings_routes(
     app: FastAPI,
-    store: AppConfig,
-    get_environment: Callable[[], Mapping[str, str]] = lambda: os.environ,
     media_holder: _MediaHolder | None = None,
     audio_input_controller: AudioInputController | None = None,
     vad_env_path: Path = DEFAULT_ENV_PATH,
 ) -> None:
-    """Attach the small settings API consumed by ``yrobot/static``."""
+    """Attach dashboard API routes consumed by ``yrobot/static``."""
 
     camera = CameraStreamer(media_holder or _MediaHolder())
     audio_input = audio_input_controller or audio_input_controller_singleton()
 
-    @app.get("/api/settings")
-    def get_settings() -> dict[str, Any]:
-        return {"settings": store.view(get_environment())}
+    motion = motion_controller_singleton()
+    configured_backend = Settings.from_env(os.environ).conversation_backend
+    configured_voice = Settings.from_env(os.environ).qwen_voice
+
+    @app.get("/api/conversation/backend")
+    def get_conversation_backend() -> dict[str, Any]:
+        runtime = RUNTIME_HEALTH.snapshot()
+        return {
+            "configured_backend": configured_backend,
+            "running_backend": runtime.get("backend", "xiaozhi"),
+            "connection_state": runtime.get("ws_state", "not_started"),
+            "error": runtime.get("last_error"),
+        }
+
+    @app.put("/api/conversation/backend")
+    def put_conversation_backend(document: dict[str, Any]) -> dict[str, Any]:
+        nonlocal configured_backend
+        backend = document.get("backend")
+        if not isinstance(backend, str) or backend not in SUPPORTED_CONVERSATION_BACKENDS:
+            raise HTTPException(status_code=422, detail="backend must be 'xiaozhi' or 'qwen'")
+        try:
+            update_env_value(vad_env_path, "YROBOT_CONVERSATION_BACKEND", backend)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"could not save backend env: {exc}"
+            ) from exc
+        configured_backend = backend
+        return {"configured_backend": backend, "restart_required": True}
+
+    @app.get("/api/conversation/voice")
+    def get_conversation_voice() -> dict[str, Any]:
+        """QWEN voice picker: returns the configured voice and the available list."""
+        return {
+            "configured_voice": configured_voice,
+            "available_voices": list(QWEN_VOICES),
+        }
+
+    @app.put("/api/conversation/voice")
+    def put_conversation_voice(document: dict[str, Any]) -> dict[str, Any]:
+        nonlocal configured_voice
+        voice = document.get("voice")
+        if not isinstance(voice, str) or voice not in QWEN_VOICES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"voice must be one of {', '.join(QWEN_VOICES)}",
+            )
+        try:
+            update_env_value(vad_env_path, "YROBOT_QWEN_VOICE", voice)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"could not save voice env: {exc}"
+            ) from exc
+        configured_voice = voice
+        return {"configured_voice": voice, "restart_required": True}
+
+    @app.post("/api/conversation/voice/preview")
+    async def post_voice_preview(voice: str) -> dict[str, Any]:
+        """Generate a short audio sample for the given voice (no restart needed).
+
+        Connects a short-lived DashScope realtime WebSocket session using the
+        configured model, asks the model to speak a single greeting in the
+        requested voice, and returns the collected PCM deltas as base64 so the
+        dashboard can play them in-browser without restarting YRobot.
+        """
+        if voice not in QWEN_VOICES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"voice must be one of {', '.join(QWEN_VOICES)}",
+            )
+        settings = Settings.from_env(os.environ)
+        if not settings.qwen_api_key:
+            raise HTTPException(status_code=503, detail="DASHSCOPE_API_KEY not configured")
+        try:
+            import websockets  # type: ignore[import-not-found]
+            import base64 as _b64
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail=f"websockets not installed: {exc}") from exc
+        sample_text = "你好，这是一段试听。"
+        ws_url = _model_url(settings.qwen_url, settings.qwen_model)
+        session_payload = {
+            "type": "session.update",
+            "session": {
+                "modalities": ["text", "audio"],
+                "voice": voice,
+                "input_audio_format": "pcm",
+                "output_audio_format": "pcm",
+                "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"},
+                "turn_detection": None,
+            },
+        }
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers={"Authorization": f"Bearer {settings.qwen_api_key}"},
+                max_size=10_000_000,
+            ) as ws:
+                await ws.send(json.dumps(session_payload))
+                await ws.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": sample_text}],
+                    },
+                }))
+                await ws.send(json.dumps({"type": "response.create"}))
+                audio_chunks: list[bytes] = []
+                while True:
+                    raw_msg = await ws.recv()
+                    try:
+                        msg = json.loads(raw_msg)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    evt = msg.get("type", "")
+                    if evt == "response.audio.delta":
+                        b64 = msg.get("delta") or ""
+                        if b64:
+                            audio_chunks.append(_b64.b64decode(b64))
+                    elif evt == "response.done":
+                        break
+                    elif evt == "error":
+                        err = msg.get("error") or {}
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"DashScope error: {err.get('message', err)}",
+                        )
+                pcm_bytes = b"".join(audio_chunks)
+                sample_rate = 24000
+                return {
+                    "pcm_base64": _b64.b64encode(pcm_bytes).decode("ascii"),
+                    "sample_rate": sample_rate,
+                    "duration_s": len(pcm_bytes) / 2 / sample_rate,
+                    "voice": voice,
+                    "text": sample_text,
+                }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"preview failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+    @app.get("/api/motion")
+    def get_motion() -> dict[str, Any]:
+        return {"ok": True, "moves": motion.list_moves(), "current": motion.current()}
+
+    @app.post("/api/motion")
+    def post_motion(document: dict[str, Any]) -> dict[str, Any]:
+        name = str(document.get("move") or document.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="missing 'move'")
+        ok, msg = motion.play(name)
+        if not ok:
+            raise HTTPException(status_code=422, detail=msg)
+        return {"ok": True, "message": msg, "current": motion.current()}
 
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:
         return {
             "ok": True,
-            "status": build_status(store, get_environment(), audio_input_controller=audio_input),
-        }
-
-    @app.put("/api/settings")
-    def put_settings(document: dict[str, Any]) -> dict[str, Any]:
-        try:
-            settings = store.save(document, get_environment())
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return {
-            "settings": settings,
-            "restart_required": True,
-            "message": "Settings saved. Restart YRobot to apply them.",
+            "status": build_status(os.environ, audio_input_controller=audio_input),
         }
 
     volume_controller = VolumeController()
 
     system_controller = SystemController()
+    reachy_daemon_controller = ReachyDaemonController()
 
     @app.get("/api/system/state")
     def get_system_state() -> dict[str, Any]:
@@ -769,6 +1138,23 @@ def register_settings_routes(
     @app.post("/api/system/restart")
     def post_system_restart() -> dict[str, Any]:
         return system_controller.restart()
+
+    @app.post("/api/system/power")
+    def post_system_power(document: dict[str, Any]) -> dict[str, Any]:
+        action = document.get("action")
+        if action not in SYSTEM_POWER_ACTIONS:
+            raise HTTPException(status_code=422, detail="action must be 'reboot' or 'poweroff'")
+        return system_controller.power(str(action))
+
+    @app.post("/api/reachy-daemon/action")
+    def post_reachy_daemon_action(document: dict[str, Any]) -> dict[str, Any]:
+        action = str(document.get("action") or "")
+        if action not in REACHY_DAEMON_ACTIONS:
+            raise HTTPException(status_code=422, detail="action must be 'wake', 'sleep', or 'restart'")
+        try:
+            return reachy_daemon_controller.action(action)
+        except Exception as exc:  # noqa: BLE001 — surface daemon action failures
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/volume")
     def get_volume() -> dict[str, Any]:
@@ -826,8 +1212,8 @@ def register_settings_routes(
             raise HTTPException(status_code=422, detail="rms_min must be a number")
         applied = set_vad_rms_min(float(value))
         try:
-            persist_env_value(vad_env_path, "YROBOT_VAD_RMS_MIN", f"{applied:.3f}")
-        except OSError as exc:
+            update_env_value(vad_env_path, "YROBOT_VAD_RMS_MIN", f"{applied:.3f}")
+        except (OSError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=f"could not save VAD env: {exc}") from exc
         return {
             "vad": {
@@ -881,15 +1267,20 @@ def register_settings_routes(
     available, journal_error = log_reader.available()
 
     @app.get("/api/logs")
-    def get_logs(lines: int = LogReader.DEFAULT_LINES, min_level: str = "info") -> dict[str, Any]:
+    def get_logs(
+        lines: int = LogReader.DEFAULT_LINES,
+        min_level: str = "info",
+        filter: str = "",
+    ) -> dict[str, Any]:
         if not available:
             raise HTTPException(status_code=503, detail=journal_error or "journal unavailable")
-        entries, error = log_reader.read(lines, min_level)
+        entries, error = log_reader.read(lines, min_level, filter_kind=filter)
         if error is not None:
             raise HTTPException(status_code=503, detail=error)
         return {
             "unit": JOURNAL_UNIT,
             "level": min_level,
+            "filter": filter,
             "lines": len(entries),
             "logs": [
                 {

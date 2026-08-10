@@ -50,6 +50,41 @@ SUPPORTED_CONVERSATION_BACKENDS = frozenset({"xiaozhi", "qwen"})
 QWEN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime"
 QWEN_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 
+# Voices for the DashScope Qwen-Omni Realtime WebSocket API.
+# DashScope `qwen3.5-omni-flash-realtime` WebSocket endpoint verified 2026-08-10
+# against `192.168.1.14` (production) by hitting
+# POST /api/conversation/voice/preview and inspecting the returned audio:
+#
+# All 14 below returned 200 with 195K-420K bytes of real PCM audio (78-90%
+# non-zero samples) - these voices actually produce speech.
+#
+# Names rejected with 400 "Voice 'X' is not supported": Cherry, Chelsie,
+# Liora, Mira, Cassian, Jada. They are documented at
+# https://help.aliyun.com/zh/model-studio/omni-voice-list but not exposed
+# on the flash realtime WebSocket endpoint we use.
+#
+# Note: ws_state=connected alone is NOT proof a voice works - DashScope
+# accepts session.update for unsupported voices too, but produces no audio.
+# The preview endpoint is the ground truth.
+QWEN_VOICES: tuple[str, ...] = (
+    # Multilingual / Mandarin
+    "Ethan",    # Male, bright upbeat, warm approachable vibe. DashScope default.
+    "Serena",   # Female, gentle young woman.
+    "Tina",     # (DashScope Qwen3.5-Omni blog default)
+    "Cindy",    # (added by user; works)
+    "Raymond",  # (added by user; works)
+    "Mia",      # (added by user; works)
+    "Kiki",     # (added by user; works)
+    "Aiden",    # Male, warm laid-back American, gentle boyish charm.
+    # Mandarin regional dialects
+    "Sunny",    # Sichuanese dialect.
+    "Dylan",    # Beijing Mandarin dialect.
+    "Peter",    # Tianjin dialect.
+    "Eric",     # Sichuanese dialect.
+    "Marcus",   # Shaanxi dialect.
+    "Li",       # Nanjing dialect.
+)
+
 
 def build_system_prompt(persona: str, proactive: bool) -> str:
     parts = [TRAINED_SYSTEM_LINE]

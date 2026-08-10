@@ -1,30 +1,29 @@
-const form = document.getElementById("settings-form");
-const loading = document.getElementById("loading");
-const restartBanner = document.getElementById("restart-banner");
-const overrideWarning = document.getElementById("override-warning");
-const gatewayUrl = document.getElementById("gateway-url");
-const tlsVerify = document.getElementById("tls-verify");
-const videoEnabled = document.getElementById("video-enabled");
-const proactiveEnabled = document.getElementById("proactive-enabled");
-const persona = document.getElementById("persona");
-const personaCount = document.getElementById("persona-count");
-const privacyConfirm = document.getElementById("privacy-confirm");
-const saveButton = document.getElementById("save-button");
-const saveStatus = document.getElementById("save-status");
-const configPath = document.getElementById("config-path");
 const statusPanel = document.getElementById("status-panel");
 const refreshStatus = document.getElementById("refresh-status");
 const statusService = document.getElementById("status-service");
 const statusUptime = document.getElementById("status-uptime");
-const statusConversation = document.getElementById("status-conversation");
-const statusProactive = document.getElementById("status-proactive");
-const statusHa = document.getElementById("status-ha");
-const statusHaUrl = document.getElementById("status-ha-url");
-const statusHermes = document.getElementById("status-hermes");
-const statusHermesUrl = document.getElementById("status-hermes-url");
-const statusLocalInfo = document.getElementById("status-local-info");
-const statusPrivacy = document.getElementById("status-privacy");
-const statusRefreshTime = document.getElementById("status-refresh-time");
+const statusSys = document.getElementById("status-sys");
+const daemonState = document.getElementById("daemon-state");
+const daemonMotors = document.getElementById("daemon-motors");
+const daemonApp = document.getElementById("daemon-app");
+const daemonTransport = document.getElementById("daemon-transport");
+const daemonDoa = document.getElementById("daemon-doa");
+const daemonSpeech = document.getElementById("daemon-speech");
+const daemonWake = document.getElementById("daemon-wake");
+const daemonSleep = document.getElementById("daemon-sleep");
+const daemonRestart = document.getElementById("daemon-restart");
+const trackingSource = document.getElementById("tracking-source");
+const trackingTarget = document.getElementById("tracking-target");
+const trackingFace = document.getElementById("tracking-face");
+const chatMiniEntries = document.getElementById("chat-mini-entries");
+const backendButtons = Array.from(document.querySelectorAll("[data-backend]"));
+const backendStatus = document.getElementById("backend-status");
+const backendDetail = document.getElementById("backend-detail");
+const voiceSelect = document.getElementById("voice-select");
+const voicePreview = document.getElementById("voice-preview");
+const voiceDetail = document.getElementById("voice-detail");
+let voiceAvailable = [];
+const restartBanner = document.getElementById("restart-banner");
 const volumeSlider = document.getElementById("volume-slider");
 const volumeMute = document.getElementById("volume-mute");
 const audioVolumeValue = document.getElementById("audio-volume-value");
@@ -44,7 +43,8 @@ const cameraStatus = document.getElementById("camera-status");
 const cameraMeta = document.getElementById("camera-meta");
 
 const logList = document.getElementById("log-list");
-const powerRestart = document.getElementById("power-restart");
+const powerReboot = document.getElementById("power-reboot");
+const powerOff = document.getElementById("power-off");
 const logFrame = document.getElementById("log-frame");
 const logEmpty = document.getElementById("log-empty");
 const logMeta = document.getElementById("log-meta");
@@ -67,34 +67,6 @@ let logRenderedIds = new Set();
 let logInFlight = 0;
 let micInputEnabled = true;
 
-function updatePersonaCount() {
-  personaCount.textContent = String(persona.value.length);
-}
-
-function syncVideoControls() {
-  proactiveEnabled.disabled = !videoEnabled.checked;
-  if (!videoEnabled.checked) proactiveEnabled.checked = false;
-}
-
-function showSettings(settings) {
-  gatewayUrl.value = settings.gateway_url;
-  tlsVerify.checked = settings.tls_verify;
-  videoEnabled.checked = settings.video_enabled;
-  proactiveEnabled.checked = settings.proactive_enabled;
-  persona.value = settings.persona;
-  configPath.textContent = `保存位置：${settings.config_path}`;
-  updatePersonaCount();
-  syncVideoControls();
-
-  if (settings.environment_overrides.length) {
-    overrideWarning.textContent =
-      `以下设置由 daemon 环境变量管理，重启后会覆盖页面值：${settings.environment_overrides.join(", ")}`;
-    overrideWarning.classList.remove("hidden");
-  } else {
-    overrideWarning.classList.add("hidden");
-  }
-}
-
 function formatUptime(seconds) {
   if (seconds < 60) return `${seconds} 秒`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
@@ -106,26 +78,164 @@ function stateText(enabled, configured = true) {
   return configured ? "已启用" : "未配置";
 }
 
+function renderBackend(data) {
+  const configured = data.configured_backend;
+  const running = data.running_backend;
+  for (const button of backendButtons) {
+    button.classList.toggle("active", button.dataset.backend === configured);
+  }
+  backendStatus.textContent = running ? `运行中：${running.toUpperCase()}` : "未运行";
+  backendStatus.classList.toggle("warning", Boolean(data.error));
+  backendDetail.textContent = data.error
+    ? `连接失败：${data.error}`
+    : `当前配置 ${configured.toUpperCase()} · 连接 ${data.connection_state || "未知"}`;
+}
+
+async function loadBackend() {
+  try {
+    const response = await fetch("/api/conversation/backend", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "读取失败");
+    renderBackend(data);
+  } catch (error) {
+    backendStatus.textContent = "读取失败";
+    backendDetail.textContent = error.message;
+  }
+}
+
+async function saveBackend(button) {
+  for (const item of backendButtons) item.disabled = true;
+  try {
+    const response = await fetch("/api/conversation/backend", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backend: button.dataset.backend }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "保存失败");
+    for (const item of backendButtons) {
+      item.classList.toggle("active", item === button);
+    }
+    backendDetail.textContent = `已保存 ${data.configured_backend.toUpperCase()}，重启后生效。`;
+    restartBanner.classList.remove("hidden");
+  } catch (error) {
+    backendDetail.textContent = `保存失败：${error.message}`;
+  } finally {
+    for (const item of backendButtons) item.disabled = false;
+  }
+}
+
+for (const button of backendButtons) {
+  button.addEventListener("click", () => saveBackend(button));
+}
+
+function renderVoice(data) {
+  const configured = data.configured_voice;
+  // Lazy-populate select options from backend-reported available voices.
+  voiceAvailable = Array.isArray(data.available_voices) ? data.available_voices.slice() : [];
+  if (voiceSelect.options.length === 0 && voiceAvailable.length > 0) {
+    for (const voice of voiceAvailable) {
+      const option = document.createElement("option");
+      option.value = voice;
+      option.textContent = voice;
+      voiceSelect.appendChild(option);
+    }
+  }
+  voiceSelect.value = configured;
+  voicePreview.disabled = false;
+  voiceDetail.textContent = `当前 ${configured} · 重启后生效`;
+}
+
+async function loadVoice() {
+  try {
+    const response = await fetch("/api/conversation/voice", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "读取失败");
+    renderVoice(data);
+  } catch (error) {
+    voiceDetail.textContent = `读取失败：${error.message}`;
+  }
+}
+
+async function saveVoice(voice) {
+  voiceSelect.disabled = true;
+  voicePreview.disabled = true;
+  try {
+    const response = await fetch("/api/conversation/voice", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voice }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "保存失败");
+    voiceDetail.textContent = `已保存 ${data.configured_voice}，重启后生效。`;
+    restartBanner.classList.remove("hidden");
+  } catch (error) {
+    voiceDetail.textContent = `保存失败：${error.message}`;
+  } finally {
+    voiceSelect.disabled = false;
+    voicePreview.disabled = false;
+  }
+}
+
+voiceSelect.addEventListener("change", () => saveVoice(voiceSelect.value));
+voicePreview.addEventListener("click", () => previewVoice(voiceSelect.value));
+
+async function previewVoice(voice) {
+  if (!voice) return;
+  voicePreview.disabled = true;
+  voiceSelect.disabled = true;
+  const originalLabel = voicePreview.textContent;
+  voicePreview.textContent = "试听中...";
+  try {
+    const response = await fetch(`/api/conversation/voice/preview?voice=${encodeURIComponent(voice)}`, {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ detail: "试听失败" }));
+      throw new Error(err.detail || "试听失败");
+    }
+    const payload = await response.json();
+    const pcmBytes = base64ToPCM16Bytes(payload.pcm_base64);
+    const sampleRate = payload.sample_rate || 24000;
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+    const audioBuffer = audioCtx.createBuffer(1, pcmBytes.length / 2, sampleRate);
+    const channel = audioBuffer.getChannelData(0);
+    for (let i = 0; i < pcmBytes.length; i += 2) {
+      const sample = pcmBytes[i] | (pcmBytes[i + 1] << 8);
+      channel[i / 2] = sample < 0x8000 ? sample / 0x8000 : (sample - 0x10000) / 0x8000;
+    }
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+    source.start();
+    voiceDetail.textContent = `试听 ${voice} · ${(audioBuffer.duration).toFixed(1)}s`;
+  } catch (error) {
+    voiceDetail.textContent = `试听失败：${error.message}`;
+  } finally {
+    voicePreview.textContent = originalLabel;
+    voicePreview.disabled = false;
+    voiceSelect.disabled = false;
+  }
+}
+
+function base64ToPCM16Bytes(b64) {
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
 function showStatus(status) {
-  statusService.textContent = status.service.state === "running" ? "运行中" : status.service.state;
+  const stateLabels = { active: "活跃", sleeping: "待机", deep_sleep: "休眠", safe_mode: "安全模式" };
+  statusService.textContent = stateLabels[status.service.state] || status.service.state;
   statusUptime.textContent = `PID ${status.service.pid} / 已运行 ${formatUptime(status.service.uptime_s)}`;
 
-  const mode = status.conversation.realtime_mode === "video" ? "视频模式" : "音频模式";
-  statusConversation.textContent = `${mode} / ${status.conversation.tls_verify ? "TLS 验证" : "TLS 未验证"}`;
-  statusProactive.textContent = status.conversation.proactive_enabled ? "主动观察开启" : "主动观察关闭";
-
-  const ha = status.integrations.home_assistant;
-  statusHa.textContent = stateText(ha.enabled, ha.configured);
-  statusHaUrl.textContent = ha.url || "未设置 Home Assistant 地址";
-
-  const hermes = status.integrations.hermes_tools;
-  statusHermes.textContent = stateText(hermes.enabled);
-  statusHermesUrl.textContent = hermes.url || "未设置 Hermes 地址";
-
-  statusLocalInfo.textContent = stateText(status.integrations.local_info.enabled);
-  statusPrivacy.textContent = status.privacy.video_uploaded_to_gateway ? "音频 + 摄像头" : "仅音频";
-  statusRefreshTime.textContent = `刷新于 ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
   statusPanel.classList.remove("hidden");
+  renderDaemon(status.daemon);
+  renderTracking(status.motion && status.motion.tracking);
+  if (status.system) renderSystem(status.system, status.motion);
 }
 
 async function loadStatus() {
@@ -138,6 +248,7 @@ async function loadStatus() {
     showAudio(result.status.audio);
   } catch (error) {
     statusPanel.classList.remove("hidden");
+    statusSys.textContent = "--";
     statusService.textContent = "读取失败";
     statusUptime.textContent = error.message;
   } finally {
@@ -389,7 +500,13 @@ async function loadLogs({ fullReplace = false } = {}) {
   const requestId = ++logInFlight;
   const url = new URL("/api/logs", window.location.origin);
   url.searchParams.set("lines", "300");
-  url.searchParams.set("min_level", logLevel.value || "info");
+  const level = logLevel.value || "info";
+  if (level === "chat") {
+    url.searchParams.set("min_level", "info");
+    url.searchParams.set("filter", "chat");
+  } else {
+    url.searchParams.set("min_level", level);
+  }
   try {
     const response = await fetch(url, { cache: "no-store" });
     const result = await response.json();
@@ -541,21 +658,6 @@ async function setMicInputEnabled(enabled) {
 
 
 
-async function loadSettings() {
-  try {
-    const response = await fetch("/api/settings", { cache: "no-store" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "读取失败");
-    showSettings(result.settings);
-    loading.classList.add("hidden");
-    form.classList.remove("hidden");
-  } catch (error) {
-    loading.textContent = `无法读取设置：${error.message}`;
-  }
-}
-
-persona.addEventListener("input", updatePersonaCount);
-videoEnabled.addEventListener("change", syncVideoControls);
 refreshStatus.addEventListener("click", loadStatus);
 volumeSlider.addEventListener("input", (event) => {
   const value = event.target.value;
@@ -632,77 +734,341 @@ logJump.addEventListener("click", () => {
   syncLogJump();
   maybeLogAutoScroll();
 });
-form.addEventListener("input", () => {
-  saveStatus.textContent = "有未保存的修改";
-  restartBanner.classList.add("hidden");
-});
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!privacyConfirm.checked) {
-    saveStatus.textContent = "请先确认数据传输说明";
-    privacyConfirm.focus();
-    return;
-  }
-
-  const document = {
-    gateway_url: gatewayUrl.value.trim(),
-    tls_verify: tlsVerify.checked,
-    video_enabled: videoEnabled.checked,
-    proactive_enabled: proactiveEnabled.checked,
-    persona: persona.value.trim(),
-  };
-
-  saveButton.disabled = true;
-  saveStatus.textContent = "正在验证并保存…";
-  try {
-    const response = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(document),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "保存失败");
-    showSettings(result.settings);
-    saveStatus.textContent = "已保存，等待重启应用";
-    restartBanner.classList.remove("hidden");
-    window.scrollTo({ top: restartBanner.offsetTop - 20, behavior: "smooth" });
-  } catch (error) {
-    saveStatus.textContent = `保存失败：${error.message}`;
-  } finally {
-    saveButton.disabled = false;
-  }
-});
-
-async function restartSystem() {
-  if (!window.confirm("重启 YRobot？服务会短暂离线几秒后自动恢复。")) return;
-  powerRestart.classList.add("busy");
-  powerRestart.disabled = true;
-  try {
-    const response = await fetch("/api/system/restart", { method: "POST" });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || result.ok === false) {
-      const detail = result.message || result.detail || `HTTP ${response.status}`;
-      window.alert(`重启失败：${detail}`);
-      powerRestart.classList.remove("busy");
-      powerRestart.disabled = false;
-      return;
-    }
-    window.alert("正在重启…几秒后会自动重新连接。");
-  } catch (error) {
-    powerRestart.classList.remove("busy");
-    powerRestart.disabled = false;
-    window.alert(`请求失败：${error.message}`);
+function setPowerButtonsBusy(button) {
+  for (const item of [powerReboot, powerOff]) {
+    if (!item) continue;
+    item.disabled = true;
+    item.classList.toggle("busy", item === button);
   }
 }
 
-powerRestart.addEventListener("click", restartSystem);
+function clearPowerButtonsBusy() {
+  for (const item of [powerReboot, powerOff]) {
+    if (!item) continue;
+    item.disabled = false;
+    item.classList.remove("busy");
+  }
+}
+
+async function requestPowerAction(action, button, confirmText, successText) {
+  if (!window.confirm(confirmText)) return;
+  setPowerButtonsBusy(button);
+  try {
+    const response = await fetch("/api/system/power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      const detail = result.message || result.detail || `HTTP ${response.status}`;
+      window.alert(`命令失败：${detail}`);
+      clearPowerButtonsBusy();
+      return;
+    }
+    window.alert(result.message || successText);
+  } catch (error) {
+    window.alert(`请求失败：${error.message}`);
+    clearPowerButtonsBusy();
+  }
+}
+
+powerReboot.addEventListener("click", () => {
+  requestPowerAction(
+    "reboot",
+    powerReboot,
+    "确认重启 Reachy Mini？网络会短暂断开，启动后会自动恢复。",
+    "正在重启 Reachy Mini…",
+  );
+});
+powerOff.addEventListener("click", () => {
+  requestPowerAction(
+    "poweroff",
+    powerOff,
+    "确认关闭 Reachy Mini？关机后需要手动按电源开机。",
+    "正在关闭 Reachy Mini…",
+  );
+});
+
+function renderDaemon(daemon) {
+  if (!daemon || !daemon.available) {
+    daemonState.textContent = "不可用";
+    daemonMotors.textContent = "无法读取官方 daemon";
+    daemonApp.textContent = "--";
+    daemonTransport.textContent = "--";
+    daemonDoa.textContent = "--";
+    daemonSpeech.textContent = "--";
+    return;
+  }
+  daemonState.textContent = daemon.daemon_state || "未知";
+  const motor = daemon.motor_mode || "未知";
+  const awake = daemon.awake === true ? "已唤醒" : daemon.awake === false ? "睡眠" : "未知";
+  daemonMotors.textContent = `电机 ${motor} · ${awake}`;
+  daemonApp.textContent = daemon.active_app || daemon.app_lock_state || "空闲";
+  daemonTransport.textContent = daemon.remote_session_active ? "远程会话占用" : (daemon.active_app_transport || "本地/空闲");
+  if (typeof daemon.doa_angle_rad === "number") {
+    daemonDoa.textContent = `${Math.round(daemon.doa_angle_rad * 180 / Math.PI)}°`;
+  } else {
+    daemonDoa.textContent = "--";
+  }
+  daemonSpeech.textContent = daemon.doa_speech_detected === true ? "检测到说话" : daemon.doa_speech_detected === false ? "未检测到说话" : "无 DoA 数据";
+}
+
+function setDaemonButtonsBusy(button, busy) {
+  for (const item of [daemonWake, daemonSleep, daemonRestart]) {
+    if (!item) continue;
+    item.disabled = busy;
+    item.classList.toggle("busy", busy && item === button);
+  }
+}
+
+async function requestDaemonAction(action, button, confirmText) {
+  if (!window.confirm(confirmText)) return;
+  setDaemonButtonsBusy(button, true);
+  try {
+    const response = await fetch("/api/reachy-daemon/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      window.alert(`命令失败：${result.detail || result.message || `HTTP ${response.status}`}`);
+      return;
+    }
+    await loadStatus();
+  } catch (error) {
+    window.alert(`请求失败：${error.message}`);
+  } finally {
+    setDaemonButtonsBusy(button, false);
+  }
+}
+
+daemonWake.addEventListener("click", () => {
+  requestDaemonAction("wake", daemonWake, "确认唤醒 Reachy daemon？");
+});
+daemonSleep.addEventListener("click", () => {
+  requestDaemonAction("sleep", daemonSleep, "确认让 Reachy 进入睡眠？");
+});
+daemonRestart.addEventListener("click", () => {
+  requestDaemonAction("restart", daemonRestart, "确认重启 Reachy daemon？");
+});
 
 loadStatus();
-loadSettings();
+loadBackend();
+loadVoice();
 loadVolume();
 loadVad();
 loadCameraState();
 loadLogs({ fullReplace: true });
 scheduleLogPoll();
 setInterval(loadStatus, 10000);
+loadChatMini();
+setInterval(loadChatMini, 2000);
+
+function renderSystem(sys, motion) {
+  const el = document.getElementById("status-sys");
+  if (!el) return;
+  let power = "";
+  if (sys.power?.available) {
+    if (sys.power.under_voltage || sys.power.throttled) {
+      power = " · 电源异常";
+    } else if (sys.power.under_voltage_seen || sys.power.throttled_seen || sys.power.frequency_capped_seen) {
+      power = " · 曾低电压";
+    } else {
+      power = " · 电源正常";
+    }
+  }
+  let gaze = "";
+  if (motion?.gaze_source) {
+    const deg = motion.gaze_target_rad === undefined ? "" : ` ${Math.round(motion.gaze_target_rad * 180 / Math.PI)}°`;
+    gaze = ` · 视线 ${motion.gaze_source}${deg}`;
+  }
+  el.textContent = `CPU ${sys.cpu_percent}% · 内存 ${sys.memory_percent}% · 磁盘 ${sys.disk_percent}% · CPU ${sys.temperature_c}°C${power}${gaze}`;
+}
+
+function angleLabel(rad) {
+  if (rad === null || rad === undefined || Number.isNaN(Number(rad))) return "--";
+  return `${Math.round(Number(rad) * 180 / Math.PI)}°`;
+}
+
+function renderTracking(tracking) {
+  if (!trackingSource || !trackingTarget || !trackingFace) return;
+  if (!tracking) {
+    trackingSource.textContent = "--";
+    trackingTarget.textContent = "--";
+    trackingFace.textContent = "等待追踪数据";
+    return;
+  }
+  const sourceLabels = { audio: "声音", "audio+visual": "声音+视觉", idle: "待机" };
+  trackingSource.textContent = sourceLabels[tracking.source] || tracking.source || "--";
+  trackingTarget.textContent = `目标 ${angleLabel(tracking.target_yaw_rad)} · 声音 ${angleLabel(tracking.audio_yaw_rad)}`;
+  const visual = tracking.visual_yaw_rad === null || tracking.visual_yaw_rad === undefined
+    ? "视觉 --"
+    : `视觉 ${angleLabel(tracking.visual_yaw_rad)}`;
+  const face = tracking.face_detected ? "已看到脸" : "未看到脸";
+  const age = tracking.age_s === null || tracking.age_s === undefined ? "" : ` · ${tracking.age_s}s`;
+  trackingFace.textContent = `${face} · ${visual}${age}`;
+}
+
+let _chatMiniLastRendered = "";
+
+async function loadChatMini() {
+  try {
+    const response = await fetch("/api/logs?filter=chat&limit=200", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) return;
+    const lines = (result.logs || []).map(l => l.message || l.text || String(l));
+    // Extract stt/tts pairs: find last 6 turns.
+    // Recognize both legacy xiaozhi markers and current qwen markers.
+    const isStt = (line) => /xz stt:/.test(line) || /qwen stt:/.test(line);
+    const isTts = (line) => /xz tts text:/.test(line) || /qwen response:/.test(line);
+    const turns = [];
+    let i = lines.length - 1;
+    while (i >= 0 && turns.length < 6) {
+      let ttsLine = null, sttLine = null;
+      // scan backward for bot reply (tts / response)
+      while (i >= 0) {
+        const line = lines[i--];
+        if (isTts(line)) { ttsLine = line; break; }
+      }
+      // scan backward for matching user speech
+      while (i >= 0) {
+        const line = lines[i];
+        if (isStt(line)) { sttLine = line; i--; break; }
+        if (isTts(line)) { i--; continue; }
+        i--;
+      }
+      if (ttsLine || sttLine) turns.unshift({ stt: sttLine, tts: ttsLine });
+    }
+    if (turns.length === 0) {
+      if (!_chatMiniLastRendered) {
+        chatMiniEntries.innerHTML = '<span class="muted">暂无对话记录</span>';
+      }
+      return;
+    }
+    const stripPrefix = (line) =>
+      line.replace(/^.*?xz stt:\s*/, "")
+          .replace(/^.*?xz tts text:\s*/, "")
+          .replace(/^.*?qwen stt:\s*/, "")
+          .replace(/^.*?qwen response:\s*/, "")
+          .replace(/^\[.*?\]\s*/, "");
+    const html = turns.map(t => {
+      let h = "";
+      if (t.stt) {
+        h += `<div class="chat-entry chat-entry-user">👤 ${escapeHtml(stripPrefix(t.stt))}</div>`;
+      }
+      if (t.tts) {
+        h += `<div class="chat-entry chat-entry-bot">🤖 ${escapeHtml(stripPrefix(t.tts))}</div>`;
+      }
+      return h;
+    }).join("");
+    if (html !== _chatMiniLastRendered) {
+      _chatMiniLastRendered = html;
+      chatMiniEntries.innerHTML = html;
+    }
+  } catch (_) { /* silently fail */ }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ── Motion panel ────────────────────────────────────────────────────────────
+const MOTION_BASIC = new Set(["shake", "nod", "tilt", "surprise", "think", "yawn", "sad", "angry"]);
+const MOTION_DANCE = new Set(["simple_nod", "head_tilt_roll", "side_to_side_sway", "dizzy_spin",
+  "stumble_and_recover", "headbanger_combo", "interwoven_spirals", "sharp_side_tilt",
+  "side_peekaboo", "yeah_nod", "uh_huh_tilt", "neck_recoil", "chin_lead",
+  "groovy_sway_and_roll", "chicken_peck", "side_glance_flick", "polyrhythm_combo",
+  "grid_snap", "pendulum_swing", "jackson_square"]);
+let motionAll = [];
+
+// 动作英文名 → 中文显示名（按钮显示中文，data-move 仍用英文调用）
+const MOTION_CN = {
+  // 基础动作
+  shake: "摇头", nod: "点头", tilt: "歪头", surprise: "惊喜",
+  think: "思考", yawn: "打哈欠", sad: "伤心", angry: "生气",
+  // 常用情绪（官方录制）
+  cheerful1: "愉快", laughing1: "大笑", laughing2: "轻笑",
+  surprised1: "惊讶", surprised2: "惊讶2", amazed1: "惊叹",
+  thoughtful1: "思考中", thoughtful2: "思考2", confused1: "困惑",
+  sad1: "悲伤", sad2: "悲伤2", downcast1: "沮丧", crying: "哭泣",
+  rage1: "愤怒", furious1: "暴怒", reprimand1: "训斥", irritated1: "烦躁",
+  loving1: "喜爱", shy1: "害羞", embarrassed: "尴尬",
+  dance1: "跳舞(短)", dance2: "跳舞(长)", dance3: "跳舞(活力)",
+  happy: "开心", yes1: "好的", no1: "不要", come1: "过来",
+  welcome1: "欢迎", welcoming1: "欢迎1", go_away1: "走开",
+  // 舞蹈
+  simple_nod: "点头舞", head_tilt_roll: "歪头滚", side_to_side_sway: "左右摆",
+  dizzy_spin: "转圈舞", stumble_and_recover: "踉跄恢复", headbanger_combo: "甩头舞",
+  interwoven_spirals: "螺旋舞", sharp_side_tilt: "侧倾舞", side_peekaboo: "躲猫猫",
+  yeah_nod: "耶点头", uh_huh_tilt: "嗯哼歪头", neck_recoil: "缩脖舞",
+  chin_lead: "下巴领舞", groovy_sway_and_roll: "律动摇摆", chicken_peck: "啄木鸟",
+  side_glance_flick: "侧瞥舞", polyrhythm_combo: "复节奏舞", grid_snap: "机械定格",
+  pendulum_swing: "钟摆舞", jackson_square: "杰克逊方步",
+};
+
+function motionLabel(m) {
+  return MOTION_CN[m] || m;
+}
+
+
+async function loadMotions() {
+  const grid = document.getElementById("motion-grid");
+  const status = document.getElementById("motion-status");
+  try {
+    const response = await fetch("/api/motion", { cache: "no-store" });
+    const data = await response.json();
+    motionAll = data.moves || [];
+    status.textContent = `${motionAll.length} 个动作`;
+    renderMotionTab(currentMotionTab());
+  } catch (error) {
+    status.textContent = "加载失败";
+    grid.innerHTML = `<p class="muted">无法加载动作：${error.message}</p>`;
+  }
+}
+
+function currentMotionTab() {
+  const active = document.querySelector(".motion-tab.active");
+  return active ? active.dataset.cat : "basic";
+}
+
+function renderMotionTab(cat) {
+  const grid = document.getElementById("motion-grid");
+  const moves = motionAll.filter((m) => {
+    if (cat === "basic") return MOTION_BASIC.has(m);
+    if (cat === "dance") return MOTION_DANCE.has(m);
+    return !MOTION_BASIC.has(m) && !MOTION_DANCE.has(m);
+  });
+  if (moves.length === 0) {
+    grid.innerHTML = `<p class="muted">此分类暂无动作</p>`;
+    return;
+  }
+  grid.innerHTML = moves.map((m) => `<button class="motion-btn" data-move="${m}" title="${m}">${motionLabel(m)}</button>`).join("");
+  grid.querySelectorAll(".motion-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await fetch("/api/motion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ move: btn.dataset.move }),
+        });
+      } catch (_) { /* ignore */ }
+      setTimeout(() => { btn.disabled = false; }, 600);
+    });
+  });
+}
+
+document.querySelectorAll(".motion-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".motion-tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    renderMotionTab(tab.dataset.cat);
+  });
+});
+document.getElementById("motion-refresh").addEventListener("click", loadMotions);
+loadMotions();
