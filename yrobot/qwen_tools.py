@@ -354,7 +354,14 @@ class ToolExecutor:
         city = str(arguments.get("city") or "").strip()
         if not city:
             return {"ok": False, "error": "city is required"}
-        return self._call_hermes_tool("get_weather", city)
+        if self.settings.hermes_tools_url.rstrip("/") != VERIFIED_HERMES_BASE:
+            return {"ok": False, "error": "Hermes REST base is not verified"}
+        query = urllib.parse.urlencode({"city": city})
+        request = urllib.request.Request(f"{VERIFIED_HERMES_BASE}/weather?{query}", method="GET")
+        result = self._read_json(request)
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "weather service returned invalid data"}
+        return result
 
     def _get_stock_price(self, arguments: dict[str, Any]) -> dict[str, Any]:
         prompt = str(arguments.get("prompt") or "").strip()
