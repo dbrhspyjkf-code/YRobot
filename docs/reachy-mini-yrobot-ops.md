@@ -461,6 +461,15 @@ error, the aliases were loaded by `ToolExecutor`, and pre-test HA state was
 still `on`. Re-run voice acceptance with a short phrase such as
 `你好小白，关闭书`.
 
+### 2026-08-10 HA voice acceptance passed
+
+The spoken close/open sequence passed through the local whitelist executor.
+Logs show `关闭书` triggered `{'ok': True, 'device': '书台灯', 'action':
+'turn_off'}` and `打开书台` triggered `{'ok': True, 'device': '书台灯',
+'action': 'turn_on'}`. QWEN replied to both actions. A read-only HA state check
+after the sequence reported `书台灯` as `on`, matching the final open command.
+The operator replied `好了`.
+
 Deployment backup:
 
 ```text
