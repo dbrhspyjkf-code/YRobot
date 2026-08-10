@@ -173,6 +173,8 @@ XIAOZHI while robot-local QWEN and Home Assistant credentials are configured.
 - After the interruption repair restart, QWEN returned to `connected` with no
   error; motion was about 50.1 Hz with zero target failures and no error-level
   journal entries. Physical interruption confirmation remains pending.
+- The operator tested the repaired interruption path and confirmed it works.
+  QWEN speech now stops instead of finishing buffered old content.
 
 ## Decisions that must remain stable
 
@@ -259,7 +261,8 @@ hashes, before testing rollback to XIAOZHI.
 | 2026-08-10 | QWEN multilingual acceptance | Real conversation automatically switched languages | Operator confirmed working |
 | 2026-08-10 | QWEN interruption regression | Speech after `response.done` did not flush local PCM; test first failed then focused suite and Ruff passed | Fixed; `07ca1b2` / `d42910a` |
 | 2026-08-10 | QWEN interruption post-restart | Connected/no error; motion 50.1 Hz; target failures 0; journal errors 0 | Ready for operator test |
-| 2026-08-10 | Remaining QWEN acceptance | Interruption, allowlisted appliance state, camera | Pending targeted checks |
+| 2026-08-10 | QWEN interruption acceptance | Long reply interrupted by new user speech | Operator confirmed working |
+| 2026-08-10 | Remaining QWEN acceptance | Allowlisted appliance state, camera | Pending targeted checks |
 
 ## Update protocol
 

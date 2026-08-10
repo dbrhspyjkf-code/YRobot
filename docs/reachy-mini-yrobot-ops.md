@@ -387,8 +387,8 @@ immediately; cloud cancellation still runs when an active response exists.
 
 The regression test first failed, then the full focused suite and focused Ruff
 passed. The repaired QWEN service reconnected cleanly; final physical
-acceptance requires interrupting a long reply and confirming the old speech
-stops promptly.
+acceptance was performed by interrupting a long reply; the operator confirmed
+the old speech stopped promptly.
 
 Deployment backup:
 
