@@ -813,6 +813,30 @@ Verification:
   expanded tool schema, and prompt wording; do not treat those as regressions
   from this one-line reconnect fix.
 
+## 2026-08-11 Local speaker volume voice control
+
+The operator reported that `音箱音量调大` did not work. Evidence showed QWEN ASR
+recognized variants such as `音响大一点`, `音响一点`, `音响`, and `音响音`, but no
+local spoken-control action executed. The dashboard `/api/volume` endpoint
+already worked and reported volume `88%`.
+
+Implemented volume voice control as a local-only `ToolExecutor` branch with an
+injected `VolumeController`. It recognizes specific up/down phrases for
+`音量`/`声音`/`音响`/`音箱` and adjusts volume by 10 percentage points. It does
+not expose a new QWEN remote tool schema and does not use Home Assistant.
+Ambiguous `音响` alone is ignored.
+
+Verification:
+
+- Regression tests for volume up, volume down, and ambiguous speaker phrase
+  passed with related QWEN/tool tests.
+- Production commit: `18ab39d`.
+- Feature worktree commit: `4c66fb9`.
+- After restart, local executor validation for `音箱音量调大` changed volume from
+  `88` to `98`.
+- YRobot reported active, QWEN connected, audio input enabled, and
+  `last_error=null`.
+
 ## MCP Notes
 
 The Hugging Face article about adding MCP tools targets the official
