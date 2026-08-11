@@ -630,6 +630,7 @@ class CameraStreamer:
 
 
 JOURNAL_UNIT = "yrobot.service"
+CURRENT_PROCESS_LOG_PATH = Path("/tmp/yrobot-main.log")
 JOURNAL_LEVELS: tuple[tuple[str, int], ...] = (
     ("emerg", 0),
     ("alert", 1),
@@ -651,20 +652,28 @@ def _format_timestamp(timestamp_us: int) -> str:
 
 
 class LogReader:
-    """Read recent entries from ``systemd-journal`` for the YRobot unit.
+    """Read recent entries for the YRobot dashboard.
 
-    The dashboard polls this on a short interval; no caching or streaming is
-    performed here because the journal itself already buffers recent entries.
+    Prefer the current detached process log when present; fall back to
+    ``systemd-journal`` for service-managed deployments.
     """
 
     DEFAULT_LINES = 200
     MAX_LINES = 2000
 
-    def __init__(self, unit: str = JOURNAL_UNIT, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        unit: str = JOURNAL_UNIT,
+        timeout: float = 5.0,
+        log_path: Path = CURRENT_PROCESS_LOG_PATH,
+    ) -> None:
         self._unit = unit
         self._timeout = timeout
+        self._log_path = log_path
 
     def available(self) -> tuple[bool, str | None]:
+        if self._log_path.exists():
+            return True, None
         try:
             proc = subprocess.run(
                 ["journalctl", "-u", self._unit, "--no-pager", "-n", "1"],
@@ -703,6 +712,8 @@ class LogReader:
         # backend, follow the "<name> stt:" / "<name> response:" or
         # "<name> tts text:" convention and append its markers here.
         chat_markers = ("qwen stt:", "qwen response:", "xz stt:", "xz tts text:")
+        if self._log_path.exists():
+            return self._read_file(lines, min_priority, filter_kind, chat_markers)
         try:
             proc = subprocess.run(
                 [
@@ -749,6 +760,60 @@ class LogReader:
                     "level": _JOURNAL_PRIORITY_NAMES.get(priority, "info"),
                     "logger": str(record.get("SYSLOG_IDENTIFIER") or ""),
                     "pid": self._coerce_int(record.get("_PID")),
+                    "message": message,
+                }
+            )
+        entries.sort(key=lambda entry: entry["timestamp_us"])
+        return entries, None
+
+    def _read_file(
+        self,
+        lines: int,
+        min_priority: int,
+        filter_kind: str,
+        chat_markers: tuple[str, ...],
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        try:
+            recent = self._log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+        except OSError as exc:
+            return [], str(exc)
+        entries: list[dict[str, Any]] = []
+        for index, line in enumerate(recent):
+            message = line.strip()
+            if not message:
+                continue
+            timestamp_us = 0
+            match = re.match(
+                r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3})\s+([A-Z])\s+([^:]+):\s+(.*)$",
+                message,
+            )
+            if match:
+                stamp, millis, level_letter, logger_name, message = match.groups()
+                try:
+                    timestamp_us = int(
+                        datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").timestamp()
+                        * 1_000_000
+                    ) + int(millis) * 1000
+                except ValueError:
+                    timestamp_us = index
+                logger_value = logger_name
+                priority = {"E": 3, "W": 4, "I": 6, "D": 7}.get(level_letter, 6)
+            else:
+                logger_value = "python"
+                priority = 6
+                timestamp_us = int(time.time() * 1_000_000) + index
+            if filter_kind == "chat":
+                marker = next((value for value in chat_markers if value in message), "")
+                if not marker or not message.split(marker, 1)[1].strip():
+                    continue
+            if priority > min_priority:
+                continue
+            entries.append(
+                {
+                    "timestamp_us": timestamp_us,
+                    "level": _JOURNAL_PRIORITY_NAMES.get(priority, "info"),
+                    "logger": logger_value,
+                    "pid": os.getpid(),
                     "message": message,
                 }
             )

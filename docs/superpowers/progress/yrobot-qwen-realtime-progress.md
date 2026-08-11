@@ -207,6 +207,12 @@ voice-control hardening from physical ASR evidence.
   manual restart without `ha.env` falls back to XIAOZHI. Current live status:
   `service.state=active`, `runtime.backend=qwen`, `runtime.ws_state=connected`,
   Home Assistant enabled/configured, mic input enabled, official daemon running.
+- Fixed Dashboard log freshness after detached restarts. `/api/logs` previously
+  read only `journalctl -u yrobot.service`, while the active QWEN process was
+  started as a detached Python process writing `/tmp/yrobot-main.log`; this made
+  "运行 LOG" and "最近对话" appear stale. `LogReader` now prefers the current
+  process log file and falls back to journal for service-managed deployments.
+  Empty `qwen stt:` lines are filtered out of "最近对话".
 
 ## Decisions that must remain stable
 
