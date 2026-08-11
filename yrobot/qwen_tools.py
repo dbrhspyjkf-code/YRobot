@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -26,6 +27,7 @@ VOLUME_STEP_PERCENT = 10
 VOLUME_TARGET_PHRASES = ("音量", "声音", "音响", "音箱", "speaker")
 VOLUME_UP_PHRASES = ("调大", "大一点", "大点", "加大", "加点", "提高", "高一点")
 VOLUME_DOWN_PHRASES = ("调小", "小一点", "小点", "减小", "降低", "低一点")
+VOLUME_SET_PHRASES = ("调到", "设到", "设置到", "到", "百分之")
 BLOCKED_DOMAINS = frozenset({"lock", "cover", "alarm_control_panel", "climate", "water_heater"})
 BLOCKED_TERMS = (
     "lock",
@@ -305,6 +307,15 @@ class ToolExecutor:
             return None
         if not any(phrase in text for phrase in VOLUME_TARGET_PHRASES):
             return None
+        target = self._extract_spoken_volume_percent(text)
+        if target is not None:
+            applied = int(self._volume_controller.write_percent(target))
+            return {
+                "ok": True,
+                "device": "音量",
+                "action": "volume_set",
+                "volume_percent": applied,
+            }
         if any(phrase in text for phrase in VOLUME_UP_PHRASES):
             action = "volume_up"
             delta = VOLUME_STEP_PERCENT
@@ -321,6 +332,47 @@ class ToolExecutor:
             "action": action,
             "volume_percent": applied,
         }
+
+    def _extract_spoken_volume_percent(self, text: str) -> int | None:
+        if not any(phrase in text for phrase in VOLUME_SET_PHRASES):
+            return None
+        match = re.search(r"(\d{1,3})", text)
+        if match:
+            value = int(match.group(1))
+            return max(0, min(100, value))
+        value = self._parse_small_chinese_number(text)
+        if value is None:
+            return None
+        return max(0, min(100, value))
+
+    @staticmethod
+    def _parse_small_chinese_number(text: str) -> int | None:
+        digits = {
+            "零": 0,
+            "〇": 0,
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+        if "一百" in text or "百分百" in text or "百分之一百" in text:
+            return 100
+        match = re.search(r"([零〇一二两三四五六七八九]?十[零〇一二两三四五六七八九]?|[零〇一二两三四五六七八九])", text)
+        if match is None:
+            return None
+        token = match.group(1)
+        if "十" not in token:
+            return digits.get(token)
+        left, _, right = token.partition("十")
+        tens = digits.get(left, 1) if left else 1
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
 
     def _load_whitelist(self) -> None:
         source = Path(self.settings.ha_whitelist_path).expanduser()

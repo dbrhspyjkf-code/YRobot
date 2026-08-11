@@ -213,6 +213,13 @@ voice-control hardening from physical ASR evidence.
   "运行 LOG" and "最近对话" appear stale. `LogReader` now prefers the current
   process log file and falls back to journal for service-managed deployments.
   Empty `qwen stt:` lines are filtered out of "最近对话".
+- Diagnosed failed voice volume control: QWEN heard phrases such as
+  `音量到二十`, but the local spoken-control path only supported relative
+  volume changes (`调大` / `调小`). QWEN then verbally claimed success while
+  ALSA stayed at 98%. Added local parsing for absolute volume expressions
+  such as `音量到二十` and `音响音量调到10`, returning a real `volume_set`
+  result. A direct deployed `ToolExecutor + VolumeController` check set the
+  robot speaker to 20% and `/api/status` reported `volume_percent=20`.
 
 ## Decisions that must remain stable
 
