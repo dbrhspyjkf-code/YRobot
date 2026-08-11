@@ -212,6 +212,24 @@ class ToolExecutor:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "control_sonos",
+                    "description": "控制客厅 Sonos 音响（播放/暂停/停止/下一首/上一首/音量加减/静音/取消静音/设置音量到具体值）。例如「客厅音响播放音乐」「Sonos 暂停」「下一首」「音量加大」「声音小一点」「静音」「客厅音响 60」等。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {
+                                "type": "string",
+                                "description": "自然语言指令，如「客厅音响播放音乐」「Sonos 暂停」「下一首」「音量加大」「客厅音响 60」",
+                            },
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -226,6 +244,7 @@ class ToolExecutor:
             "add_portfolio_stock": self._add_portfolio_stock,
             "remove_portfolio_stock": self._remove_portfolio_stock,
             "get_stock_advice": self._get_stock_advice,
+            "control_sonos": self._control_sonos,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -409,6 +428,12 @@ class ToolExecutor:
         if not prompt:
             return {"ok": False, "error": "prompt is required"}
         return self._call_hermes_tool("get_stock_advice", prompt)
+
+    def _control_sonos(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt (Sonos instruction) is required"}
+        return self._call_hermes_tool("control_sonos", prompt)
 
     def _get_device_state(self, arguments: dict[str, Any]) -> dict[str, Any]:
         device = str(arguments.get("device") or "").strip()
