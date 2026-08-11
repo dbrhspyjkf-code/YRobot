@@ -6,7 +6,12 @@ import pytest
 import yrobot.main as main_module
 from yrobot.audio_runtime import PcmPlayback, WakeGate
 from yrobot.config import Settings
-from yrobot.main import RecentTranscriptWindow, Yrobot, _qwen_should_reconnect
+from yrobot.main import (
+    RecentTranscriptWindow,
+    Yrobot,
+    _qwen_should_reconnect,
+    _qwen_should_resume_wake_after_reconnect,
+)
 
 
 def make_robot(monkeypatch):
@@ -125,6 +130,15 @@ def test_qwen_wake_is_not_reactivated_while_active():
 
     assert gate.observe_transcript("你好小白", now=100.0) is True
     assert gate.observe_transcript("你好小白", now=101.0) is False
+
+
+def test_qwen_wake_resumes_after_reconnect_when_gate_is_active():
+    gate = WakeGate()
+    gate.observe_transcript("你好小白", now=100.0)
+
+    assert _qwen_should_resume_wake_after_reconnect(gate) is True
+    assert gate.expire(now=170.0) is True
+    assert _qwen_should_resume_wake_after_reconnect(gate) is False
 
 
 def test_qwen_idle_timeout_is_reconnectable():

@@ -137,6 +137,10 @@ def _qwen_should_reconnect(exc: Exception) -> bool:
     return any(fragment in message for fragment in _QWEN_RECONNECT_MESSAGES)
 
 
+def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
+    return gate.active
+
+
 class _XiaozhiReconnect(Exception):
     """Expected Xiaozhi session close that should reconnect without traceback."""
 
@@ -468,6 +472,10 @@ class Yrobot(ReachyMiniApp):
                     await cloud_task
                 if ready_task not in done:
                     raise TimeoutError("QWEN session setup timed out")
+
+                if _qwen_should_resume_wake_after_reconnect(gate):
+                    logger.info("QWEN wake still active after reconnect; resuming")
+                    await activate_from_wake()
 
                 threshold = max(500.0, get_vad_rms_min() * 32768.0)
                 manual_speaking = False
