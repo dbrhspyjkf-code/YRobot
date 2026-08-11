@@ -24,7 +24,20 @@ ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle", "oscillate", "medi
 FOLLOW_UP_CLOSE_WINDOW_S = 30.0
 BARE_CLOSE_PHRASES = frozenset({"关", "关闭", "关掉"})
 VOLUME_STEP_PERCENT = 10
-VOLUME_TARGET_PHRASES = ("音量", "声音", "音响", "音箱", "speaker")
+ROBOT_VOLUME_TARGET_PHRASES = (
+    "你的音量",
+    "你音量",
+    "你的声音",
+    "你声音",
+    "小白音量",
+    "小白声音",
+    "机器人音量",
+    "机器人声音",
+    "reachy音量",
+    "reachy声音",
+)
+SONOS_VOLUME_TARGET_PHRASES = ("音响", "音箱", "sonos")
+TV_VOLUME_TARGET_PHRASES = ("电视", "电视机")
 VOLUME_UP_PHRASES = ("调大", "大一点", "大点", "加大", "加点", "提高", "高一点")
 VOLUME_DOWN_PHRASES = ("调小", "小一点", "小点", "减小", "降低", "低一点")
 VOLUME_SET_PHRASES = ("调到", "设到", "设置到", "到", "百分之")
@@ -274,6 +287,9 @@ class ToolExecutor:
             return None
         timestamp = time.monotonic() if now is None else now
         logger.info("spoken control scan: text=%r", text)
+        sonos_result = self._execute_spoken_sonos_control(text)
+        if sonos_result is not None:
+            return sonos_result
         volume_result = self._execute_spoken_volume_control(text)
         if volume_result is not None:
             return volume_result
@@ -302,10 +318,19 @@ class ToolExecutor:
             return result
         return None
 
+    def _execute_spoken_sonos_control(self, text: str) -> dict[str, Any] | None:
+        if not any(phrase in text for phrase in SONOS_VOLUME_TARGET_PHRASES):
+            return None
+        if not self._is_spoken_volume_command(text):
+            return None
+        return self.execute("control_sonos", {"prompt": text})
+
     def _execute_spoken_volume_control(self, text: str) -> dict[str, Any] | None:
         if self._volume_controller is None:
             return None
-        if not any(phrase in text for phrase in VOLUME_TARGET_PHRASES):
+        if any(phrase in text for phrase in TV_VOLUME_TARGET_PHRASES):
+            return None
+        if not any(phrase in text for phrase in ROBOT_VOLUME_TARGET_PHRASES):
             return None
         target = self._extract_spoken_volume_percent(text)
         if target is not None:
@@ -332,6 +357,14 @@ class ToolExecutor:
             "action": action,
             "volume_percent": applied,
         }
+
+    @staticmethod
+    def _is_spoken_volume_command(text: str) -> bool:
+        return (
+            any(phrase in text for phrase in VOLUME_UP_PHRASES)
+            or any(phrase in text for phrase in VOLUME_DOWN_PHRASES)
+            or any(phrase in text for phrase in VOLUME_SET_PHRASES)
+        )
 
     def _extract_spoken_volume_percent(self, text: str) -> int | None:
         if not any(phrase in text for phrase in VOLUME_SET_PHRASES):

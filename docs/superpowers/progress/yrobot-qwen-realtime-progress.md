@@ -220,6 +220,13 @@ voice-control hardening from physical ASR evidence.
   such as `音量到二十` and `音响音量调到10`, returning a real `volume_set`
   result. A direct deployed `ToolExecutor + VolumeController` check set the
   robot speaker to 20% and `/api/status` reported `volume_percent=20`.
+- Split volume intent ownership after operator clarification. `音响/音箱/Sonos`
+  volume commands now route to `control_sonos`; `电视音量` no longer controls
+  Reachy ALSA; Reachy's own ALSA volume only responds to explicit robot
+  targets such as `你的音量`, `小白音量`, `机器人音量`, `你的声音`. Targeted tests
+  cover robot volume up/down/set, Sonos routing without ALSA writes, and TV
+  volume not touching ALSA. A direct deployed check confirmed `你的音量到二十`
+  writes ALSA while `电视音量到三十` returns no local ALSA action.
 
 ## Decisions that must remain stable
 

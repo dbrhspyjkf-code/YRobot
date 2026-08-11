@@ -65,6 +65,19 @@ def make_settings(tmp_path, entries=()):
     )
 
 
+def make_settings_with_hermes(tmp_path, entries=()):
+    return Settings(
+        conversation_backend="qwen",
+        ha_enabled=True,
+        ha_url="http://homeassistant.local:8123",
+        ha_token="private-ha-token",
+        ha_whitelist_path=str(write_whitelist(tmp_path, entries)),
+        hermes_tools_enabled=True,
+        hermes_tools_url="http://192.168.1.200:8766",
+        hermes_ios_api_url="http://192.168.1.200:8900",
+    )
+
+
 def test_schemas_expose_only_explicit_tools(tmp_path):
     executor = ToolExecutor(make_settings(tmp_path))
 
@@ -209,12 +222,12 @@ def test_spoken_control_ignores_unknown_phrase_before_network(tmp_path):
     assert opener.calls == []
 
 
-def test_spoken_control_can_raise_local_speaker_volume(tmp_path):
+def test_spoken_control_can_raise_robot_speaker_volume(tmp_path):
     opener = RecordingOpener([])
     volume = FakeVolumeController(88)
     executor = ToolExecutor(make_settings(tmp_path), opener=opener, volume_controller=volume)
 
-    result = executor.execute_spoken_control("音箱音量调大")
+    result = executor.execute_spoken_control("你的音量调大")
 
     assert result == {
         "ok": True,
@@ -226,11 +239,11 @@ def test_spoken_control_can_raise_local_speaker_volume(tmp_path):
     assert opener.calls == []
 
 
-def test_spoken_control_can_raise_local_speaker_volume_from_joined_asr(tmp_path):
+def test_spoken_control_can_raise_robot_speaker_volume_from_joined_asr(tmp_path):
     volume = FakeVolumeController(88)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
 
-    result = executor.execute_spoken_control("音响音量调大一下")
+    result = executor.execute_spoken_control("小白音量调大一下")
 
     assert result["ok"] is True
     assert result["action"] == "volume_up"
@@ -242,7 +255,7 @@ def test_spoken_control_can_set_local_speaker_volume_with_chinese_number(tmp_pat
     volume = FakeVolumeController(98)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
 
-    result = executor.execute_spoken_control("音量到二十")
+    result = executor.execute_spoken_control("你的音量到二十")
 
     assert result == {
         "ok": True,
@@ -257,7 +270,7 @@ def test_spoken_control_can_set_local_speaker_volume_with_digits(tmp_path):
     volume = FakeVolumeController(98)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
 
-    result = executor.execute_spoken_control("音响音量调到10")
+    result = executor.execute_spoken_control("小白音量调到10")
 
     assert result["ok"] is True
     assert result["action"] == "volume_set"
@@ -265,11 +278,11 @@ def test_spoken_control_can_set_local_speaker_volume_with_digits(tmp_path):
     assert volume.writes == [10]
 
 
-def test_spoken_control_can_lower_local_speaker_volume(tmp_path):
+def test_spoken_control_can_lower_robot_speaker_volume(tmp_path):
     volume = FakeVolumeController(25)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
 
-    result = executor.execute_spoken_control("音响小一点")
+    result = executor.execute_spoken_control("你的声音小一点")
 
     assert result == {
         "ok": True,
@@ -284,6 +297,35 @@ def test_spoken_control_ignores_ambiguous_speaker_phrase(tmp_path):
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
 
     assert executor.execute_spoken_control("音响") is None
+    assert volume.writes == []
+
+
+def test_spoken_control_routes_sonos_volume_away_from_robot_speaker(tmp_path):
+    opener = RecordingOpener({"ok": True, "result": "Sonos volume set"})
+    volume = FakeVolumeController(50)
+    executor = ToolExecutor(
+        make_settings_with_hermes(tmp_path),
+        opener=opener,
+        volume_controller=volume,
+    )
+
+    result = executor.execute_spoken_control("音响音量到二十")
+
+    assert result == {"ok": True, "result": "Sonos volume set"}
+    assert volume.writes == []
+    assert len(opener.calls) == 1
+    body = json.loads(opener.calls[0][0].data.decode())
+    assert body == {
+        "name": "control_sonos",
+        "arguments": {"prompt": "音响音量到二十"},
+    }
+
+
+def test_spoken_control_does_not_treat_tv_volume_as_robot_speaker(tmp_path):
+    volume = FakeVolumeController(50)
+    executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
+
+    assert executor.execute_spoken_control("电视音量到二十") is None
     assert volume.writes == []
 
 
