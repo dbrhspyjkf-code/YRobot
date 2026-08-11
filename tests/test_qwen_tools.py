@@ -226,6 +226,18 @@ def test_spoken_control_can_raise_local_speaker_volume(tmp_path):
     assert opener.calls == []
 
 
+def test_spoken_control_can_raise_local_speaker_volume_from_joined_asr(tmp_path):
+    volume = FakeVolumeController(88)
+    executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
+
+    result = executor.execute_spoken_control("音响音量调大一下")
+
+    assert result["ok"] is True
+    assert result["action"] == "volume_up"
+    assert result["volume_percent"] == 98
+    assert volume.writes == [98]
+
+
 def test_spoken_control_can_lower_local_speaker_volume(tmp_path):
     volume = FakeVolumeController(25)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)

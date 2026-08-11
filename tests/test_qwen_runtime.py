@@ -9,6 +9,7 @@ from yrobot.config import Settings
 from yrobot.main import (
     RecentTranscriptWindow,
     Yrobot,
+    _qwen_unmatched_spoken_control_feedback,
     _qwen_should_reconnect,
     _qwen_should_resume_wake_after_reconnect,
 )
@@ -162,12 +163,32 @@ def test_qwen_active_response_error_is_reconnectable():
     assert _qwen_should_reconnect(error) is True
 
 
+def test_qwen_opening_handshake_timeout_is_reconnectable():
+    error = TimeoutError("timed out during opening handshake")
+
+    assert _qwen_should_reconnect(error) is True
+
+
 def test_recent_transcript_window_joins_asr_fragments():
     window = RecentTranscriptWindow(window_s=1.5)
 
     assert window.candidates("关闭餐", now=100.0) == ["关闭餐"]
     assert window.candidates("厅灯", now=100.8) == ["厅灯", "关闭餐厅灯"]
     assert window.candidates("厨房灯", now=103.0) == ["厨房灯"]
+
+
+def test_recent_transcript_window_joins_longer_asr_command_fragments():
+    window = RecentTranscriptWindow(window_s=3.0)
+
+    assert window.candidates("音响音", now=100.0) == ["音响音"]
+    assert window.candidates("量调大一下", now=102.0) == [
+        "量调大一下",
+        "音响音量调大一下",
+    ]
+
+
+def test_qwen_unmatched_spoken_control_does_not_inject_failure():
+    assert _qwen_unmatched_spoken_control_feedback(["音响音"]) is None
 
 
 def test_qwen_vad_default_is_not_overly_aggressive():

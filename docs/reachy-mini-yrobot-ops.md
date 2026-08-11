@@ -3,6 +3,36 @@
 This document records the practical setup, changes, and failure modes for the
 Reachy Mini YRobot deployment used in this project.
 
+## Recent Changes (2026-08-11) — QWEN ASR fragment handling
+
+Observed failure: the user said `音响音量调大一下`, but QWEN ASR first emitted
+only `音响音`. YRobot treated that fragment as a complete unmatched command,
+cancelled the active response, and injected a no-match failure. That could
+interrupt the later ASR fragment, so the robot never saw the real command.
+
+Fix:
+
+1. Recent ASR fragment aggregation now uses a 3.0 s window.
+2. A spoken-control no-match is silent and only logs candidates; it no longer
+   injects `我没听清` immediately.
+3. When a local tool does execute, YRobot still injects the real tool result
+   back to QWEN so the model cannot invent success or failure.
+4. `timed out during opening handshake` is treated as reconnectable for QWEN,
+   preventing transient provider handshakes from pushing the app into safe
+   mode.
+
+Verification:
+
+- Production focused tests passed for handshake-timeout reconnect, unmatched
+  fragment no-op, longer ASR joining, active-response reconnect, wake resume
+  after reconnect, and `音响音量调大一下` speaker-volume up.
+- Live restart must load `/home/pollen/.config/yrobot/ha.env`; starting only
+  `/home/pollen/YRobot/.venv/bin/python -u -m yrobot.main` falls back to
+  XIAOZHI because QWEN/HA settings are in `ha.env`.
+- Current accepted live state after restart: `runtime.backend=qwen`,
+  `runtime.ws_state=connected`, mic input enabled, Home Assistant configured,
+  and the official daemon still running.
+
 ## Recent Changes (2026-08-08 / 2026-08-09) — Stability & Startup
 
 ### Startup guard chain

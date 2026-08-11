@@ -62,13 +62,14 @@ _QWEN_RECONNECT_MESSAGES = (
     "session was closed",
     "internal service error",
     "conversation already has an active response",
+    "timed out during opening handshake",
 )
 
 
 class RecentTranscriptWindow:
     """Build short ASR-fragment candidates without widening device control."""
 
-    def __init__(self, *, window_s: float = 1.5, max_items: int = 4) -> None:
+    def __init__(self, *, window_s: float = 3.0, max_items: int = 4) -> None:
         self.window_s = window_s
         self.max_items = max_items
         self._items: list[tuple[float, str]] = []
@@ -136,6 +137,10 @@ def _start_motion_connection_watchdog(choreo, stop_event: threading.Event) -> th
 def _qwen_should_reconnect(exc: Exception) -> bool:
     message = str(exc).casefold()
     return any(fragment in message for fragment in _QWEN_RECONNECT_MESSAGES)
+
+
+def _qwen_unmatched_spoken_control_feedback(candidates: list[str]) -> str | None:
+    return None
 
 
 def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
@@ -392,11 +397,8 @@ class Yrobot(ReachyMiniApp):
                 # the first that matches a trigger word and try it. If a
                 # tool fires, the result is honest (tool either succeeded
                 # or returned ok=False) and we tell the model what really
-                # happened. If NO candidate matches anything, the model
-                # has already started generating a "好的，X 已 Y" reply
-                # that is fabricated. Cancel that response, inject a
-                # "[系统] ..." message describing reality, and let the
-                # model respond again with the truth.
+                # happened. No match is silent: QWEN often streams ASR
+                # fragments, and the next fragment may complete the command.
                 for candidate in candidates:
                     result = await asyncio.to_thread(
                         tool_executor.execute_spoken_control, candidate
@@ -420,14 +422,11 @@ class Yrobot(ReachyMiniApp):
                             f"请基于这个事实向用户简短说明，不要再说'我交给本地控制'之类的中间话术。"
                         )
                         return
-                # No trigger-word match in any candidate - cancel the
-                # response the model is already generating and ask it
-                # to honestly tell the user it didn't understand.
-                await client.cancel_and_inject(
-                    "[系统] 用户的话没有匹配到任何本地可执行操作。"
-                    "请如实告诉用户'我没听清'或'请再说一遍'，"
-                    "不要假设执行了任何设备控制、不要虚构成功的结果。"
-                )
+                feedback = _qwen_unmatched_spoken_control_feedback(candidates)
+                if feedback:
+                    await client.cancel_and_inject(feedback)
+                    return
+                logger.info("qwen local spoken control: no match candidates=%r", candidates)
 
             def on_input_transcript(transcript: str) -> None:
                 logger.info("qwen stt: %s", transcript[:120])
