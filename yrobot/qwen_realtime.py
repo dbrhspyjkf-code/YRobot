@@ -131,26 +131,34 @@ class QwenRealtimeClient:
         ask the model to respond. Used by main.py to surface the truth
         when the spoken-control path's trigger-word match fails (or the
         user stt is garbled) so the model does not fabricate a
-        "好的，已 X" reply.
+        “好的，已 X” reply.
 
         Flow:
-          1. conversation.interrupt (best-effort)
-          2. response.cancel for any active response
-          3. conversation.item.create {type: message, role, content}
-          4. response.create
+          1. response.cancel for any active response
+          2. conversation.item.create {type: message, role, content}
+          3. response.create
 
-        The injected text should be written from the system's POV
-        (e.g. '[系统] 用户的话没匹配到任何可执行工具。'), not as a
-        fake user utterance.
+        Note: an earlier iteration also sent conversation.interrupt,
+        but the QWEN qwen3.5-omni-flash-realtime endpoint rejects it
+        as “Invalid value” which pushes the service into safe_mode,
+        so we only use response.cancel.
+
+        The injected text should be written from the system\'s POV
+        (e.g. “[system] user input did not match any local tool”),
+        not as a fake user utterance.
         """
-        try:
-            await self._send({"type": "conversation.interrupt"})
-        except Exception:
-            pass
         try:
             await self._cancel_active_response()
         except Exception:
             pass
+        # QWEN needs a moment to actually finalize the cancel on its
+        # side before we can issue a new response.create. Without this
+        # sleep we hit a race where the cancel is still in flight and
+        # QWEN rejects the new request with
+        # 'Conversation already has an active response', which cascades
+        # into the service going to safe_mode.
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.4)
         await self._send({
             "type": "conversation.item.create",
             "item": {
