@@ -142,6 +142,12 @@ def test_qwen_internal_service_error_is_reconnectable():
     assert _qwen_should_reconnect(error) is True
 
 
+def test_qwen_active_response_error_is_reconnectable():
+    error = RuntimeError("Conversation already has an active response")
+
+    assert _qwen_should_reconnect(error) is True
+
+
 def test_recent_transcript_window_joins_asr_fragments():
     window = RecentTranscriptWindow(window_s=1.5)
 

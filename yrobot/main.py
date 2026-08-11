@@ -60,6 +60,7 @@ _QWEN_RECONNECT_MESSAGES = (
     "no response was generated for 300 seconds",
     "session was closed",
     "internal service error",
+    "conversation already has an active response",
 )
 
 
@@ -382,6 +383,15 @@ class Yrobot(ReachyMiniApp):
                 await client.request_response()
 
             async def execute_local_spoken_control(candidates: list[str]) -> None:
+                # Walk the recent ASR candidates (most recent last). Pick
+                # the first that matches a trigger word and try it. If a
+                # tool fires, the result is honest (tool either succeeded
+                # or returned ok=False) and we tell the model what really
+                # happened. If NO candidate matches anything, the model
+                # has already started generating a "好的，X 已 Y" reply
+                # that is fabricated. Cancel that response, inject a
+                # "[系统] ..." message describing reality, and let the
+                # model respond again with the truth.
                 for candidate in candidates:
                     result = await asyncio.to_thread(
                         tool_executor.execute_spoken_control, candidate
@@ -392,7 +402,27 @@ class Yrobot(ReachyMiniApp):
                             result,
                             candidate,
                         )
+                        # Tell the model the real outcome. If ok=False the
+                        # model must report failure, never fabricate success.
+                        outcome = (
+                            f"已成功：{result.get('device')} {result.get('action')}"
+                            if result.get("ok")
+                            else f"执行失败：{result.get('error', 'unknown')}"
+                        )
+                        await client.cancel_and_inject(
+                            f"[系统] 本地工具刚刚执行了一次设备控制请求，"
+                            f"真实结果是：{outcome}。"
+                            f"请基于这个事实向用户简短说明，不要再说'我交给本地控制'之类的中间话术。"
+                        )
                         return
+                # No trigger-word match in any candidate - cancel the
+                # response the model is already generating and ask it
+                # to honestly tell the user it didn't understand.
+                await client.cancel_and_inject(
+                    "[系统] 用户的话没有匹配到任何本地可执行操作。"
+                    "请如实告诉用户'我没听清'或'请再说一遍'，"
+                    "不要假设执行了任何设备控制、不要虚构成功的结果。"
+                )
 
             def on_input_transcript(transcript: str) -> None:
                 logger.info("qwen stt: %s", transcript[:120])
@@ -771,7 +801,7 @@ class Yrobot(ReachyMiniApp):
                 _waked = False
                 _wake_deadline = 0.0
                 _wake_at = 0.0  # discard stale TTS from before wake
-                WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿")
+                WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
                 WAKE_TIMEOUT = 60.0  # reset on every speech burst
 
                 async def recv():
