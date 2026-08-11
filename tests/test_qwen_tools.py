@@ -34,6 +34,20 @@ class RecordingOpener:
         return FakeResponse(self.document)
 
 
+class FakeVolumeController:
+    def __init__(self, percent):
+        self.percent = percent
+        self.writes = []
+
+    def read_percent(self):
+        return self.percent
+
+    def write_percent(self, percent):
+        self.percent = max(0, min(100, int(percent)))
+        self.writes.append(self.percent)
+        return self.percent
+
+
 def write_whitelist(tmp_path, entries):
     path = tmp_path / "whitelist.json"
     path.write_text(json.dumps(entries, ensure_ascii=False))
@@ -193,6 +207,45 @@ def test_spoken_control_ignores_unknown_phrase_before_network(tmp_path):
 
     assert executor.execute_spoken_control("关闭保险箱") is None
     assert opener.calls == []
+
+
+def test_spoken_control_can_raise_local_speaker_volume(tmp_path):
+    opener = RecordingOpener([])
+    volume = FakeVolumeController(88)
+    executor = ToolExecutor(make_settings(tmp_path), opener=opener, volume_controller=volume)
+
+    result = executor.execute_spoken_control("音箱音量调大")
+
+    assert result == {
+        "ok": True,
+        "device": "音量",
+        "action": "volume_up",
+        "volume_percent": 98,
+    }
+    assert volume.writes == [98]
+    assert opener.calls == []
+
+
+def test_spoken_control_can_lower_local_speaker_volume(tmp_path):
+    volume = FakeVolumeController(25)
+    executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
+
+    result = executor.execute_spoken_control("音响小一点")
+
+    assert result == {
+        "ok": True,
+        "device": "音量",
+        "action": "volume_down",
+        "volume_percent": 15,
+    }
+
+
+def test_spoken_control_ignores_ambiguous_speaker_phrase(tmp_path):
+    volume = FakeVolumeController(50)
+    executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
+
+    assert executor.execute_spoken_control("音响") is None
+    assert volume.writes == []
 
 
 def test_bare_close_can_follow_recent_spoken_device(tmp_path):

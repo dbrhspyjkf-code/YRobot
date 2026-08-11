@@ -25,6 +25,7 @@ from yrobot.app_config import (
     _MediaHolder,
     audio_input_controller_singleton,
     register_settings_routes,
+    volume_controller_singleton,
 )
 from yrobot.config import Settings
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
@@ -447,7 +448,9 @@ class Yrobot(ReachyMiniApp):
             def on_error(message: str) -> None:
                 RUNTIME_HEALTH.update(last_error=message)
 
-            tool_executor = ToolExecutor(settings)
+            tool_executor = ToolExecutor(
+                settings, volume_controller=volume_controller_singleton()
+            )
             client = QwenRealtimeClient(
                 settings,
                 tool_executor,

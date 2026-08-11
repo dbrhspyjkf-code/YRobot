@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.parse
 import urllib.request
@@ -12,12 +13,19 @@ from typing import Any
 
 from yrobot.config import Settings
 
+logger = logging.getLogger(__name__)
+
 VERIFIED_HERMES_BASE = "http://192.168.1.200:8766"
+VERIFIED_HERMES_IOS_API = "http://192.168.1.200:8900"   # hermes-mcp-xiaozhi iOS HTTP API
 MAX_RESULT_BYTES = 4096
-ALLOWED_DOMAINS = frozenset({"light", "switch", "fan"})
-ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle"})
+ALLOWED_DOMAINS = frozenset({"light", "switch", "fan", "media_player", "number"})
+ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle", "oscillate", "media_play", "media_pause", "set_value"})
 FOLLOW_UP_CLOSE_WINDOW_S = 30.0
 BARE_CLOSE_PHRASES = frozenset({"关", "关闭", "关掉"})
+VOLUME_STEP_PERCENT = 10
+VOLUME_TARGET_PHRASES = ("音量", "声音", "音响", "音箱", "speaker")
+VOLUME_UP_PHRASES = ("调大", "大一点", "大点", "加大", "加点", "提高", "高一点")
+VOLUME_DOWN_PHRASES = ("调小", "小一点", "小点", "减小", "降低", "低一点")
 BLOCKED_DOMAINS = frozenset({"lock", "cover", "alarm_control_panel", "climate", "water_heater"})
 BLOCKED_TERMS = (
     "lock",
@@ -59,10 +67,12 @@ class ToolExecutor:
         *,
         opener: Any = urllib.request.urlopen,
         timeout: float = 5.0,
+        volume_controller: Any | None = None,
     ) -> None:
         self.settings = settings
         self._opener = opener
         self._timeout = timeout
+        self._volume_controller = volume_controller
         self._actions: dict[tuple[str, str], AllowedAction] = {}
         self._devices: dict[str, AllowedAction] = {}
         self._phrases: dict[str, tuple[str, str]] = {}
@@ -78,7 +88,7 @@ class ToolExecutor:
                 "type": "function",
                 "function": {
                     "name": "get_weather",
-                    "description": "查询指定城市的实时天气。",
+                    "description": "查询指定城市的实时天气（通过 hermes-mcp-xiaozhi）。",
                     "parameters": {
                         "type": "object",
                         "properties": {"city": {"type": "string", "description": "城市名"}},
@@ -121,13 +131,126 @@ class ToolExecutor:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_price",
+                    "description": "查询股票、ETF、指数的实时价格（A 股/港股/美股）。例如「看看茅台多少钱」「查询 600519」「上证指数」。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "description": "股票名称或代码（如「贵州茅台」「600519」「tsla」），或完整查询语句"},
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_detail",
+                    "description": "获取股票详细分析（财务数据/股东/资金流向/基本面）。例如「宁德时代基本面」「比亚迪股东情况」。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "description": "股票名称或代码"},
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_portfolio_stocks",
+                    "description": "查询用户自选股列表的当前行情。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_portfolio_stock",
+                    "description": "把一只股票加入自选股列表（按中文名或代码）。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "股票名或代码（如「宁德时代」或「300750」）"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "remove_portfolio_stock",
+                    "description": "从自选股列表移除一只股票。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "股票名或代码"},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_stock_advice",
+                    "description": "对指定股票做操盘建议（基于 AI 智能分析）。例如「茅台现在能买吗」「比亚迪的操盘建议」。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string", "description": "股票名/代码 + 你的问题"},
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "control_sonos",
+                    "description": "控制客厅 Sonos 音响（播放/暂停/停止/下一首/上一首/音量加减/静音/取消静音/设置音量到具体值）。例如「客厅音响播放音乐」「Sonos 暂停」「下一首」「音量加大」「声音小一点」「静音」「客厅音响 60」等。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {
+                                "type": "string",
+                                "description": "自然语言指令，如「客厅音响播放音乐」「Sonos 暂停」「下一首」「音量加大」「客厅音响 60」",
+                            },
+                        },
+                        "required": ["prompt"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        logger.info("tool call: %s args=%r", name, arguments)
         handlers = {
             "get_weather": self._get_weather,
             "get_device_state": self._get_device_state,
             "control_allowed_device": self._control_device,
+            "get_stock_price": self._get_stock_price,
+            "get_stock_detail": self._get_stock_detail,
+            "get_portfolio_stocks": self._get_portfolio_stocks,
+            "add_portfolio_stock": self._add_portfolio_stock,
+            "remove_portfolio_stock": self._remove_portfolio_stock,
+            "get_stock_advice": self._get_stock_advice,
+            "control_sonos": self._control_sonos,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -148,6 +271,10 @@ class ToolExecutor:
         if not text:
             return None
         timestamp = time.monotonic() if now is None else now
+        logger.info("spoken control scan: text=%r", text)
+        volume_result = self._execute_spoken_volume_control(text)
+        if volume_result is not None:
+            return volume_result
         for phrase, (device, action) in sorted(
             self._phrases.items(), key=lambda item: len(item[0]), reverse=True
         ):
@@ -172,6 +299,28 @@ class ToolExecutor:
                 self._last_spoken_at = timestamp
             return result
         return None
+
+    def _execute_spoken_volume_control(self, text: str) -> dict[str, Any] | None:
+        if self._volume_controller is None:
+            return None
+        if not any(phrase in text for phrase in VOLUME_TARGET_PHRASES):
+            return None
+        if any(phrase in text for phrase in VOLUME_UP_PHRASES):
+            action = "volume_up"
+            delta = VOLUME_STEP_PERCENT
+        elif any(phrase in text for phrase in VOLUME_DOWN_PHRASES):
+            action = "volume_down"
+            delta = -VOLUME_STEP_PERCENT
+        else:
+            return None
+        current = int(self._volume_controller.read_percent())
+        applied = int(self._volume_controller.write_percent(current + delta))
+        return {
+            "ok": True,
+            "device": "音量",
+            "action": action,
+            "volume_percent": applied,
+        }
 
     def _load_whitelist(self) -> None:
         source = Path(self.settings.ha_whitelist_path).expanduser()
@@ -227,6 +376,44 @@ class ToolExecutor:
     def _normalize_phrase(value: str) -> str:
         return "".join(char for char in value.casefold() if char.isalnum())
 
+    def _call_hermes_tool(self, name: str, prompt: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """通用：调 hermes-mcp-xiaozhi iOS API (:8900) /api/tools/call.
+
+        所有 hermes 工具都通过这个端点暴露 (port 8900)，body 格式：
+          {"name": "工具名", "arguments": {"prompt": "...", **extra}}
+        返回 {"ok": true, "result": "人类可读字符串"}.
+        """
+        if not self.settings.hermes_tools_enabled:
+            return {"ok": False, "error": "Hermes tools are disabled"}
+        ios_url = self.settings.hermes_ios_api_url.rstrip("/")
+        if ios_url != VERIFIED_HERMES_IOS_API:
+            return {"ok": False, "error": "Hermes iOS API base is not verified"}
+        arguments = {"prompt": prompt}
+        if extra:
+            arguments.update(extra)
+        payload = json.dumps({"name": name, "arguments": arguments}).encode("utf-8")
+        logger.info("hermes tool call: %s prompt=%r extra=%s", name, prompt, extra)
+        request = urllib.request.Request(
+            f"{ios_url}/api/tools/call",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            result = self._read_json(request)
+        except Exception as exc:
+            logger.warning("hermes tool call %s transport error: %s", name, exc)
+            raise
+        if not isinstance(result, dict):
+            logger.warning("hermes tool call %s returned non-dict: %r", name, result)
+            return {"ok": False, "error": "Hermes tool call returned invalid data"}
+        if not result.get("ok"):
+            logger.warning("hermes tool call %s returned ok=false: %s", name, result.get("error"))
+            return {"ok": False, "error": str(result.get("error") or "tool call failed")}
+        text = str(result.get("result") or "")
+        logger.info("hermes tool call %s -> %d chars", name, len(text))
+        return {"ok": True, "result": text}
+
     def _get_weather(self, arguments: dict[str, Any]) -> dict[str, Any]:
         city = str(arguments.get("city") or "").strip()
         if not city:
@@ -239,6 +426,45 @@ class ToolExecutor:
         if not isinstance(result, dict):
             return {"ok": False, "error": "weather service returned invalid data"}
         return result
+
+    def _get_stock_price(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt (stock name or code) is required"}
+        return self._call_hermes_tool("get_stock_price", prompt)
+
+    def _get_stock_detail(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        return self._call_hermes_tool("get_stock_detail", prompt)
+
+    def _get_portfolio_stocks(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self._call_hermes_tool("get_portfolio_stocks", "")
+
+    def _add_portfolio_stock(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = str(arguments.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        return self._call_hermes_tool("add_portfolio_stock", name)
+
+    def _remove_portfolio_stock(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        name = str(arguments.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        return self._call_hermes_tool("remove_portfolio_stock", name)
+
+    def _get_stock_advice(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        return self._call_hermes_tool("get_stock_advice", prompt)
+
+    def _control_sonos(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt (Sonos instruction) is required"}
+        return self._call_hermes_tool("control_sonos", prompt)
 
     def _get_device_state(self, arguments: dict[str, Any]) -> dict[str, Any]:
         device = str(arguments.get("device") or "").strip()
