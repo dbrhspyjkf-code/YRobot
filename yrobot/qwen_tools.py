@@ -287,6 +287,9 @@ class ToolExecutor:
             return None
         timestamp = time.monotonic() if now is None else now
         logger.info("spoken control scan: text=%r", text)
+        tv_result = self._execute_spoken_tv_volume_control(text)
+        if tv_result is not None:
+            return tv_result
         sonos_result = self._execute_spoken_sonos_control(text)
         if sonos_result is not None:
             return sonos_result
@@ -318,6 +321,17 @@ class ToolExecutor:
             return result
         return None
 
+    def _execute_spoken_tv_volume_control(self, text: str) -> dict[str, Any] | None:
+        if not any(phrase in text for phrase in TV_VOLUME_TARGET_PHRASES):
+            return None
+        if not self._is_spoken_volume_command(text):
+            return None
+        return {
+            "ok": False,
+            "device": "电视音量",
+            "error": "电视音量尚未接入本地控制",
+        }
+
     def _execute_spoken_sonos_control(self, text: str) -> dict[str, Any] | None:
         if not any(phrase in text for phrase in SONOS_VOLUME_TARGET_PHRASES):
             return None
@@ -332,15 +346,6 @@ class ToolExecutor:
             return None
         if not any(phrase in text for phrase in ROBOT_VOLUME_TARGET_PHRASES):
             return None
-        target = self._extract_spoken_volume_percent(text)
-        if target is not None:
-            applied = int(self._volume_controller.write_percent(target))
-            return {
-                "ok": True,
-                "device": "音量",
-                "action": "volume_set",
-                "volume_percent": applied,
-            }
         if any(phrase in text for phrase in VOLUME_UP_PHRASES):
             action = "volume_up"
             delta = VOLUME_STEP_PERCENT
@@ -348,7 +353,16 @@ class ToolExecutor:
             action = "volume_down"
             delta = -VOLUME_STEP_PERCENT
         else:
-            return None
+            target = self._extract_spoken_volume_percent(text)
+            if target is None:
+                return None
+            applied = int(self._volume_controller.write_percent(target))
+            return {
+                "ok": True,
+                "device": "音量",
+                "action": "volume_set",
+                "volume_percent": applied,
+            }
         current = int(self._volume_controller.read_percent())
         applied = int(self._volume_controller.write_percent(current + delta))
         return {
@@ -364,16 +378,16 @@ class ToolExecutor:
             any(phrase in text for phrase in VOLUME_UP_PHRASES)
             or any(phrase in text for phrase in VOLUME_DOWN_PHRASES)
             or any(phrase in text for phrase in VOLUME_SET_PHRASES)
+            or ToolExecutor._extract_spoken_volume_percent(text) is not None
         )
 
-    def _extract_spoken_volume_percent(self, text: str) -> int | None:
-        if not any(phrase in text for phrase in VOLUME_SET_PHRASES):
-            return None
+    @staticmethod
+    def _extract_spoken_volume_percent(text: str) -> int | None:
         match = re.search(r"(\d{1,3})", text)
         if match:
             value = int(match.group(1))
             return max(0, min(100, value))
-        value = self._parse_small_chinese_number(text)
+        value = ToolExecutor._parse_small_chinese_number(text)
         if value is None:
             return None
         return max(0, min(100, value))

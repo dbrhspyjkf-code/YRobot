@@ -278,6 +278,21 @@ def test_spoken_control_can_set_local_speaker_volume_with_digits(tmp_path):
     assert volume.writes == [10]
 
 
+def test_spoken_control_can_set_robot_speaker_volume_without_set_word(tmp_path):
+    volume = FakeVolumeController(85)
+    executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
+
+    result = executor.execute_spoken_control("你的音量七十")
+
+    assert result == {
+        "ok": True,
+        "device": "音量",
+        "action": "volume_set",
+        "volume_percent": 70,
+    }
+    assert volume.writes == [70]
+
+
 def test_spoken_control_can_lower_robot_speaker_volume(tmp_path):
     volume = FakeVolumeController(25)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
@@ -321,11 +336,34 @@ def test_spoken_control_routes_sonos_volume_away_from_robot_speaker(tmp_path):
     }
 
 
-def test_spoken_control_does_not_treat_tv_volume_as_robot_speaker(tmp_path):
+def test_spoken_control_routes_sonos_numeric_volume_without_volume_word(tmp_path):
+    opener = RecordingOpener({"ok": True, "result": "Sonos volume set"})
+    volume = FakeVolumeController(50)
+    executor = ToolExecutor(
+        make_settings_with_hermes(tmp_path),
+        opener=opener,
+        volume_controller=volume,
+    )
+
+    result = executor.execute_spoken_control("音响一十")
+
+    assert result == {"ok": True, "result": "Sonos volume set"}
+    assert volume.writes == []
+    body = json.loads(opener.calls[0][0].data.decode())
+    assert body["arguments"]["prompt"] == "音响一十"
+
+
+def test_spoken_control_returns_failure_for_unconnected_tv_volume(tmp_path):
     volume = FakeVolumeController(50)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)
 
-    assert executor.execute_spoken_control("电视音量到二十") is None
+    result = executor.execute_spoken_control("电视音量到二十")
+
+    assert result == {
+        "ok": False,
+        "device": "电视音量",
+        "error": "电视音量尚未接入本地控制",
+    }
     assert volume.writes == []
 
 

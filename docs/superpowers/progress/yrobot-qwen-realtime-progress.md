@@ -227,6 +227,13 @@ voice-control hardening from physical ASR evidence.
   cover robot volume up/down/set, Sonos routing without ALSA writes, and TV
   volume not touching ALSA. A direct deployed check confirmed `你的音量到二十`
   writes ALSA while `电视音量到三十` returns no local ALSA action.
+- Follow-up log review showed QWEN still verbally claimed success after local
+  no-match for `你的音量七十`, `音响一十`, and `电视音量到二十`. Added support
+  for numeric volume commands without `到/调到`, routed `音响一十` to Sonos,
+  and changed unconnected TV volume commands to return an explicit local
+  failure so QWEN receives a truthful result instead of inventing success. A
+  deployed check set Reachy ALSA from 85% to 70% with `你的音量七十`;
+  `电视音量到二十` returned `电视音量尚未接入本地控制` and left ALSA at 70%.
 
 ## Decisions that must remain stable
 
