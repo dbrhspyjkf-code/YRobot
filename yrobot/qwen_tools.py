@@ -337,7 +337,14 @@ class ToolExecutor:
             return None
         if not self._is_spoken_volume_command(text):
             return None
-        return self.execute("control_sonos", {"prompt": text})
+        return self.execute("control_sonos", {"prompt": self._sonos_prompt(text)})
+
+    @staticmethod
+    def _sonos_prompt(text: str) -> str:
+        target = ToolExecutor._extract_spoken_volume_percent(text)
+        if target is None or any(phrase in text for phrase in VOLUME_UP_PHRASES + VOLUME_DOWN_PHRASES):
+            return text
+        return f"音响音量调到{target}"
 
     def _execute_spoken_volume_control(self, text: str) -> dict[str, Any] | None:
         if self._volume_controller is None:

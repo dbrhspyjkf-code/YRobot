@@ -234,6 +234,12 @@ voice-control hardening from physical ASR evidence.
   failure so QWEN receives a truthful result instead of inventing success. A
   deployed check set Reachy ALSA from 85% to 70% with `你的音量七十`;
   `电视音量到二十` returned `电视音量尚未接入本地控制` and left ALSA at 70%.
+- Sonos live log review showed `音响二十` reached `control_sonos`, but Hermes
+  returned a clarification because the prompt was too terse. Direct Hermes
+  probing showed only Arabic-number prompts with `调到` are reliable; Chinese
+  `二十` could be misapplied as 50%. YRobot now normalizes Sonos absolute
+  volume commands to `音响音量调到<N>` before calling Hermes. A deployed check
+  confirmed `execute_spoken_control("音响二十")` returns `好的，音响音量已调到 20%`.
 
 ## Decisions that must remain stable
 

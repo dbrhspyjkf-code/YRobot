@@ -332,7 +332,7 @@ def test_spoken_control_routes_sonos_volume_away_from_robot_speaker(tmp_path):
     body = json.loads(opener.calls[0][0].data.decode())
     assert body == {
         "name": "control_sonos",
-        "arguments": {"prompt": "音响音量到二十"},
+        "arguments": {"prompt": "音响音量调到20"},
     }
 
 
@@ -350,7 +350,18 @@ def test_spoken_control_routes_sonos_numeric_volume_without_volume_word(tmp_path
     assert result == {"ok": True, "result": "Sonos volume set"}
     assert volume.writes == []
     body = json.loads(opener.calls[0][0].data.decode())
-    assert body["arguments"]["prompt"] == "音响一十"
+    assert body["arguments"]["prompt"] == "音响音量调到10"
+
+
+def test_spoken_control_normalizes_terse_sonos_volume_number(tmp_path):
+    opener = RecordingOpener({"ok": True, "result": "Sonos volume set"})
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音响二十")
+
+    assert result == {"ok": True, "result": "Sonos volume set"}
+    body = json.loads(opener.calls[0][0].data.decode())
+    assert body["arguments"]["prompt"] == "音响音量调到20"
 
 
 def test_spoken_control_returns_failure_for_unconnected_tv_volume(tmp_path):
