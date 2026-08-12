@@ -24,6 +24,13 @@ def test_default_persona_identifies_as_xiaobai_not_reachy():
     assert "你是Reachy" not in prompt
 
 
+def test_env_persona_migrates_old_reachy_identity_to_xiaobai():
+    settings = Settings.from_env({"YROBOT_PERSONA": "你是 Reachy，一个友好的桌面机器人。"})
+
+    assert "你是小白" in settings.system_prompt
+    assert "你是 Reachy" not in settings.system_prompt
+
+
 def test_home_assistant_defaults_disabled():
     settings = Settings()
     assert settings.ha_enabled is False

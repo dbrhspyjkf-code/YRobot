@@ -1220,3 +1220,12 @@ Symptom: ASR correctly heard "今天深圳天气怎么样啊？", but QWEN did n
 Change: YRobot spoken control now directly routes phrases containing "天气" to the verified Hermes REST weather endpoint when Hermes tools are enabled. It extracts the city locally, formats the structured weather response into an exact result sentence, and uses the existing exact-TTS path instead of letting the main model rewrite it.
 
 Verification: added test_spoken_control_routes_weather_query_to_exact_result; py_compile passed for yrobot/qwen_tools.py and yrobot/main.py; focused weather/stock/exact-result tests passed; live read-only ToolExecutor check for "今天深圳天气怎么样啊？" returned an exact Shenzhen weather sentence.
+
+
+## 2026-08-12 14:58 - Runtime persona override migration to XiaoBai
+
+Symptom: after changing the default persona to XiaoBai, QWEN could still introduce itself as Reachy. Root cause: local runtime .env and historical dashboard settings still contained an older YROBOT_PERSONA/persona value with "你是 Reachy", overriding the new default at startup.
+
+Change: build_system_prompt now narrowly migrates old persona text from "你是 Reachy"/"你是Reachy" to "你是小白" for all persona sources. The robot-local .env and /home/pollen/.config/yrobot/settings.json were also updated in place so the current runtime source no longer contains the old identity.
+
+Verification: added test_env_persona_migrates_old_reachy_identity_to_xiaobai; py_compile passed for yrobot/config.py and yrobot/main.py; focused persona/QWEN session tests passed; dotenv-based prompt check shows XiaoBai true and Reachy identity false.

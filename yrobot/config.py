@@ -96,10 +96,15 @@ QWEN_VOICES: tuple[str, ...] = (
 )
 
 
+def normalize_persona_identity(persona: str) -> str:
+    return persona.replace("你是 Reachy", "你是小白").replace("你是Reachy", "你是小白")
+
+
 def build_system_prompt(persona: str, proactive: bool) -> str:
     parts = [TRAINED_SYSTEM_LINE]
-    if persona.strip():
-        parts.append(persona.strip())
+    persona = normalize_persona_identity(persona.strip())
+    if persona:
+        parts.append(persona)
     if proactive:
         parts.append(PROACTIVE_POLICY)
     return "\n".join(parts)
