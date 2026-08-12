@@ -16,6 +16,14 @@ def test_defaults_target_official_gateway():
     assert len(s.effective_system_prompt) > len(s.system_prompt)
 
 
+def test_default_persona_identifies_as_xiaobai_not_reachy():
+    prompt = Settings().system_prompt
+
+    assert "你是小白" in prompt
+    assert "你是 Reachy" not in prompt
+    assert "你是Reachy" not in prompt
+
+
 def test_home_assistant_defaults_disabled():
     settings = Settings()
     assert settings.ha_enabled is False

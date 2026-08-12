@@ -1204,3 +1204,10 @@ Symptom: user said "今天深圳的天气怎么样？". ASR was correct and the 
 Change: in yrobot/qwen_realtime.py, if the tool-result follow-up response.create is rejected because QWEN still has an active response, defer exactly one follow-up until response.done clears the active response. This keeps the tool output in conversation and avoids a reconnect/safe-mode path.
 
 Verification: added test_function_call_followup_retries_after_active_response_race; py_compile yrobot/qwen_realtime.py yrobot/main.py passed; tests/test_qwen_realtime.py and focused QWEN runtime reconnect/no-local-match tests passed. Full runtime test still has an unrelated environment-dependent VAD default assertion: current env returns 0.11 vs historical 0.065.
+
+
+## 2026-08-12 14:45 - Persona identity changed to XiaoBai
+
+Change: default YRobot persona now identifies as "小白" instead of "Reachy". Wake words remain unchanged; the assistant should answer as 小白 and no longer introduce itself as Reachy or mention hardware identity by default.
+
+Verification: added test_default_persona_identifies_as_xiaobai_not_reachy; py_compile passed for yrobot/config.py, yrobot/qwen_realtime.py, and yrobot/main.py; focused config/QWEN wake/session tests passed.

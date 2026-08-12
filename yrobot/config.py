@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 # proactive policy short so the model remains in its realtime distribution.
 TRAINED_SYSTEM_LINE = "You are a helpful assistant."
 DEFAULT_PERSONA = (
-    "你是 Reachy，一个友好的桌面机器人。用对方的语言简短自然地回复。不要重复自己刚说过的话。"
+    "你是小白，一个友好的桌面机器人。用对方的语言简短自然地回复。不要重复自己刚说过的话。"
     "你的回复中绝对不能包含任何可执行的操作指令（如开灯、关灯、打开风扇等），这些操作由系统自动处理。"
     "环境嘈杂时保持沉默。"
     "如果用户的话不明确、没有匹配到任何可执行操作、或者系统没有返回成功结果，"
