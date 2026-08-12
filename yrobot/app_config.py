@@ -966,7 +966,21 @@ def build_status(
         volume_error = str(exc)
     mic_state = dashboard_mic_signal()
     mic_state["available"] = mic_state.get("updated_at", 0.0) > 0.0
-    xiaozhi_url = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
+    runtime = RUNTIME_HEALTH.snapshot()
+    configured_backend = Settings.from_env(environ).conversation_backend
+    running_backend = runtime.get("backend", configured_backend)
+    if running_backend == "qwen":
+        qwen_url = os.environ.get(
+            "YROBOT_QWEN_URL",
+            os.environ.get("QWEN_URL", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"),
+        )
+        gateway_url = qwen_url
+        tls_verify = qwen_url.startswith("wss://")
+    else:
+        gateway_url = os.environ.get(
+            "XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/"
+        )
+        tls_verify = gateway_url.startswith("wss://")
     return {
         "service": {
             "name": "YRobot",
@@ -977,14 +991,15 @@ def build_status(
         "system": _read_system_metrics(),
         "daemon": _read_reachy_daemon_status(),
         "motion": motion_controller_singleton().status(),
-        "runtime": RUNTIME_HEALTH.snapshot(),
+        "runtime": runtime,
         "conversation": {
-            "gateway_url": xiaozhi_url,
+            "gateway_url": gateway_url,
             "realtime_mode": "audio",
-            "tls_verify": xiaozhi_url.startswith("wss://"),
+            "tls_verify": tls_verify,
             "video_enabled": False,
             "proactive_enabled": False,
-            "backend": "xiaozhi",
+            "configured_backend": configured_backend,
+            "backend": running_backend,
         },
         "audio": {
             "volume_percent": volume_percent,
