@@ -364,6 +364,31 @@ def test_spoken_control_normalizes_terse_sonos_volume_number(tmp_path):
     assert body["arguments"]["prompt"] == "音响音量调到20"
 
 
+def test_spoken_control_treats_truncated_sonos_volume_digit_as_tens(tmp_path):
+    opener = RecordingOpener({"ok": True, "result": "Sonos volume set"})
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音响音量二")
+
+    assert result == {"ok": True, "result": "Sonos volume set"}
+    body = json.loads(opener.calls[0][0].data.decode())
+    assert body["arguments"]["prompt"] == "音响音量调到20"
+
+
+def test_spoken_control_reports_unclear_sonos_volume_target(tmp_path):
+    opener = RecordingOpener({"ok": True, "result": "should not call"})
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音响音量")
+
+    assert result == {
+        "ok": False,
+        "device": "音响音量",
+        "error": "没听清音响音量要调到多少",
+    }
+    assert opener.calls == []
+
+
 def test_spoken_control_returns_failure_for_unconnected_tv_volume(tmp_path):
     volume = FakeVolumeController(50)
     executor = ToolExecutor(make_settings(tmp_path), volume_controller=volume)

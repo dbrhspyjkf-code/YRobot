@@ -336,12 +336,24 @@ class ToolExecutor:
         if not any(phrase in text for phrase in SONOS_VOLUME_TARGET_PHRASES):
             return None
         if not self._is_spoken_volume_command(text):
+            if "音量" in text:
+                return {
+                    "ok": False,
+                    "device": "音响音量",
+                    "error": "没听清音响音量要调到多少",
+                }
             return None
         return self.execute("control_sonos", {"prompt": self._sonos_prompt(text)})
 
     @staticmethod
     def _sonos_prompt(text: str) -> str:
         target = ToolExecutor._extract_spoken_volume_percent(text)
+        if (
+            target is not None
+            and 1 <= target <= 9
+            and re.search(r"(音响|音箱).*音量[零〇一二两三四五六七八九]$", text)
+        ):
+            target *= 10
         if target is None or any(phrase in text for phrase in VOLUME_UP_PHRASES + VOLUME_DOWN_PHRASES):
             return text
         return f"音响音量调到{target}"

@@ -240,6 +240,13 @@ voice-control hardening from physical ASR evidence.
   `二十` could be misapplied as 50%. YRobot now normalizes Sonos absolute
   volume commands to `音响音量调到<N>` before calling Hermes. A deployed check
   confirmed `execute_spoken_control("音响二十")` returns `好的，音响音量已调到 20%`.
+- Further ASR review for the phrase `音箱音量 20` showed QWEN heard
+  `音响音量二`, causing Sonos to be set to 2%. YRobot now treats this narrow
+  Sonos-only truncated single Chinese digit form as tens, so `音响音量二`
+  normalizes to `音响音量调到20`. Incomplete Sonos volume targets such as
+  `音响音量` now return `没听清音响音量要调到多少` instead of letting QWEN invent
+  a successful adjustment. Deployed checks confirmed `音响音量二` returns
+  `好的，音响音量已调到 20%` and `音响音量` returns the explicit failure.
 
 ## Decisions that must remain stable
 
