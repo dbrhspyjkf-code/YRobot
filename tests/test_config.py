@@ -29,6 +29,23 @@ def test_home_assistant_defaults_disabled():
     assert settings.memory_path == "~/.config/yrobot/memory.json"
 
 
+
+def test_command_recognizer_defaults_disabled():
+    settings = Settings()
+
+    assert settings.command_recognizer_enabled is False
+    assert settings.command_recognizer_url == ""
+
+
+def test_command_recognizer_env_overrides(monkeypatch):
+    monkeypatch.setenv("YROBOT_COMMAND_RECOGNIZER_ENABLED", "1")
+    monkeypatch.setenv("YROBOT_COMMAND_RECOGNIZER_URL", "http://192.168.1.200:8910/recognize")
+
+    settings = Settings.from_env()
+
+    assert settings.command_recognizer_enabled is True
+    assert settings.command_recognizer_url == "http://192.168.1.200:8910/recognize"
+
 def test_application_env_defaults_target_official_gateway(monkeypatch):
     monkeypatch.delenv("YROBOT_REALTIME_URL", raising=False)
     monkeypatch.delenv("YROBOT_REALTIME_MODE", raising=False)
@@ -96,7 +113,7 @@ def test_local_info_prompt_uses_markers():
     assert "当前时间" in prompt
 
 
-def test_home_assistant_prompt_uses_local_allowlist_language(monkeypatch):
+def test_home_assistant_prompt_requires_exact_device_action(monkeypatch):
     monkeypatch.setenv("YROBOT_HA_ENABLED", "1")
     monkeypatch.setenv("YROBOT_HA_URL", "http://192.168.1.133:8123")
     monkeypatch.setenv("YROBOT_HA_TOKEN", "secret-token")
@@ -104,9 +121,8 @@ def test_home_assistant_prompt_uses_local_allowlist_language(monkeypatch):
     prompt = Settings.from_env().effective_system_prompt
 
     assert "家电控制" in prompt
-    assert "本地白名单" in prompt
-    assert "不要回答无法控制" in prompt
-    assert "不要声称已经成功" in prompt
+    assert "完整设备名" in prompt
+    assert "关闭书台灯" in prompt
 
 
 @pytest.mark.parametrize("url", ["https://example.com", "file:///tmp/socket", "wss:///missing"])

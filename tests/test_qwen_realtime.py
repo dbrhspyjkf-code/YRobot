@@ -103,7 +103,13 @@ def test_turn_detection_can_switch_to_semantic_vad_after_wake():
     assert client.websocket.sent == [
         {
             "type": "session.update",
-            "session": {"turn_detection": {"type": "semantic_vad"}},
+            "session": {
+                "turn_detection": {
+                    "type": "semantic_vad",
+                    "threshold": 0.5,
+                    "silence_duration_ms": 1200,
+                }
+            },
         }
     ]
 
@@ -186,6 +192,43 @@ def test_speech_started_flushes_buffered_audio_after_response_done():
     assert flushes == [True]
 
 
+
+
+def test_request_response_cancels_active_response_first():
+    client, _ = make_client()
+
+    asyncio.run(
+        client.handle_event({"type": "response.created", "response": {"id": "resp_1"}})
+    )
+    asyncio.run(client.request_response())
+
+    assert client.websocket.sent == [
+        {"type": "response.cancel"},
+        {"type": "response.create"},
+    ]
+
+
+def test_request_response_ignores_none_active_cancel_error():
+    class NoneActiveWebSocket(FakeWebSocket):
+        async def send(self, message):
+            document = json.loads(message)
+            self.sent.append(document)
+            if document["type"] == "response.cancel":
+                raise RuntimeError("Conversation has none active response")
+
+    client, _ = make_client()
+    client.websocket = NoneActiveWebSocket()
+    asyncio.run(
+        client.handle_event({"type": "response.created", "response": {"id": "resp_1"}})
+    )
+
+    asyncio.run(client.request_response())
+
+    assert client.websocket.sent == [
+        {"type": "response.cancel"},
+        {"type": "response.create"},
+    ]
+
 def test_function_call_done_executes_and_writes_result():
     client, tools = make_client()
 
@@ -210,6 +253,72 @@ def test_function_call_done_executes_and_writes_result():
     }
     assert client.websocket.sent[1] == {"type": "response.create"}
 
+
+
+
+def test_function_call_followup_does_not_cancel_tool_response():
+    client, tools = make_client()
+
+    asyncio.run(
+        client.handle_event({"type": "response.created", "response": {"id": "resp_tool"}})
+    )
+    client.websocket.sent.clear()
+    asyncio.run(
+        client.handle_event(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "get_weather",
+                "call_id": "call_1",
+                "arguments": '{"city":"广州"}',
+            }
+        )
+    )
+
+    assert tools.calls == [("get_weather", {"city": "广州"})]
+    assert [item["type"] for item in client.websocket.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+
+
+
+class ActiveResponseRaceWebSocket(FakeWebSocket):
+    def __init__(self):
+        super().__init__()
+        self.block_next_create = True
+
+    async def send(self, message):
+        document = json.loads(message)
+        if document.get("type") == "response.create" and self.block_next_create:
+            self.block_next_create = False
+            raise RuntimeError("Conversation already has an active response")
+        self.sent.append(document)
+
+
+def test_function_call_followup_retries_after_active_response_race():
+    client, tools = make_client()
+    client.websocket = ActiveResponseRaceWebSocket()
+
+    asyncio.run(
+        client.handle_event({"type": "response.created", "response": {"id": "resp_tool"}})
+    )
+    asyncio.run(
+        client.handle_event(
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "get_weather",
+                "call_id": "call_weather",
+                "arguments": '{"city":"深圳"}',
+            }
+        )
+    )
+    asyncio.run(client.handle_event({"type": "response.done", "response": {"id": "resp_tool"}}))
+
+    assert tools.calls == [("get_weather", {"city": "深圳"})]
+    assert [item["type"] for item in client.websocket.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
 
 def test_response_done_function_call_executes_and_writes_result():
     client, tools = make_client()

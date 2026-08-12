@@ -9,7 +9,12 @@ from yrobot.config import Settings
 from yrobot.main import (
     RecentTranscriptWindow,
     Yrobot,
+    _qwen_assistant_sonos_step_command,
+    _qwen_contextual_sonos_step_command,
     _qwen_unmatched_spoken_control_feedback,
+    _qwen_spoken_control_result_feedback,
+    _qwen_spoken_control_result_text,
+    _qwen_should_request_response_after_local_control,
     _qwen_should_reconnect,
     _qwen_should_resume_wake_after_reconnect,
 )
@@ -157,6 +162,12 @@ def test_qwen_internal_service_error_is_reconnectable():
     assert _qwen_should_reconnect(error) is True
 
 
+
+def test_qwen_none_active_response_error_is_reconnectable():
+    error = RuntimeError("Conversation has none active response")
+
+    assert _qwen_should_reconnect(error) is True
+
 def test_qwen_active_response_error_is_reconnectable():
     error = RuntimeError("Conversation already has an active response")
 
@@ -187,8 +198,92 @@ def test_recent_transcript_window_joins_longer_asr_command_fragments():
     ]
 
 
-def test_qwen_unmatched_spoken_control_does_not_inject_failure():
-    assert _qwen_unmatched_spoken_control_feedback(["音响音"]) is None
+
+def test_qwen_assistant_sonos_step_never_executes_from_model_reply():
+    assert _qwen_assistant_sonos_step_command("音响", "音量调大一点。") is None
+    assert _qwen_assistant_sonos_step_command("音响音量", "声音小一点。") is None
+    assert _qwen_assistant_sonos_step_command("音响", "我会把音量调小一点。") is None
+
+
+def test_qwen_assistant_sonos_step_ignores_non_sonos_context():
+    assert _qwen_assistant_sonos_step_command("你的音量", "音量调大一点。") is None
+    assert _qwen_assistant_sonos_step_command("音响", "有什么可以帮你？") is None
+
+
+def test_qwen_assistant_sonos_step_does_not_execute_questions():
+    assert _qwen_assistant_sonos_step_command("音响", "还想再调大一点吗？") is None
+    assert _qwen_assistant_sonos_step_command("音响音量", "需要我帮你调小吗？") is None
+
+
+def test_qwen_contextual_sonos_step_recovers_standalone_direction():
+    assert _qwen_contextual_sonos_step_command("音响音量", "调小") == "音响音量调小"
+    assert _qwen_contextual_sonos_step_command("音响", "声音大") == "音响音量调大"
+    assert _qwen_contextual_sonos_step_command("音响音量", "搅拌") == "音响音量调大"
+    assert _qwen_contextual_sonos_step_command("音响音量", "交大") == "音响音量调大"
+
+
+def test_qwen_contextual_sonos_step_requires_sonos_context():
+    assert _qwen_contextual_sonos_step_command("你的音量", "调小") is None
+    assert _qwen_contextual_sonos_step_command("", "声音大") is None
+
+
+
+
+def test_qwen_requests_model_response_when_no_local_or_command_match():
+    assert _qwen_should_request_response_after_local_control(False, False) is True
+    assert _qwen_should_request_response_after_local_control(True, False) is False
+    assert _qwen_should_request_response_after_local_control(False, True) is False
+
+
+def test_qwen_spoken_control_result_text_detects_exact_speak_result():
+    exact = "STOCK 688018 price 114.64 CNY"
+
+    assert _qwen_spoken_control_result_text({"ok": True, "result": exact}) == exact
+    assert _qwen_spoken_control_result_text({"ok": False, "result": exact}) is None
+    assert _qwen_spoken_control_result_text({"ok": True, "device": "sonos"}) is None
+
+
+def test_qwen_spoken_control_feedback_preserves_exact_stock_result():
+    exact = "STOCK 688018 price 114.64 CNY"
+
+    feedback = _qwen_spoken_control_result_feedback({"ok": True, "result": exact})
+
+    assert exact in feedback
+    assert "114.64" in feedback
+    assert "688018" in feedback
+    assert "None" not in feedback
+
+
+def test_qwen_spoken_control_feedback_keeps_device_action_result():
+    feedback = _qwen_spoken_control_result_feedback(
+        {"ok": True, "device": "sonos", "action": "volume up"}
+    )
+
+    assert "sonos volume up" in feedback
+
+
+def test_qwen_spoken_control_feedback_reports_failure_error():
+    feedback = _qwen_spoken_control_result_feedback({"ok": False, "error": "boom"})
+
+    assert "boom" in feedback
+    assert "执行失败" in feedback
+
+
+def test_qwen_unmatched_spoken_control_asks_for_sonos_direction():
+    feedback = _qwen_unmatched_spoken_control_feedback(["音响音量"])
+
+    assert feedback is not None
+    assert "本地没有执行" in feedback
+    assert "调大" in feedback
+
+
+def test_qwen_unmatched_spoken_control_asks_for_volume_target():
+    feedback = _qwen_unmatched_spoken_control_feedback(["音量，音量"])
+
+    assert feedback is not None
+    assert "音响" in feedback
+    assert "电视" in feedback
+    assert "你的音量" in feedback
 
 
 def test_qwen_vad_default_is_not_overly_aggressive():

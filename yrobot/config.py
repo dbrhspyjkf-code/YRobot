@@ -16,7 +16,13 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 # The duplex template was trained with this exact first line; keep persona and
 # proactive policy short so the model remains in its realtime distribution.
 TRAINED_SYSTEM_LINE = "You are a helpful assistant."
-DEFAULT_PERSONA = "你是 Reachy，一个友好的桌面机器人。用对方的语言简短自然地回复。不要重复自己刚说过的话。你的回复中绝对不能包含任何可执行的操作指令（如开灯、关灯、打开风扇等），这些操作由系统自动处理。环境嘈杂时保持沉默。"
+DEFAULT_PERSONA = (
+    "你是 Reachy，一个友好的桌面机器人。用对方的语言简短自然地回复。不要重复自己刚说过的话。"
+    "你的回复中绝对不能包含任何可执行的操作指令（如开灯、关灯、打开风扇等），这些操作由系统自动处理。"
+    "环境嘈杂时保持沉默。"
+    "如果用户的话不明确、没有匹配到任何可执行操作、或者系统没有返回成功结果，"
+    "你必须如实说“我没听清”或“请再说一遍”，绝对不要假设自己执行了任何操作、不要虚构成功的结果。"
+)
 PROACTIVE_POLICY = (
     "持续观察和倾听；只在出现明确、重要的新变化时主动简短提醒，不解说静态场景，"
     "不抢用户的话，非紧急主动发言保持克制。"
@@ -24,8 +30,12 @@ PROACTIVE_POLICY = (
 HA_CONTROL_POLICY = (
     "家电控制：机器人本地白名单会根据用户语音独立执行低风险设备控制。"
     "当用户要求控制灯、风扇等家电时，不要回答无法控制这个设备。"
-    "如果你没有收到工具返回结果，只能简短说“好的，我交给本地控制”，"
-    "不要声称已经成功，也不要说设备不在白名单里。"
+    "调工具后直接告诉用户结果（如“已打开”、“已关闭”），"
+    "不要重复说“我交给本地控制”、“好的，交给本地控制”或类似的中间话术——"
+    "用户已经知道是本地执行的，只需要听结果。"
+"如果工具调用未返回成功或用户意图不明确，"
+"必须如实告诉用户（“我没听清”、“请再说一遍”、“这个设备不在白名单”），"
+"不要假装成功。"
 )
 HERMES_TOOLS_POLICY = (
     "外部工具：以下查询直接交给后端处理，回复中必须包含触发词，否则后端无法识别：\n"
@@ -191,6 +201,8 @@ class Settings:
     qwen_model: str = field(default=QWEN_REALTIME_MODEL, init=False)
     qwen_url: str = QWEN_REALTIME_URL
     qwen_voice: str = "Ethan"
+    command_recognizer_enabled: bool = False
+    command_recognizer_url: str = ""
 
     def __post_init__(self) -> None:
         if self.conversation_backend not in SUPPORTED_CONVERSATION_BACKENDS:
@@ -314,4 +326,8 @@ class Settings:
             qwen_api_key=env.get("DASHSCOPE_API_KEY") or None,
             qwen_url=(env.get("YROBOT_QWEN_URL") or QWEN_REALTIME_URL).strip(),
             qwen_voice=(env.get("YROBOT_QWEN_VOICE") or "Ethan").strip(),
+            command_recognizer_enabled=_flag("YROBOT_COMMAND_RECOGNIZER_ENABLED", False, env),
+            command_recognizer_url=(
+                env.get("YROBOT_COMMAND_RECOGNIZER_URL") or ""
+            ).strip().rstrip("/"),
         )

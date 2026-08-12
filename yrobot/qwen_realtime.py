@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+import time
 from collections.abc import Callable
 from threading import Event
 from typing import Any
@@ -13,6 +15,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import websockets
 
 from yrobot.config import Settings
+
+logger = logging.getLogger(__name__)
 
 MAX_TOOL_OUTPUT_BYTES = 4096
 DEFAULT_INSTRUCTIONS = (
@@ -67,7 +71,9 @@ class QwenRealtimeClient:
         self._active_response_id: str | None = None
         self._cancelled_response_ids: set[str] = set()
         self._completed_call_ids: set[str] = set()
+        self._pending_tool_response_create = False
         self._reported_error = False
+        self._speech_started_at: float | None = None
 
     def session_update(self) -> dict[str, Any]:
         return {
@@ -123,13 +129,65 @@ class QwenRealtimeClient:
     async def commit_turn(self) -> None:
         await self._send({"type": "input_audio_buffer.commit"})
 
-    async def request_response(self) -> None:
+    async def request_response(self, *, cancel_active: bool = True) -> None:
+        if cancel_active:
+            await self._cancel_active_response()
         await self._send({"type": "response.create"})
+
+    async def cancel_and_inject(self, text: str, *, role: str = "user") -> None:
+        """Cancel any in-flight response, inject a text message, then
+        ask the model to respond. Used by main.py to surface the truth
+        when the spoken-control path's trigger-word match fails (or the
+        user stt is garbled) so the model does not fabricate a
+        “好的，已 X” reply.
+
+        Flow:
+          1. response.cancel for any active response
+          2. conversation.item.create {type: message, role, content}
+          3. response.create
+
+        Note: an earlier iteration also sent conversation.interrupt,
+        but the QWEN qwen3.5-omni-flash-realtime endpoint rejects it
+        as “Invalid value” which pushes the service into safe_mode,
+        so we only use response.cancel.
+
+        The injected text should be written from the system\'s POV
+        (e.g. “[system] user input did not match any local tool”),
+        not as a fake user utterance.
+        """
+        try:
+            await self._cancel_active_response()
+        except Exception:
+            pass
+        # QWEN needs a moment to actually finalize the cancel on its
+        # side before we can issue a new response.create. Without this
+        # sleep we hit a race where the cancel is still in flight and
+        # QWEN rejects the new request with
+        # 'Conversation already has an active response', which cascades
+        # into the service going to safe_mode.
+        import asyncio as _asyncio
+        await _asyncio.sleep(0.4)
+        await self._send({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": role,
+                "content": [{"type": "input_text", "text": text}],
+            },
+        })
+        await self.request_response()
 
     async def set_turn_detection(self, mode: str | None) -> None:
         if mode not in {None, "semantic_vad"}:
             raise ValueError("turn detection must be None or 'semantic_vad'")
-        turn_detection = None if mode is None else {"type": mode}
+        turn_detection = None
+        if mode == "semantic_vad":
+            turn_detection = {
+                "type": "semantic_vad",
+                "threshold": 0.5,
+                "silence_duration_ms": 1200,
+            }
+        logger.info("QWEN turn_detection: %s", turn_detection)
         await self._send(
             {
                 "type": "session.update",
@@ -153,13 +211,25 @@ class QwenRealtimeClient:
                 self._active_response_id = response_id
             self._on_audio(base64.b64decode(event["delta"], validate=True))
         elif event_type == "conversation.item.input_audio_transcription.completed":
-            self._on_input_transcript(str(event.get("transcript") or ""))
+            transcript = str(event.get("transcript") or "")
+            elapsed = None
+            if self._speech_started_at is not None:
+                elapsed = time.monotonic() - self._speech_started_at
+            logger.info("QWEN ASR completed: elapsed_s=%s transcript=%r", None if elapsed is None else round(elapsed, 3), transcript)
+            self._on_input_transcript(transcript)
         elif event_type == "response.audio_transcript.done":
             self._on_output_transcript(str(event.get("transcript") or ""))
         elif event_type == "input_audio_buffer.speech_started":
+            self._speech_started_at = time.monotonic()
+            logger.info("QWEN ASR speech_started")
             self._on_user_speech()
             self._on_interrupt()
             await self._cancel_active_response()
+        elif event_type == "input_audio_buffer.speech_stopped":
+            elapsed = None
+            if self._speech_started_at is not None:
+                elapsed = time.monotonic() - self._speech_started_at
+            logger.info("QWEN ASR speech_stopped: elapsed_s=%s", None if elapsed is None else round(elapsed, 3))
         elif event_type == "response.function_call_arguments.done":
             await self._complete_tool_call(event)
         elif event_type == "response.done":
@@ -175,6 +245,10 @@ class QwenRealtimeClient:
             if function_calls:
                 for item in function_calls:
                     await self._complete_tool_call(item)
+                return
+            if self._pending_tool_response_create:
+                self._pending_tool_response_create = False
+                await self.request_response(cancel_active=False)
                 return
             self._on_response_done()
         elif event_type == "error":
@@ -194,7 +268,12 @@ class QwenRealtimeClient:
         response_id = self._active_response_id
         self._active_response_id = None
         self._cancelled_response_ids.add(response_id)
-        await self._send({"type": "response.cancel"})
+        try:
+            await self._send({"type": "response.cancel"})
+        except RuntimeError as exc:
+            if "conversation has none active response" in str(exc).casefold():
+                return
+            raise
 
     async def _complete_tool_call(self, event: dict[str, Any]) -> None:
         call_id = str(event.get("call_id") or "")
@@ -229,7 +308,14 @@ class QwenRealtimeClient:
                 },
             }
         )
-        await self.request_response()
+        try:
+            await self.request_response(cancel_active=False)
+        except RuntimeError as exc:
+            if "conversation already has an active response" in str(exc).casefold():
+                logger.info("QWEN tool follow-up deferred until response.done: %s", exc)
+                self._pending_tool_response_create = True
+                return
+            raise
 
     def _report_error(self, message: str) -> None:
         self._reported_error = True

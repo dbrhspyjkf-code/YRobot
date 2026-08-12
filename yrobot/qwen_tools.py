@@ -24,6 +24,8 @@ ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle", "oscillate", "medi
 FOLLOW_UP_CLOSE_WINDOW_S = 30.0
 BARE_CLOSE_PHRASES = frozenset({"关", "关闭", "关掉"})
 VOLUME_STEP_PERCENT = 10
+SONOS_VOLUME_MAX_PERCENT = 70
+SONOS_HA_ENTITY_ID = "media_player.ke_ting"
 ROBOT_VOLUME_TARGET_PHRASES = (
     "你的音量",
     "你音量",
@@ -293,6 +295,9 @@ class ToolExecutor:
         sonos_result = self._execute_spoken_sonos_control(text)
         if sonos_result is not None:
             return sonos_result
+        stock_result = self._execute_spoken_stock_tool(text)
+        if stock_result is not None:
+            return stock_result
         volume_result = self._execute_spoken_volume_control(text)
         if volume_result is not None:
             return volume_result
@@ -321,6 +326,83 @@ class ToolExecutor:
             return result
         return None
 
+
+    def _execute_spoken_stock_tool(self, text: str) -> dict[str, Any] | None:
+        portfolio_result = self._execute_spoken_portfolio_stock(text)
+        if portfolio_result is not None:
+            return portfolio_result
+        detail_result = self._execute_spoken_stock_detail(text)
+        if detail_result is not None:
+            return detail_result
+        return self._execute_spoken_stock_price(text)
+
+    def _execute_spoken_portfolio_stock(self, text: str) -> dict[str, Any] | None:
+        if not any(word in text for word in ("自选股", "持仓", "我的股票", "股票列表")):
+            return None
+        if any(word in text for word in ("建议", "操盘", "能买", "能买吗", "能不能买", "可以买", "要不要买")):
+            return self.execute("get_stock_advice", {"prompt": "自选股"})
+        if any(word in text for word in ("加入", "添加", "加到", "放到")):
+            name = self._extract_portfolio_stock_name(text, ("把", "加入", "添加", "加到", "放到", "自选股"))
+            if not name:
+                return None
+            return self.execute("add_portfolio_stock", {"name": name})
+        if any(word in text for word in ("删除", "移出", "去掉", "移除")):
+            name = self._extract_portfolio_stock_name(text, ("从", "自选股", "删除", "移出", "去掉", "移除"))
+            if not name:
+                return None
+            return self.execute("remove_portfolio_stock", {"name": name})
+        return self.execute("get_portfolio_stocks", {})
+
+    def _execute_spoken_stock_detail(self, text: str) -> dict[str, Any] | None:
+        if not any(word in text for word in ("详情", "详细", "基本面", "财务", "股东", "资金流", "分析")):
+            return None
+        prompt = self._extract_stock_code(text) or text
+        return self.execute("get_stock_detail", {"prompt": prompt})
+
+    @staticmethod
+    def _extract_portfolio_stock_name(text: str, stop_words: tuple[str, ...]) -> str:
+        name = text
+        for word in stop_words:
+            name = name.replace(word, "")
+        return name.strip(" ，。,.吗呢吧")
+
+    def _execute_spoken_stock_price(self, text: str) -> dict[str, Any] | None:
+        if not any(word in text for word in ("查询", "查", "价格", "股价", "股票")):
+            return None
+        code = self._extract_stock_code(text)
+        if code is None:
+            return None
+        return self.execute("get_stock_price", {"prompt": code})
+
+    @staticmethod
+    def _extract_stock_code(text: str) -> str | None:
+        match = re.search(r"\d{6}", text)
+        if match:
+            return match.group(0)
+        digits = {
+            "零": "0",
+            "〇": "0",
+            "幺": "1",
+            "一": "1",
+            "二": "2",
+            "两": "2",
+            "三": "3",
+            "四": "4",
+            "五": "5",
+            "六": "6",
+            "七": "7",
+            "八": "8",
+            "九": "9",
+        }
+        converted = "".join(digits.get(char, " ") for char in text).replace(" ", "")
+        match = re.search(r"\d{6}", converted)
+        if match:
+            return match.group(0)
+        match = re.search(r"688\d{2}", converted)
+        if match:
+            return f"6880{match.group(0)[3:]}"
+        return None
+
     def _execute_spoken_tv_volume_control(self, text: str) -> dict[str, Any] | None:
         if not any(phrase in text for phrase in TV_VOLUME_TARGET_PHRASES):
             return None
@@ -333,17 +415,51 @@ class ToolExecutor:
         }
 
     def _execute_spoken_sonos_control(self, text: str) -> dict[str, Any] | None:
+        if text == "音量大":
+            return self._step_sonos_volume("volume_up", VOLUME_STEP_PERCENT)
+        if text == "音量小":
+            return self._step_sonos_volume("volume_down", -VOLUME_STEP_PERCENT)
         if not any(phrase in text for phrase in SONOS_VOLUME_TARGET_PHRASES):
             return None
         if not self._is_spoken_volume_command(text):
-            if "音量" in text:
-                return {
-                    "ok": False,
-                    "device": "音响音量",
-                    "error": "没听清音响音量要调到多少",
-                }
             return None
+        if any(phrase in text for phrase in VOLUME_UP_PHRASES):
+            return self._step_sonos_volume("volume_up", VOLUME_STEP_PERCENT)
+        if any(phrase in text for phrase in VOLUME_DOWN_PHRASES):
+            return self._step_sonos_volume("volume_down", -VOLUME_STEP_PERCENT)
         return self.execute("control_sonos", {"prompt": self._sonos_prompt(text)})
+
+    def _step_sonos_volume(self, action: str, delta: int) -> dict[str, Any]:
+        unavailable = self._ha_unavailable()
+        if unavailable is not None:
+            return unavailable
+        state_request = urllib.request.Request(
+            f"{self.settings.ha_url}/api/states/{SONOS_HA_ENTITY_ID}",
+            method="GET",
+            headers=self._ha_headers(),
+        )
+        state = self._read_json(state_request)
+        current_level = ((state.get("attributes") or {}).get("volume_level") if isinstance(state, dict) else None)
+        if not isinstance(current_level, int | float):
+            return {"ok": False, "error": "Sonos volume state is unavailable"}
+        current_percent = round(float(current_level) * 100)
+        target_percent = max(0, min(SONOS_VOLUME_MAX_PERCENT, current_percent + delta))
+        request = urllib.request.Request(
+            f"{self.settings.ha_url}/api/services/media_player/volume_set",
+            data=json.dumps(
+                {"entity_id": SONOS_HA_ENTITY_ID, "volume_level": target_percent / 100}
+            ).encode(),
+            method="POST",
+            headers=self._ha_headers(),
+        )
+        with self._opener(request, timeout=self._timeout) as response:
+            response.read()
+        return {
+            "ok": True,
+            "device": "音响音量",
+            "action": action,
+            "volume_percent": target_percent,
+        }
 
     @staticmethod
     def _sonos_prompt(text: str) -> str:
@@ -396,12 +512,19 @@ class ToolExecutor:
         return (
             any(phrase in text for phrase in VOLUME_UP_PHRASES)
             or any(phrase in text for phrase in VOLUME_DOWN_PHRASES)
-            or any(phrase in text for phrase in VOLUME_SET_PHRASES)
-            or ToolExecutor._extract_spoken_volume_percent(text) is not None
+            or ToolExecutor._has_explicit_volume_set(text)
         )
 
     @staticmethod
+    def _has_explicit_volume_set(text: str) -> bool:
+        if any(phrase in text for phrase in VOLUME_SET_PHRASES):
+            return True
+        return re.search(r"(音响|音箱|sonos|你的|小白|机器人|reachy|电视).*音量\d{1,3}$", text) is not None
+
+    @staticmethod
     def _extract_spoken_volume_percent(text: str) -> int | None:
+        if not ToolExecutor._has_explicit_volume_set(text):
+            return None
         match = re.search(r"(\d{1,3})", text)
         if match:
             value = int(match.group(1))

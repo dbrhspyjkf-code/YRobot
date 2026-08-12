@@ -938,3 +938,269 @@ tool. `UNREACHABLE` lines indicate the endpoint URL or the server is broken.
 Full `pytest` and `ruff check .` have had unrelated failures from in-progress
 local changes. Treat focused hardware-relevant checks as the immediate gate, and
 only clean full-suite issues when intentionally doing repo cleanup.
+
+
+## 2026-08-12 Sonos volume step control
+
+Request: treat `音响音量调大` / `音响音量调小` as deterministic Sonos volume controls.
+
+Implemented in `yrobot/qwen_tools.py`:
+
+- Sonos volume up/down now uses Home Assistant directly, not Hermes natural-language guessing.
+- Entity: `media_player.ke_ting`.
+- Step size: 10 percentage points.
+- Maximum Sonos volume: 70%.
+- `音响音量调大` reads current HA `volume_level`, adds 10, clamps to 70, then calls `media_player.volume_set`.
+- `音响音量调小` reads current HA `volume_level`, subtracts 10, clamps to 0, then calls `media_player.volume_set`.
+- Explicit numeric Sonos commands like `音响音量二` / `音响音量二十` still route through the existing normalized `control_sonos` path.
+- TV volume remains explicitly unsupported; robot/ALSA volume remains separate.
+
+Validation:
+
+```bash
+.venv/bin/python -m pytest   tests/test_qwen_tools.py::test_spoken_control_sonos_volume_up_steps_by_10_and_caps_at_70   tests/test_qwen_tools.py::test_spoken_control_sonos_volume_down_steps_by_10   tests/test_qwen_tools.py::test_spoken_control_routes_sonos_volume_away_from_robot_speaker   tests/test_qwen_tools.py::test_spoken_control_normalizes_terse_sonos_volume_number   tests/test_qwen_tools.py::test_spoken_control_treats_truncated_sonos_volume_digit_as_tens   tests/test_qwen_tools.py::test_spoken_control_returns_failure_for_unconnected_tv_volume -q
+```
+
+Result: 6 passed.
+
+Live checks:
+
+- HA reported `media_player.ke_ting` volume 20% before direct test.
+- Direct local executor call `音响音量调大` changed Sonos volume from 20% to 30%.
+- After YRobot restart, direct local executor call `音响音量调小` changed Sonos volume from 30% to 20%.
+- Runtime after restart: pid `5335`, backend `qwen`, WebSocket `connected`, mic available, motion ready.
+
+
+## 2026-08-12 ASR/Sonos volume rollback note
+
+Observation after live testing:
+
+- QWEN ASR still often truncates `音响音量调大/调小` to fragments such as `音响`, `音响音`, `音响音量`, `调小`, or `声音小`.
+- Executing Sonos volume based on assistant output text was unsafe. Examples included QWEN asking `还想再调大一点吗？` while the local recovery still executed `音响音量调大`.
+- This caused inconsistent user-visible behavior and extra `Conversation already has an active response` reconnects.
+
+Current safety decision:
+
+- Do not execute Home Assistant/Sonos controls based on QWEN assistant replies.
+- Keep direct user-ASR execution only.
+- Keep narrow context recovery only for user ASR: if recent user ASR was an incomplete Sonos fragment and the next user ASR is `调大/调小/声音大/声音小`, map it to `音响音量调大/调小`.
+- Incomplete Sonos fragments such as `音响音量` now return no local execution instead of injecting a failure into QWEN, reducing response races.
+
+Validation:
+
+```bash
+.venv/bin/python -m pytest   tests/test_qwen_runtime.py::test_qwen_assistant_sonos_step_never_executes_from_model_reply   tests/test_qwen_runtime.py::test_qwen_contextual_sonos_step_recovers_standalone_direction   tests/test_qwen_runtime.py::test_qwen_contextual_sonos_step_requires_sonos_context   tests/test_qwen_tools.py::test_spoken_control_sonos_volume_up_steps_by_10_and_caps_at_70   tests/test_qwen_tools.py::test_spoken_control_sonos_volume_down_steps_by_10 -q
+```
+
+Result: 5 passed.
+
+Runtime after restart: pid `6786`, backend `qwen`, WebSocket `connected`, mic available, motion ready, `last_error=None`.
+
+
+## 2026-08-12 Command recognizer interface for ASR separation
+
+Decision:
+
+- QWEN realtime remains the conversation backend.
+- Home/Sonos commands should not depend on QWEN realtime ASR for final authority.
+- Added a separate external command recognizer client that can receive the captured utterance WAV and return a safe, allowlisted command text.
+- No command recognizer service is currently exposed by `192.168.1.200:8900` or `192.168.1.200:8766`; the YRobot-side client is therefore default-disabled.
+
+New configuration:
+
+```bash
+YROBOT_COMMAND_RECOGNIZER_ENABLED=1
+YROBOT_COMMAND_RECOGNIZER_URL=http://192.168.1.200:8910/recognize
+```
+
+Expected external recognizer API:
+
+- Request: `POST /recognize`
+- Body: `audio/wav`, 16 kHz mono int16 WAV bytes captured by Reachy/YRobot.
+- Response example:
+
+```json
+{"ok": true, "command_text": "音响音量调大"}
+```
+
+Safety behavior:
+
+- If disabled, missing, unreachable, or response is not allowlisted, YRobot executes nothing.
+- Current allowlist starts with:
+  - `音响音量调大`
+  - `音响音量调小`
+- Recognized command text is routed through the existing `ToolExecutor.execute_spoken_control()` path, so Sonos still uses the deterministic HA step logic: step 10%, cap 70%.
+- QWEN assistant replies are not used to execute controls.
+
+Validation:
+
+```bash
+.venv/bin/python -m py_compile yrobot/config.py yrobot/command_recognizer.py yrobot/main.py yrobot/qwen_tools.py
+.venv/bin/python -m pytest   tests/test_config.py::test_command_recognizer_defaults_disabled   tests/test_config.py::test_command_recognizer_env_overrides   tests/test_command_recognizer.py   tests/test_qwen_runtime.py::test_qwen_assistant_sonos_step_never_executes_from_model_reply   tests/test_qwen_runtime.py::test_qwen_contextual_sonos_step_recovers_standalone_direction   tests/test_qwen_runtime.py::test_qwen_contextual_sonos_step_requires_sonos_context   tests/test_qwen_tools.py::test_spoken_control_sonos_volume_up_steps_by_10_and_caps_at_70   tests/test_qwen_tools.py::test_spoken_control_sonos_volume_down_steps_by_10 -q
+```
+
+Result: py_compile succeeded; 11 focused tests passed.
+
+Runtime after restart: pid `7583`, backend `qwen`, WebSocket `connected`, mic available, motion ready, `last_error=None`.
+
+Next required work:
+
+- Deploy a recognizer service on `192.168.1.200:8910` or another LAN host.
+- Test it against captured samples in `/tmp/yrobot-asr-debug/asr-*.wav`.
+- Enable the two env vars only after the service reliably returns allowlisted command text.
+
+## 2026-08-12 10:20 CST - Sonos volume ASR safety fix
+
+- Evidence: with TV off, QWEN still truncated `音响音量调大` to fragments such as `音响。` / `音量，音量。`; a complaint sentence `我说音响，然后他一直调。` was locally mis-parsed as `音响音量调到1` because the Chinese numeral `一` in `一直` was treated as a volume percentage.
+- Fix: Sonos/robot/TV volume set now requires an explicit volume-set form (`调到` / `设置到` / `百分之` / trailing Arabic number). Bare Chinese numerals inside normal sentences no longer trigger volume setting.
+- Fix: after recent Sonos-volume context, narrow ASR homophones `搅拌` / `交大` are accepted as follow-up `调大`; this is context-gated and does not apply globally.
+- Safety: unmatched volume fragments inject a clarification that no local control was executed, preventing QWEN from claiming volume changed without a tool result.
+- Recovery: Sonos `media_player.ke_ting` was restored to 20% and unmuted after the accidental 1% set.
+## 2026-08-12 11:05 CST - Local ASR/KWS offline validation on OrangePi
+
+Goal: evaluate whether a larger/local pipeline can replace `Reachy mic -> QWEN ASR -> YRobot local rules` for Sonos volume commands before enabling any production control path.
+
+Scope: offline-only tests on `192.168.1.200`; no OrangePi recognizer service was enabled and YRobot production control path was not changed.
+
+Findings:
+
+- sherpa-onnx Chinese/English KWS with custom keywords is very fast (~0.07-0.08s per captured sample) and can sometimes detect the target phrase fragments (`音响` / `音箱` / `音响音量`).
+- The same KWS model did not reliably detect the action words `调大` / `调小` from the existing Reachy failure samples, so it is not safe for one-shot volume execution.
+- sherpa-onnx Moonshine Chinese quantized ASR is also fast (~0.08-0.26s per sample), but transcripts on the same samples were not reliable enough to recover `调大` / `调小` and included obvious misrecognitions/hallucinations.
+- Audio evidence suggests many captured samples contain only about 0.5-0.7s of active speech, often ending around 2.1s in a ~3.5s file. This points to capture/VAD/front-end loss of the command tail, not just an ASR model choice problem.
+
+Decision:
+
+- Do not deploy local ASR as an automatic Sonos-volume executor yet.
+- Recommended next safe path is target-detection plus explicit confirmation, or fixing the capture/microphone path first (external mic / mic array / push-to-talk) before retrying command-intent execution.
+## 2026-08-12 11:16 CST - Minimal Sonos volume short commands
+
+Change: added exact short spoken commands `音量大` and `音量小` as direct Sonos volume controls.
+
+Behavior:
+
+- `音量大` -> `media_player.ke_ting` volume +10%, capped at 70%.
+- `音量小` -> `media_player.ke_ting` volume -10%, floored at 0%.
+- No new recognizer service was enabled.
+- TV volume and Reachy/ALSA volume routing were not expanded.
+
+Validation:
+
+```bash
+.venv/bin/python -m py_compile yrobot/qwen_tools.py
+.venv/bin/python -m pytest tests/test_qwen_tools.py::test_spoken_control_sonos_volume_up_steps_by_10_and_caps_at_70 tests/test_qwen_tools.py::test_spoken_control_sonos_volume_down_steps_by_10 tests/test_qwen_tools.py::test_spoken_control_sonos_short_volume_up_steps_by_10 tests/test_qwen_tools.py::test_spoken_control_sonos_short_volume_down_steps_by_10 tests/test_qwen_tools.py::test_spoken_control_routes_sonos_volume_away_from_robot_speaker tests/test_qwen_tools.py::test_spoken_control_can_raise_robot_speaker_volume tests/test_qwen_tools.py::test_spoken_control_sonos_ignores_complaint_with_chinese_one tests/test_qwen_tools.py::test_spoken_control_sonos_allows_explicit_numeric_set -q
+```
+
+Result: py_compile succeeded; 8 focused tests passed. YRobot restarted with copied environment; runtime pid `11863`, backend `qwen`, WebSocket `connected`, `last_error=None`.
+## 2026-08-12 11:40 CST - Local spoken stock price routing
+
+Change: added a local read-only spoken route for stock price queries before falling back to QWEN tool selection.
+
+Behavior:
+
+- Phrases containing query/price terms plus a 6-digit stock code call existing Hermes `get_stock_price`.
+- Spoken digit forms such as `六八八零幺八` are normalized to `688018`.
+- No new service was added; it reuses `hermes-mcp-xiaozhi` on `192.168.1.200:8900`.
+- Scope is price lookup only; no trading/advice automation was added.
+
+Validation:
+
+```bash
+.venv/bin/python -m py_compile yrobot/qwen_tools.py
+.venv/bin/python -m pytest tests/test_qwen_tools.py::test_spoken_control_routes_spoken_stock_code_to_hermes_price tests/test_qwen_tools.py::test_spoken_control_routes_arabic_stock_code_to_hermes_price tests/test_qwen_tools.py::test_spoken_control_sonos_short_volume_up_steps_by_10 tests/test_qwen_tools.py::test_spoken_control_sonos_short_volume_down_steps_by_10 tests/test_qwen_tools.py::test_spoken_control_sonos_ignores_complaint_with_chinese_one -q
+```
+
+Result: py_compile succeeded; 5 focused tests passed. Direct runtime-env call for `帮我查询六八八零幺八的价格` returned Hermes stock price for `688018`. YRobot restarted as pid `13245`, backend `qwen`, WebSocket `connected`, `last_error=None`.
+## 2026-08-12 11:55 CST - Wake latency and active-response guard
+
+Symptoms:
+
+- User reported `你好小白` wake sometimes reacted slowly or not at all.
+- Logs showed many empty QWEN ASR completions after VAD was lowered to `0.025`, plus recurring `Conversation already has an active response`.
+- WakeGate itself matches `你好，小白。`; the issue was not the wake phrase list.
+
+Change:
+
+- Raised VAD threshold from `0.025` to `0.030` RMS to reduce empty/noise turns while staying below the earlier too-high `0.041`.
+- `QwenRealtimeClient.request_response()` now cancels a known active response before creating a normal new response.
+- Tool-call follow-up responses explicitly skip that cancel so stock/home/Sonos tool result replies are not broken.
+
+Validation:
+
+```bash
+.venv/bin/python -m py_compile yrobot/qwen_realtime.py yrobot/main.py yrobot/audio_runtime.py
+.venv/bin/python -m pytest tests/test_qwen_realtime.py::test_request_response_cancels_active_response_first tests/test_qwen_realtime.py::test_function_call_followup_does_not_cancel_tool_response tests/test_qwen_realtime.py::test_speech_started_cancels_response_and_flushes_playback tests/test_qwen_realtime.py::test_function_call_done_executes_and_writes_result tests/test_qwen_runtime.py::test_qwen_wake_list_contains_nihao_xiaobai tests/test_qwen_runtime.py::test_qwen_wake_expires_after_sixty_seconds -q
+```
+
+Result: py_compile succeeded; 6 focused tests passed. YRobot restarted as pid `13855`, backend `qwen`, WebSocket `connected`, `last_error=None`, VAD `0.030`.
+## 2026-08-12 12:05 CST - Stock code dropped-zero ASR repair
+
+Symptom: QWEN ASR heard `查询六八八幺八价格` for the intended `查询 688018 价格`, so local stock routing did not match and the fallback response was affected by an active-response state.
+
+Change: in stock-price query context only, a 5-digit spoken/converted code matching `688xx` is normalized to `6880xx`. This repairs the observed dropped-zero case `六八八幺八` -> `688018` without widening general device control.
+
+Validation:
+
+```bash
+.venv/bin/python -m py_compile yrobot/qwen_tools.py yrobot/qwen_realtime.py
+.venv/bin/python -m pytest tests/test_qwen_tools.py::test_spoken_control_recovers_dropped_zero_in_688_stock_code tests/test_qwen_tools.py::test_spoken_control_routes_spoken_stock_code_to_hermes_price tests/test_qwen_tools.py::test_spoken_control_routes_arabic_stock_code_to_hermes_price -q
+```
+
+Result: py_compile succeeded; 3 focused tests passed. Direct runtime-env call for `查询六八八幺八价格` returned Hermes stock price for `688018`. YRobot restarted as pid `14287`, backend `qwen`, WebSocket `connected`, `last_error=None`.
+
+
+
+### 2026-08-12 12:15 - Stock price narration must use exact local tool result
+
+Symptom: user asked for 688018 price; Hermes returned the correct local result text, but QWEN replied with an invented price such as 3.25. Root cause: YRobot injected only a generic success message for local spoken-control results; stock results do not have device/action fields, so the model saw a vague success instead of the exact quote text.
+
+Change: added _qwen_spoken_control_result_feedback() and route local spoken-control results through it. When a tool result contains a final result string, QWEN now receives that exact sentence and an instruction not to change numbers, codes, or units. Device-control success/failure feedback remains unchanged in behavior.
+
+Verification: py_compile passed for yrobot/main.py, yrobot/qwen_tools.py, yrobot/qwen_realtime.py; targeted pytest passed for QWEN feedback and stock spoken-control routing. Runtime restarted as QWEN on port 8042 with official daemon on 8000 still available.
+
+
+Follow-up: verified the old inline local spoken-control feedback block was still present after the first edit; replaced it with _qwen_spoken_control_result_feedback(result), reran py_compile and focused runtime-feedback tests, then restarted YRobot as pid 15409. Current status: backend qwen, WebSocket connected, last_error None, mic available, official daemon firmware 1.9.0 available. Log check also showed the 12:12-12:13 stock-query attempts were outside wake-active state, so they produced QWEN STT lines but no local spoken-control/Hermes call.
+
+
+### 2026-08-12 12:25 - Stock quote result must bypass main conversational generation
+
+Evidence: after wake, user said the full query for 688018. Logs showed local spoken control called Hermes get_stock_price with prompt 688018 and Hermes returned `乐鑫科技 当前价格 114.64 元，上涨 0.17 元，涨幅 0.15%`; QWEN still replied with a different generated quote (`24.35`, `0.29`, `1.21%`). This proves prompt-only exact-result injection is not reliable for numeric data.
+
+Change: local spoken-control results with an ok `result` string now first use an isolated short QWEN realtime session only for exact text-to-speech playback, keeping the main conversation context out of stock quote narration. If exact TTS fails, fallback no longer passes the quote text to the main model; it only says that the quote was fetched but exact voice playback failed, and explicitly forbids providing price/code numbers.
+
+Verification: py_compile passed for yrobot/main.py; focused pytest passed for exact-result detection, stock result feedback, and spoken stock-code routing. YRobot restarted as pid 16249 with backend qwen, WebSocket connected, last_error None, mic available, and official daemon firmware 1.9.0 available.
+
+
+### 2026-08-12 12:45 - Local stock tool routing beyond price
+
+Change: expanded YRobot local spoken stock routing so more Hermes stock tools use the same exact-TTS result path instead of QWEN main conversation summarization.
+
+Enabled local routes:
+
+- 我的自选股 / 查询自选股 / 持仓 -> get_portfolio_stocks
+- 查询自选股建议 / 持仓建议 -> get_stock_advice with prompt 自选股
+- 把 XX 加入自选股 -> add_portfolio_stock
+- 从自选股删除/移出 XX -> remove_portfolio_stock
+- 查询 688018 基本面/详情/财务/股东/资金流/分析 -> get_stock_detail
+
+Safety decision: do not locally route single-stock phrases like 688018 能不能买 to get_stock_advice, because Hermes currently returns the whole portfolio advice for that tool even when a single code/name is passed. This avoids speaking a misleading all-portfolio answer for a single-stock question.
+
+Verification: py_compile passed for yrobot/qwen_tools.py and yrobot/main.py; 10 focused pytest cases passed for price, portfolio, add/remove, portfolio advice, detail, and exact-result handling. Live read-only executor checks returned expected portfolio quotes, portfolio advice, and 688018 detail; single-stock advice returned no local route by design. YRobot restarted as pid 17983, backend qwen, WebSocket connected, mic available, official daemon firmware 1.9.0 available.
+
+
+### 2026-08-12 13:05 - Normal QWEN questions after local-command miss
+
+Symptom: after wake, ASR heard "今天深圳怎么样？" but there was no assistant reply. Logs showed local spoken control had no match, but because an ASR debug WAV existed, YRobot called the optional command recognizer and treated that path as matched even when it returned no command. That suppressed the normal QWEN response.create call.
+
+Change: command recognizer now returns a boolean. Only a real recognized command suppresses the normal QWEN answer; if both local spoken control and command recognizer miss, YRobot calls client.request_response() so ordinary questions are answered.
+
+Verification: py_compile passed for yrobot/main.py; focused tests passed for the no-local/no-command response decision, active-response reconnect detection, and request_response cancellation. YRobot restarted as pid 18573; status is backend qwen, WebSocket connected, last_error None, tts inactive, audio_queue 0, mic available, official daemon firmware 1.9.0 available.
+
+
+## 2026-08-12 14:15 - QWEN tool follow-up active-response race
+
+Symptom: user said "今天深圳的天气怎么样？". ASR was correct and the get_weather tool was called, but the spoken reply became the default greeting. Logs also showed a stale get_stock_price tool call followed by get_weather, then "Conversation already has an active response"; reconnect lost the weather follow-up.
+
+Change: in yrobot/qwen_realtime.py, if the tool-result follow-up response.create is rejected because QWEN still has an active response, defer exactly one follow-up until response.done clears the active response. This keeps the tool output in conversation and avoids a reconnect/safe-mode path.
+
+Verification: added test_function_call_followup_retries_after_active_response_race; py_compile yrobot/qwen_realtime.py yrobot/main.py passed; tests/test_qwen_realtime.py and focused QWEN runtime reconnect/no-local-match tests passed. Full runtime test still has an unrelated environment-dependent VAD default assertion: current env returns 0.11 vs historical 0.065.

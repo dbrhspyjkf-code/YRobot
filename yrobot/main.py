@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import logging
 import math
+import wave
 import os
 import threading
 import time
+from collections import deque
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -27,6 +30,7 @@ from yrobot.app_config import (
     register_settings_routes,
     volume_controller_singleton,
 )
+from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
@@ -62,6 +66,7 @@ _QWEN_RECONNECT_MESSAGES = (
     "session was closed",
     "internal service error",
     "conversation already has an active response",
+    "conversation has none active response",
     "timed out during opening handshake",
 )
 
@@ -139,9 +144,94 @@ def _qwen_should_reconnect(exc: Exception) -> bool:
     return any(fragment in message for fragment in _QWEN_RECONNECT_MESSAGES)
 
 
+def _qwen_spoken_control_result_text(result: dict[str, Any]) -> str | None:
+    if not result.get("ok"):
+        return None
+    exact = str(result.get("result") or "").strip()
+    return exact or None
+
+
+def _qwen_spoken_control_result_feedback(result: dict[str, Any]) -> str:
+    exact = str(result.get("result") or "").strip()
+    if result.get("ok") and exact:
+        return (
+            "[system] Local tool returned the final answer. "
+            "Read only the exact sentence below; do not change any number, code, or unit:\n"
+            f"{exact}"
+        )
+    if result.get("ok"):
+        device = str(result.get("device") or "").strip()
+        action = str(result.get("action") or "").strip()
+        outcome = f"已成功：{device} {action}".strip() if (device or action) else "已成功"
+    else:
+        error_message = result.get("error", "unknown")
+        outcome = f"执行失败：{error_message}"
+    return (
+        f"[系统] 本地工具刚刚执行了一次设备控制请求，真实结果是：{outcome}。"
+        f"请基于这个事实向用户简短说明，不要再说我交给本地控制之类的中间话术。"
+    )
+
+
 def _qwen_unmatched_spoken_control_feedback(candidates: list[str]) -> str | None:
+    normalized = [_qwen_normalize_for_control(candidate) for candidate in candidates]
+    joined = "".join(normalized)
+    if not joined:
+        return None
+    has_volume = "音量" in joined or "声音" in joined
+    has_sonos = any(fragment in joined for fragment in ("音响", "音箱", "sonos"))
+    if has_sonos and has_volume:
+        return (
+            "[系统] 用户刚才像是在说音响音量，但没有听到明确方向或数值；"
+            "本地没有执行任何音响控制。请只追问：调大、调小，还是调到多少？"
+        )
+    if has_volume:
+        return (
+            "[系统] 用户刚才像是在说音量，但没有听到明确对象和动作；"
+            "本地没有执行任何音量控制。请只追问：是音响、电视，还是你的音量？要调大还是调小？"
+        )
     return None
 
+
+def _qwen_normalize_for_control(value: str) -> str:
+    return "".join(char for char in value.casefold() if char.isalnum())
+
+
+def _qwen_sonos_fragment(value: str) -> bool:
+    return _qwen_normalize_for_control(value) in {
+        "音响", "音响音", "音响音量", "音箱", "音箱音", "音箱音量"
+    }
+
+
+def _qwen_step_direction(value: str) -> str | None:
+    text = _qwen_normalize_for_control(value)
+    # In the Sonos follow-up flow QWEN often hears the short answer
+    # “调大” as “搅拌/交大”.  This helper is only used after an explicit
+    # recent Sonos-volume fragment, so mapping those narrow homophones
+    # is safer than letting the model claim it adjusted volume without
+    # a local tool result.
+    if any(phrase in text for phrase in ("调大", "搅拌", "交大", "大一点", "大点", "声音大", "加大", "加点", "提高")):
+        return "调大"
+    if any(phrase in text for phrase in ("调小", "小一点", "小点", "声音小", "减小", "降低")):
+        return "调小"
+    return None
+
+
+def _qwen_assistant_sonos_step_command(last_user_text: str, assistant_text: str) -> str | None:
+    return None
+
+
+def _qwen_contextual_sonos_step_command(last_user_text: str, current_user_text: str) -> str | None:
+    if not _qwen_sonos_fragment(last_user_text):
+        return None
+    direction = _qwen_step_direction(current_user_text)
+    return f"音响音量{direction}" if direction else None
+
+
+
+def _qwen_should_request_response_after_local_control(
+    local_matched: bool, command_recognizer_matched: bool
+) -> bool:
+    return not local_matched and not command_recognizer_matched
 
 def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
     return gate.active
@@ -287,7 +377,7 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic, get_vad_rms_min
         from yrobot.audio_runtime import PcmPlayback, WakeGate
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
-        from yrobot.qwen_realtime import QwenRealtimeClient
+        from yrobot.qwen_realtime import QwenRealtimeClient, _model_url
         from yrobot.qwen_tools import ToolExecutor
 
         startup_head_pose = None
@@ -355,6 +445,43 @@ class Yrobot(ReachyMiniApp):
         async def run_qwen() -> None:
             response_started = False
             client: QwenRealtimeClient
+            last_sonos_fragment = ""
+            last_sonos_fragment_at = 0.0
+            asr_preroll: deque[bytes] = deque(maxlen=34)
+            asr_capture = bytearray()
+            asr_capturing = False
+            asr_capture_started_at = 0.0
+            asr_debug_dir = Path("/tmp/yrobot-asr-debug")
+            asr_debug_max_bytes = 16000 * 2 * 8  # 8 seconds of 16 kHz int16 mono
+
+            def save_asr_debug_wav(transcript: str) -> None:
+                nonlocal asr_capture, asr_capturing
+                if not asr_capture:
+                    asr_capturing = False
+                    return
+                try:
+                    asr_debug_dir.mkdir(parents=True, exist_ok=True)
+                    stamp = time.strftime("%Y%m%d-%H%M%S")
+                    path = asr_debug_dir / f"asr-{stamp}.wav"
+                    with wave.open(str(path), "wb") as wav:
+                        wav.setnchannels(1)
+                        wav.setsampwidth(2)
+                        wav.setframerate(16000)
+                        wav.writeframes(bytes(asr_capture))
+                    files = sorted(asr_debug_dir.glob("asr-*.wav"), key=lambda x: x.stat().st_mtime)
+                    for old in files[:-8]:
+                        old.unlink(missing_ok=True)
+                    logger.info(
+                        "QWEN ASR debug wav: path=%s bytes=%d transcript=%r",
+                        path,
+                        len(asr_capture),
+                        transcript[:120],
+                    )
+                except Exception as exc:
+                    logger.warning("could not save QWEN ASR debug wav: %s", exc)
+                finally:
+                    asr_capture = bytearray()
+                    asr_capturing = False
 
             def on_audio(pcm: bytes) -> None:
                 nonlocal response_started
@@ -370,6 +497,78 @@ class Yrobot(ReachyMiniApp):
                     last_tts_packet_at=time.time(),
                 )
 
+            async def speak_exact_text(text: str) -> bool:
+                # Stock quotes and other numeric local-tool results must not be
+                # re-generated by the main conversational model. Use an isolated
+                # short realtime session only as TTS, so stale conversation
+                # context cannot change prices/codes.
+                import base64 as _base64
+                import json as _json
+                import websockets as _websockets
+
+                exact = text.strip()
+                if not exact:
+                    return False
+                try:
+                    try:
+                        await client._cancel_active_response()
+                    except Exception:
+                        pass
+                    session_payload = {
+                        "type": "session.update",
+                        "session": {
+                            "modalities": ["text", "audio"],
+                            "voice": settings.qwen_voice,
+                            "input_audio_format": "pcm",
+                            "output_audio_format": "pcm",
+                            "turn_detection": None,
+                            "temperature": 0.0,
+                            "top_p": 0.01,
+                            "instructions": (
+                                "你是一个文字转语音引擎。只朗读用户给出的原文，"
+                                "不要回答问题，不要解释，不要补充，不要修改任何数字、代码或单位。"
+                            ),
+                        },
+                    }
+                    ws_url = _model_url(settings.qwen_url, settings.qwen_model)
+                    async with _websockets.connect(
+                        ws_url,
+                        additional_headers={"Authorization": f"Bearer {settings.qwen_api_key}"},
+                        max_size=10_000_000,
+                    ) as ws:
+                        await ws.send(_json.dumps(session_payload, ensure_ascii=False))
+                        await ws.send(_json.dumps({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
+                                    "type": "input_text",
+                                    "text": "朗读以下原文，不要改写：" + chr(10) + exact,
+                                }],
+                            },
+                        }, ensure_ascii=False))
+                        await ws.send(_json.dumps({"type": "response.create"}))
+                        while True:
+                            msg = _json.loads(await ws.recv())
+                            event_type = msg.get("type")
+                            if event_type == "response.audio.delta":
+                                delta = msg.get("delta") or ""
+                                if delta:
+                                    on_audio(_base64.b64decode(delta))
+                            elif event_type == "response.audio_transcript.done":
+                                logger.info("qwen exact tts transcript: %s", str(msg.get("transcript") or "")[:160])
+                            elif event_type == "response.done":
+                                on_response_done()
+                                return True
+                            elif event_type == "error":
+                                error = msg.get("error") or {}
+                                raise RuntimeError(error.get("message") or error or msg)
+                except Exception as exc:
+                    logger.warning("qwen exact tts failed: %s", exc)
+                    on_response_done()
+                    return False
+
             def on_interrupt() -> None:
                 nonlocal response_started
                 response_started = False
@@ -378,6 +577,10 @@ class Yrobot(ReachyMiniApp):
                 RUNTIME_HEALTH.update(tts_active=False, audio_queue=0)
 
             def on_user_speech() -> None:
+                nonlocal asr_capture, asr_capturing, asr_capture_started_at
+                asr_capture = bytearray().join(asr_preroll)
+                asr_capturing = True
+                asr_capture_started_at = time.monotonic()
                 gate.note_speech()
                 choreo.set_mode(LISTEN)
                 tracker.note_speech()  # pulse DoA window for head tracking
@@ -389,10 +592,15 @@ class Yrobot(ReachyMiniApp):
                 RUNTIME_HEALTH.update(tts_active=False)
 
             async def activate_from_wake() -> None:
-                await client.set_turn_detection("semantic_vad")
+                # Keep QWEN in manual turn mode after wake. In server VAD
+                # mode QWEN may start speaking before the local deterministic
+                # home-control parser has decided whether a command was
+                # actually executed, which lets it say things like “已调低音量”
+                # without any tool result.
+                await client.set_turn_detection(None)
                 await client.request_response()
 
-            async def execute_local_spoken_control(candidates: list[str]) -> None:
+            async def execute_local_spoken_control(candidates: list[str]) -> bool:
                 # Walk the recent ASR candidates (most recent last). Pick
                 # the first that matches a trigger word and try it. If a
                 # tool fires, the result is honest (tool either succeeded
@@ -409,34 +617,62 @@ class Yrobot(ReachyMiniApp):
                             result,
                             candidate,
                         )
-                        # Tell the model the real outcome. If ok=False the
-                        # model must report failure, never fabricate success.
-                        outcome = (
-                            f"已成功：{result.get('device')} {result.get('action')}"
-                            if result.get("ok")
-                            else f"执行失败：{result.get('error', 'unknown')}"
-                        )
+                        exact_result = _qwen_spoken_control_result_text(result)
+                        if exact_result:
+                            if await speak_exact_text(exact_result):
+                                return True
+                            await client.cancel_and_inject(
+                                "[系统] 本地工具已经得到查询结果，但精确语音播报失败。"
+                                "请只告诉用户：行情已查到，但语音播报失败，请查看日志或 Dashboard；"
+                                "不要提供任何股票代码、价格、涨跌幅或其他数字。"
+                            )
+                            return True
                         await client.cancel_and_inject(
-                            f"[系统] 本地工具刚刚执行了一次设备控制请求，"
-                            f"真实结果是：{outcome}。"
-                            f"请基于这个事实向用户简短说明，不要再说'我交给本地控制'之类的中间话术。"
+                            _qwen_spoken_control_result_feedback(result)
                         )
-                        return
+                        return True
                 feedback = _qwen_unmatched_spoken_control_feedback(candidates)
                 if feedback:
                     await client.cancel_and_inject(feedback)
-                    return
+                    return True
                 logger.info("qwen local spoken control: no match candidates=%r", candidates)
+                return False
+
+            async def execute_command_recognizer(wav_bytes: bytes) -> bool:
+                command = await asyncio.to_thread(command_recognizer.recognize, wav_bytes)
+                if not command:
+                    return False
+                logger.info("command recognizer matched: %s", command)
+                return await execute_local_spoken_control([command])
 
             def on_input_transcript(transcript: str) -> None:
+                nonlocal last_sonos_fragment, last_sonos_fragment_at
                 logger.info("qwen stt: %s", transcript[:120])
+                wav_bytes = bytes(asr_capture) if gate.active and asr_capture else b""
+                if gate.active:
+                    save_asr_debug_wav(transcript)
+                normalized = _qwen_normalize_for_control(transcript)
+                now = time.monotonic()
+                if _qwen_sonos_fragment(transcript):
+                    last_sonos_fragment = transcript
+                    last_sonos_fragment_at = now
                 candidates = transcript_window.candidates(transcript)
+                contextual_command = _qwen_contextual_sonos_step_command(last_sonos_fragment, transcript)
+                if contextual_command and now - last_sonos_fragment_at <= 15.0:
+                    candidates = [*candidates, contextual_command]
                 if gate.observe_transcript(transcript):
                     logger.info("QWEN wake word detected")
                     choreo.play_move("nod")
                     asyncio.create_task(activate_from_wake())
                 if gate.active and candidates:
-                    asyncio.create_task(execute_local_spoken_control(candidates))
+                    async def _run_spoken_control() -> None:
+                        matched = await execute_local_spoken_control(candidates)
+                        command_matched = False
+                        if not matched and wav_bytes:
+                            command_matched = await execute_command_recognizer(wav_bytes)
+                        if _qwen_should_request_response_after_local_control(matched, command_matched):
+                            await client.request_response()
+                    asyncio.create_task(_run_spoken_control())
 
             def on_output_transcript(transcript: str) -> None:
                 logger.info("qwen response: %s", transcript[:160])
@@ -450,6 +686,7 @@ class Yrobot(ReachyMiniApp):
             tool_executor = ToolExecutor(
                 settings, volume_controller=volume_controller_singleton()
             )
+            command_recognizer = CommandRecognizer(settings)
             client = QwenRealtimeClient(
                 settings,
                 tool_executor,
@@ -496,7 +733,38 @@ class Yrobot(ReachyMiniApp):
                         continue
 
                     if gate.active:
+                        asr_preroll.append(pcm)
+                        if rms >= threshold:
+                            if not manual_speaking:
+                                manual_speaking = True
+                                silence_frames = 0
+                                turn_frames = 0
+                                asr_capture = bytearray().join(asr_preroll)
+                                asr_capturing = True
+                                asr_capture_started_at = time.monotonic()
+                                gate.note_speech()
+                                choreo.set_mode(LISTEN)
+                                tracker.note_speech()
+                            silence_frames = 0
+                        elif manual_speaking:
+                            silence_frames += 1
+                        else:
+                            if gate.expire():
+                                await client.set_turn_detection(None)
+                                playback.flush()
+                                choreo.set_mode(IDLE)
+                                logger.info("QWEN wake expired (60s timeout)")
+                            continue
+
+                        if asr_capturing and len(asr_capture) < asr_debug_max_bytes:
+                            asr_capture.extend(pcm)
                         await client.append_pcm(pcm)
+                        turn_frames += 1
+                        if silence_frames >= 16 or turn_frames >= 167:
+                            await client.commit_turn()
+                            manual_speaking = False
+                            silence_frames = 0
+                            turn_frames = 0
                         if gate.expire():
                             await client.set_turn_detection(None)
                             playback.flush()

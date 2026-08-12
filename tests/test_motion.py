@@ -8,8 +8,11 @@ import numpy as np
 from yrobot.motion import (
     Choreographer,
     GazeSpring,
+    IDLE,
+    LISTEN,
     SoundCompass,
     circular_mean,
+    doa_confidence_weight,
     doa_to_yaw_delta,
     head_yaw_of,
     rpy_pose,
@@ -32,6 +35,10 @@ def test_circular_mean_handles_wraparound():
 def test_weighted_circular_mean_prioritizes_device_confirmed_samples():
     mean = weighted_circular_mean([(0.0, 2.0), (math.pi / 2, 1.0)])
     assert 0.0 < mean < math.pi / 4
+
+
+def test_device_confirmed_doa_has_higher_weight():
+    assert doa_confidence_weight(True) > doa_confidence_weight(False)
 
 
 def test_rpy_pose_yaw_roundtrip():
@@ -114,3 +121,96 @@ def test_idle_saccade_target_is_trajectory_limited(monkeypatch):
     yaw = head_yaw_of(pose)
     # The random target is +0.25 rad, but it must not appear in one 20 ms tick.
     assert 0.0 < yaw < 0.03
+
+
+def test_motion_inputs_are_applied_by_motion_thread_only():
+    class FakeMini:
+        pass
+
+    choreo = Choreographer(FakeMini())
+    choreo.set_mode(LISTEN)
+    choreo.play_move("nod", now=10.0)
+    choreo.set_gaze_target(1.0, now=11.0)
+
+    assert choreo._mode == IDLE
+    assert choreo._move_name is None
+    assert choreo._gaze.target == 0.0
+
+    choreo._apply_commands()
+
+    assert choreo._mode == LISTEN
+    assert choreo._move_name == "nod"
+    assert choreo._move_start == 10.0
+    assert choreo._gaze.target == 1.0
+    assert choreo._last_voice_at == 11.0
+
+
+def test_gaze_target_status_tracks_source():
+    class FakeMini:
+        pass
+
+    choreo = Choreographer(FakeMini())
+    choreo.set_gaze_target(1.0, now=11.0, source="audio+visual")
+    choreo._apply_commands()
+
+    status = choreo.get_status()
+
+    assert status["gaze_target_rad"] == 1.0
+    assert status["gaze_source"] == "audio+visual"
+
+
+def test_set_target_consecutive_failures_reset_after_success():
+    class FakeMini:
+        pass
+
+    choreo = Choreographer(FakeMini())
+    choreo._record_set_target_failure()
+    choreo._record_set_target_failure()
+
+    assert choreo.get_status()["set_target_failures"] == 2
+    assert choreo.get_status()["set_target_consecutive_failures"] == 2
+
+    choreo._record_set_target_success()
+
+    assert choreo.get_status()["set_target_failures"] == 2
+    assert choreo.get_status()["set_target_consecutive_failures"] == 0
+
+
+def test_startup_blend_first_frame_uses_captured_robot_pose():
+    class FakeMini:
+        pass
+
+    startup_pose = rpy_pose(0.2, -0.1, 0.4, 0.03)
+    startup_antennas = (0.7, -0.6)
+    choreo = Choreographer(
+        FakeMini(),
+        startup_head_pose=startup_pose,
+        startup_antennas=startup_antennas,
+        startup_blend_duration=4.0,
+    )
+
+    pose, antennas = choreo._compose(t=0.0, now=10.0, dt=0.02)
+
+    assert np.allclose(pose, startup_pose)
+    assert np.allclose(antennas, startup_antennas)
+
+
+def test_startup_blend_finishes_and_releases_to_normal_motion():
+    class FakeMini:
+        pass
+
+    startup_pose = rpy_pose(0.2, -0.1, 0.4, 0.03)
+    choreo = Choreographer(
+        FakeMini(),
+        startup_head_pose=startup_pose,
+        startup_antennas=(0.7, -0.6),
+        startup_blend_duration=1.0,
+    )
+
+    choreo._compose(t=0.0, now=10.0, dt=0.02)
+    pose, antennas = choreo._compose(t=1.1, now=11.1, dt=0.02)
+
+    assert choreo._startup_pose is None
+    assert choreo._startup_antennas is None
+    assert not np.allclose(pose, startup_pose)
+    assert not np.allclose(antennas, (0.7, -0.6))

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
-WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿")
+WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
 WAKE_TIMEOUT = 60.0
 
 

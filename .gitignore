@@ -1,26 +1,13 @@
-# Python
+# Local backup directories (created during cherry-pick sync)
+ios/local-ios-backup/
+
+# Local runtime secrets and generated files
+.env
+*.env
+.venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
-.eggs/
-build/
-dist/
-
-# Virtualenvs
-.venv/
-venv/
-env/
-
-# Env / secrets
-.env
-agents.local.md
-
-# OS / editor
 .DS_Store
-.idea/
-.vscode/
-
-# Model / HF caches (if downloaded into the repo)
-*.onnx
-*.gguf
-models/
+*.bak
+*.bak-*

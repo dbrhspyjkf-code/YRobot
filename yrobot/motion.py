@@ -23,12 +23,62 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from queue import Empty, Full, Queue
+from typing import Any
 
 import numpy as np
+try:
+    from scipy.spatial.transform import Rotation as R
+except ImportError:  # pragma: no cover - scipy is a hard dep of the SDK
+    R = None
 
 logger = logging.getLogger(__name__)
 
 IDLE, LISTEN, SPEAK = "idle", "listen", "speak"
+
+# One-shot expressive moves (played on top of the current mode, then fade out).
+SHAKE, NOD, TILT, SURPRISE, THINK, YAWN, SAD, ANGRY = (
+    "shake", "nod", "tilt", "surprise", "think", "yawn", "sad", "angry")
+MOVES = (SHAKE, NOD, TILT, SURPRISE, THINK, YAWN, SAD, ANGRY)
+
+# name -> (duration_s, roll_amp, pitch_amp, yaw_amp, antenna_delta)
+# Amplitudes are radians; antenna_delta is added to the antenna neutral.
+MOVE_SPECS = {
+    SHAKE:    (1.0,  0.00,  0.00,  0.14,  0.00),   # fast left-right no
+    NOD:      (1.0,  0.00,  0.12,  0.00,  0.00),   # clear yes
+    TILT:     (1.2,  0.16,  0.00,  0.00,  0.00),   # curious tilt
+    SURPRISE: (1.1,  0.00, -0.10,  0.00,  0.45),   # antenna up + head up
+    THINK:    (2.5,  0.02,  0.10,  0.05, -0.20),   # head down, slow sway
+    YAWN:     (2.8,  0.02,  0.12,  0.00, -0.55),   # head down then up, antenna droop
+    SAD:      (2.2,  0.00,  0.12, -0.03, -0.35),   # droop: head down, antennas down
+    ANGRY:    (1.2,  0.00, -0.08,  0.16,  0.30),   # raised head + fast shake, antenna up
+}
+
+# Xiaozhi protocol emotion -> Reachy move name (see xiaozhi.tech websocket doc).
+# Prefer official recorded-emotion moves for vividness; the programmatic moves
+# (shake/nod/...) are fallbacks used when the emotion library is unavailable.
+EMOTION_TO_MOVE = {
+    "happy": "cheerful1", "laughing": "laughing1", "funny": "laughing2",
+    "winking": "welcoming1", "confident": "proud2",
+    "surprised": "surprised1", "shocked": "amazed1",
+    "thinking": "thoughtful1", "confused": "confused1",
+    "sleepy": "sleep1", "tired": "tired1",
+    "sad": "sad1", "crying": "sad2", "downcast": "downcast1",
+    "angry": "reprimand1", "furious": "rage1", "irritated": "irritated1",
+    "loving": "loving1", "kissy": "loving1",
+}
+# Fallback: if the recorded move above can't be played, use a programmatic
+# move that conveys the same idea.
+EMOTION_FALLBACK_MOVE = {
+    "happy": NOD, "laughing": NOD, "funny": NOD, "winking": TILT,
+    "confident": NOD,
+    "surprised": SURPRISE, "shocked": SURPRISE,
+    "thinking": THINK, "confused": THINK,
+    "sleepy": YAWN, "tired": YAWN,
+    "sad": SAD, "crying": SAD, "downcast": SAD,
+    "angry": ANGRY, "furious": ANGRY, "irritated": ANGRY,
+    "loving": TILT, "kissy": TILT,
+}
 
 
 def head_yaw_of(pose: np.ndarray) -> float:
@@ -54,9 +104,37 @@ def rpy_pose(roll: float, pitch: float, yaw: float, z: float) -> np.ndarray:
     return pose
 
 
+def _blend_pose(a: np.ndarray, b: np.ndarray, alpha: float) -> np.ndarray:
+    """Lerp two 4x4 poses by alpha (0 -> a, 1 -> b).
+
+    Translation is lerped linearly; the rotation is lerped in SO(3) via
+    slerp on the quaternions so the blend never skews or flips.
+    """
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    out = np.eye(4)
+    out[:3, 3] = a[:3, 3] * (1.0 - alpha) + b[:3, 3] * alpha
+    if R is None:
+        out[:3, :3] = a[:3, :3] * (1.0 - alpha) + b[:3, :3] * alpha
+    else:
+        try:
+            from scipy.spatial.transform import Slerp
+            qa = R.from_matrix(a[:3, :3])
+            qb = R.from_matrix(b[:3, :3])
+            out[:3, :3] = Slerp([0.0, 1.0], R.concatenate([qa, qb]))(alpha).as_matrix()
+        except Exception:  # pragma: no cover - fall back to matrix lerp
+            out[:3, :3] = a[:3, :3] * (1.0 - alpha) + b[:3, :3] * alpha
+    return out
+
+
 def doa_to_yaw_delta(angle: float) -> float:
     """Map an XVF3800 DoA angle to a head-relative yaw turn (assume front)."""
     return math.pi / 2 - angle
+
+
+def doa_confidence_weight(device_speech: bool) -> float:
+    """Weight a DoA sample; hardware-confirmed speech should dominate."""
+    return 3.0 if device_speech else 1.0
 
 
 class SoundCompass(threading.Thread):
@@ -80,6 +158,7 @@ class SoundCompass(threading.Thread):
         self._user_active = user_active
         self._on_target = on_target
         self._halt = threading.Event()
+        self._muted_ticks = 0
 
     def close(self) -> None:
         self._halt.set()
@@ -90,7 +169,11 @@ class SoundCompass(threading.Thread):
         while not self._halt.wait(1 / self.RATE_HZ):
             if not self._user_active():
                 samples.clear()
+                self._muted_ticks += 1
+                if self._muted_ticks % 600 == 0:
+                    logger.info("DoA muted (user_active=False for ~50s)")
                 continue
+            self._muted_ticks = 0
             try:
                 # The XVF3800 control interface shares the USB bus with the
                 # daemon and throws transient I/O errors under contention —
@@ -108,6 +191,14 @@ class SoundCompass(threading.Thread):
                 continue
             angle, device_speech = reading
             now = time.monotonic()
+            # Diagnostic: log DoA activity every ~30 s so we can tell whether
+            # the thread is alive and user_active() is passing.
+            if not hasattr(self, "_doa_log_tick"):
+                self._doa_log_tick = 0
+            self._doa_log_tick += 1
+            if self._doa_log_tick % 600 == 0:
+                logger.info("DoA alive angle=%.0f° yaw_delta=%.0f°",
+                    math.degrees(angle), math.degrees(doa_to_yaw_delta(angle)))
             try:
                 head_yaw = self._head_yaw()
                 yaw = head_yaw + doa_to_yaw_delta(angle)
@@ -118,10 +209,11 @@ class SoundCompass(threading.Thread):
             # confidence boost: two device-confirmed samples react faster,
             # while three software-confirmed samples still work during
             # XVF double-talk suppression.
-            confidence = 2.0 if device_speech else 1.0
+            confidence = doa_confidence_weight(device_speech)
             samples.append((now, yaw, confidence))
             samples = [(t, y, w) for t, y, w in samples if now - t <= self.WINDOW_S]
-            if sum(w for _, _, w in samples) < self.MIN_CONFIDENCE:
+            total = sum(w for _, _, w in samples)
+            if total < self.MIN_CONFIDENCE:
                 continue
             target = weighted_circular_mean([(y, w) for _, y, w in samples])
             if abs(_wrap(target - head_yaw)) > self.DEADBAND_RAD:
@@ -148,6 +240,11 @@ def weighted_circular_mean(samples: list[tuple[float, float]]) -> float:
 
 def _wrap(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def _smoothstep(alpha: float) -> float:
+    alpha = max(0.0, min(1.0, alpha))
+    return alpha * alpha * (3.0 - 2.0 * alpha)
 
 
 class GazeSpring:
@@ -184,10 +281,17 @@ class Choreographer(threading.Thread):
     YAW_LIMIT = 2.4  # rad, stay inside the ±160° body envelope
     ANTENNA_NEUTRAL = 0.17
 
-    def __init__(self, mini) -> None:
+    def __init__(
+        self,
+        mini,
+        startup_head_pose: np.ndarray | None = None,
+        startup_antennas: tuple[float, float] | list[float] | np.ndarray | None = None,
+        startup_blend_duration: float = 3.0,
+    ) -> None:
         super().__init__(name="yrobot-motion", daemon=True)
         self._mini = mini
         self._halt = threading.Event()
+        self._command_queue: Queue[tuple[str, Any]] = Queue(maxsize=128)
         self._mode = IDLE
         self._mode_blend = {IDLE: 1.0, LISTEN: 0.0, SPEAK: 0.0}
         self._gaze = GazeSpring()
@@ -198,36 +302,255 @@ class Choreographer(threading.Thread):
         self._antennas = np.array([self.ANTENNA_NEUTRAL, self.ANTENNA_NEUTRAL])
         self._still_until = 0.0
         self._still = 0.0  # blended stillness scalar, continuous like modes
+        # One-shot move state (mutated only by play_move / the 50 Hz loop).
+        self._move_name = None
+        self._move_start = -1e9
+        self._move_freqs = {SHAKE: 5.0, NOD: 4.0, TILT: 1.0, SURPRISE: 1.0,
+                            THINK: 0.4, YAWN: 0.5}
+        # Recorded move (official emotion library) state.
+        self._recorded_move = None
+        self._recorded_name = None
+        self._recorded_start = -1e9
+        self._recorded_duration = 0.0
+        # Explicit body yaw: when the gaze target drifts far from the current
+        # head yaw, the body slowly turns to carry the head (like a human
+        # turning toward a speaker) so the head never has to crank past ~35°.
+        self._body_yaw = 0.0
+        self._body_yaw_target = 0.0
+        self._last_set_target_err = 0.0
+        self._set_target_err_interval = 1.0  # rate-limit error logs
+        self._set_target_err_suppressed = 0
+        self._status_lock = threading.Lock()
+        self._gaze_source = "idle"
+        self._gaze_target_updated_at = 0.0
+        self._tracking_debug: dict[str, Any] = {
+            "audio_yaw_rad": None,
+            "visual_yaw_rad": None,
+            "target_yaw_rad": None,
+            "source": "idle",
+            "face_detected": False,
+            "updated_at": 0.0,
+        }
+        self._loop_hz = 0.0
+        self._last_tick_ms = 0.0
+        self._last_loop_at = 0.0
+        self._deadline_misses = 0
+        self._set_target_failures = 0
+        self._set_target_consecutive_failures = 0
+        self.BODY_YAW_LIMIT = math.radians(150.0)
+        self.BODY_FOLLOW_HEAD_DEG = 10.0   # start turning body beyond 10°
+        self.BODY_YAW_SPEED = 1.2          # rad/s, brisk but smooth body turn
+        self._startup_pose = self._valid_pose_or_none(startup_head_pose)
+        self._startup_antennas = self._valid_antennas_or_none(startup_antennas)
+        self._startup_blend_duration = max(0.0, float(startup_blend_duration))
+        self._startup_started_at: float | None = None
+        if self._startup_antennas is not None:
+            self._antennas = self._startup_antennas.copy()
+
+    @staticmethod
+    def _valid_pose_or_none(pose: np.ndarray | None) -> np.ndarray | None:
+        if pose is None:
+            return None
+        arr = np.asarray(pose, dtype=np.float64)
+        if arr.shape != (4, 4):
+            logger.warning("Ignoring startup head pose with invalid shape: %s", arr.shape)
+            return None
+        return arr
+
+    @staticmethod
+    def _valid_antennas_or_none(
+        antennas: tuple[float, float] | list[float] | np.ndarray | None,
+    ) -> np.ndarray | None:
+        if antennas is None:
+            return None
+        arr = np.asarray(antennas, dtype=np.float64)
+        if arr.shape != (2,):
+            logger.warning("Ignoring startup antennas with invalid shape: %s", arr.shape)
+            return None
+        return arr
 
     # -- thread-safe inputs -------------------------------------------------
 
-    def set_mode(self, mode: str) -> None:
-        self._mode = mode
+    def _enqueue_command(self, command: str, payload: Any = None) -> bool:
+        try:
+            self._command_queue.put_nowait((command, payload))
+        except Full:
+            logger.warning("Motion command queue full; dropped %s", command)
+            return False
+        return True
 
-    def set_gaze_target(self, world_yaw: float, now: float | None = None) -> None:
-        self._gaze.target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
-        self._last_voice_at = time.monotonic() if now is None else now
+    def set_mode(self, mode: str) -> None:
+        if mode not in self._mode_blend:
+            logger.warning("Ignoring unknown motion mode: %s", mode)
+            return
+        self._enqueue_command("set_mode", mode)
+
+    def play_move(self, name: str, now: float | None = None) -> bool:
+        """Queue a one-shot expressive move; return whether it was accepted."""
+        if name not in MOVE_SPECS:
+            return False
+        start = time.monotonic() if now is None else now
+        return self._enqueue_command("play_move", (name, start))
+
+    def play_recorded(self, name: str, recorded_moves: Any = None) -> bool:
+        """Validate and queue a recorded emotion move."""
+        if recorded_moves is None:
+            return False
+        try:
+            move = recorded_moves.get(name)
+        except Exception:
+            return False
+        return self._enqueue_command("play_recorded", (name, move, time.monotonic()))
+
+    def play_dance(self, name: str) -> bool:
+        """Validate and queue a dance move from the optional library."""
+        try:
+            from reachy_mini_dances_library.dance_move import DanceMove
+            move = DanceMove(name)
+        except Exception:
+            return False
+        return self._enqueue_command("play_recorded", (name, move, time.monotonic()))
+
+    def current_move(self) -> str | None:
+        return self._move_name
+
+    def current_recorded(self) -> str | None:
+        return getattr(self, "_recorded_name", None) if self._recorded_move is not None else None
+
+    def _apply_commands(self) -> None:
+        """Apply all pending external requests inside the motion thread."""
+        while True:
+            try:
+                command, payload = self._command_queue.get_nowait()
+            except Empty:
+                break
+
+            if command == "set_mode":
+                self._mode = str(payload)
+            elif command == "play_move":
+                self._move_name, self._move_start = payload
+            elif command == "play_recorded":
+                name, move, start = payload
+                self._recorded_move = move
+                self._recorded_name = name
+                self._recorded_start = start
+                self._recorded_duration = float(move.duration)
+            elif command == "set_gaze_target":
+                if len(payload) == 2:
+                    target, voice_at = payload
+                    source = "audio"
+                else:
+                    target, voice_at, source = payload
+                self._gaze.target = target
+                self._last_voice_at = voice_at
+                with self._status_lock:
+                    self._gaze_source = str(source)
+                    self._gaze_target_updated_at = time.time()
+            elif command == "hold_still":
+                self._still_until = max(self._still_until, float(payload))
+            elif command == "release_still":
+                self._still_until = 0.0
+            else:
+                logger.warning("Unknown motion command: %s", command)
+
+    def _move_offsets(
+        self, now: float, dt: float
+    ) -> tuple[float, float, float, float] | None:
+        """Return (roll, pitch, yaw, antenna_delta) for the active move, or
+        None once the move has finished.  A fade envelope keeps the first and
+        last ~200 ms smooth so starting/ending a move never steps the pose.
+        """
+        name = self._move_name
+        if name is None:
+            return None
+        elapsed = now - self._move_start
+        dur, roll_amp, pitch_amp, yaw_amp, ant_delta = MOVE_SPECS[name]
+        if elapsed >= dur:
+            self._move_name = None  # expired
+            return None
+        fade = min(1.0, elapsed / 0.2, (dur - elapsed) / 0.2)
+        freq = self._move_freqs.get(name, 1.0)
+        w = 2.0 * math.pi * freq * elapsed
+        # First cycle of a sine starts at 0 and returns to 0; the fade envelope
+        # guarantees the pose is continuous at both boundaries.
+        roll = roll_amp * math.sin(w) * fade
+        pitch = pitch_amp * math.sin(w) * fade
+        yaw = yaw_amp * math.sin(w) * fade
+        # Antennas: ease the delta in/out with the same fade (bounded).
+        ant = ant_delta * fade
+        return roll, pitch, yaw, ant
+
+    def set_gaze_target(
+        self,
+        world_yaw: float,
+        now: float | None = None,
+        source: str = "audio",
+    ) -> None:
+        target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
+        voice_at = time.monotonic() if now is None else now
+        self._enqueue_command("set_gaze_target", (target, voice_at, source))
+
+    def set_tracking_debug(
+        self,
+        *,
+        audio_yaw: float,
+        visual_yaw: float | None,
+        target_yaw: float,
+        source: str,
+    ) -> None:
+        with self._status_lock:
+            self._tracking_debug = {
+                "audio_yaw_rad": float(audio_yaw),
+                "visual_yaw_rad": None if visual_yaw is None else float(visual_yaw),
+                "target_yaw_rad": float(target_yaw),
+                "source": str(source),
+                "face_detected": visual_yaw is not None,
+                "updated_at": time.time(),
+            }
 
     def current_yaw(self) -> float:
         return self._gaze.pos
 
     def hold_still(self, until: float) -> None:
-        """Freeze all self-motion until ``until`` (monotonic time).
-
-        Called when a barge candidate ducks playback: with the speaker
-        already silent, the motors are the robot's only remaining noise
-        source, and a servo knock during the verify window reads as voice.
-        Doubling as body language — the robot visibly stops to listen.
-        """
-        self._still_until = max(self._still_until, until)
+        """Queue a smooth freeze request for the motion thread."""
+        self._enqueue_command("hold_still", until)
 
     def release_still(self) -> None:
-        self._still_until = 0.0
+        self._enqueue_command("release_still")
 
     def close(self) -> None:
         self._halt.set()
 
-    # -- 50 Hz loop -----------------------------------------------------------
+    def get_status(self) -> dict[str, Any]:
+        """Return a lightweight, thread-safe motion health snapshot."""
+        with self._status_lock:
+            tracking = dict(self._tracking_debug)
+            if tracking.get("updated_at"):
+                tracking["age_s"] = round(time.time() - float(tracking["updated_at"]), 1)
+            else:
+                tracking["age_s"] = None
+            return {
+                "thread_alive": self.is_alive(),
+                "mode": self._mode,
+                "current_move": self._move_name,
+                "current_recorded": self.current_recorded(),
+                "command_queue": self._command_queue.qsize(),
+                "loop_hz": round(self._loop_hz, 2),
+                "last_tick_ms": round(self._last_tick_ms, 2),
+                "last_loop_at": self._last_loop_at or None,
+                "deadline_misses": self._deadline_misses,
+                "set_target_failures": self._set_target_failures,
+                "set_target_consecutive_failures": self._set_target_consecutive_failures,
+                "antennas": [float(value) for value in self._antennas],
+                "gaze_target_rad": round(float(self._gaze.target), 3),
+                "gaze_source": self._gaze_source,
+                "gaze_age_s": (
+                    round(time.time() - self._gaze_target_updated_at, 1)
+                    if self._gaze_target_updated_at
+                    else None
+                ),
+                "tracking": tracking,
+            }
 
     def run(self) -> None:
         try:
@@ -237,21 +560,68 @@ class Choreographer(threading.Thread):
         dt = 1 / self.RATE_HZ
         t0 = time.monotonic()
         next_tick = t0
+        previous_tick = t0
         while not self._halt.is_set():
-            now = time.monotonic()
+            loop_start = time.monotonic()
+            now = loop_start
             t = now - t0
+            with self._status_lock:
+                if loop_start > previous_tick:
+                    self._loop_hz = 1.0 / (loop_start - previous_tick)
+                self._last_loop_at = time.time()
+                if loop_start > next_tick + dt:
+                    self._deadline_misses += 1
+            previous_tick = loop_start
+            self._apply_commands()
             self._blend_modes(dt)
             pose, antennas = self._compose(t, now, dt)
+            # Body yaw follows the gaze target: turn the body (gently) so the
+            # head only needs a small relative yaw.  Automatic body yaw on the
+            # daemon still keeps us inside mechanical limits; this explicit
+            # tracking makes the body proactively face the speaker instead of
+            # waiting for the head to hit its 65° limit.
+            rel = _wrap(self._gaze.target - self._body_yaw)
+            # Always aim the body at the gaze target, but only actually move
+            # once the head-relative yaw exceeds the follow threshold.  This
+            # gives natural "look first, then turn body" behaviour and keeps
+            # the body from chasing tiny gaze jitter.
+            if abs(rel) > math.radians(self.BODY_FOLLOW_HEAD_DEG):
+                step = self.BODY_YAW_SPEED * dt * (1.0 if rel > 0 else -1.0)
+                self._body_yaw += step
+            self._body_yaw = max(
+                -self.BODY_YAW_LIMIT, min(self.BODY_YAW_LIMIT, self._body_yaw))
             try:
-                self._mini.set_target(head=pose, antennas=antennas)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("set_target dropped: %s", exc)
+                self._mini.set_target(head=pose, antennas=antennas, body_yaw=self._body_yaw)
+                self._record_set_target_success()
+            except Exception as exc:
+                self._record_set_target_failure()
+                now_err = time.monotonic()
+                if now_err - self._last_set_target_err >= self._set_target_err_interval:
+                    msg = f"set_target failed: {exc}"
+                    if self._set_target_err_suppressed:
+                        msg += f" (suppressed {self._set_target_err_suppressed} repeats)"
+                        self._set_target_err_suppressed = 0
+                    logger.warning(msg)
+                    self._last_set_target_err = now_err
+                else:
+                    self._set_target_err_suppressed += 1
+            with self._status_lock:
+                self._last_tick_ms = (time.monotonic() - loop_start) * 1000.0
             next_tick += dt
             sleep = next_tick - time.monotonic()
             if sleep > 0:
                 time.sleep(sleep)
             else:
                 next_tick = time.monotonic()  # never try to catch up with a jump
+
+    def _record_set_target_success(self) -> None:
+        with self._status_lock:
+            self._set_target_consecutive_failures = 0
+
+    def _record_set_target_failure(self) -> None:
+        with self._status_lock:
+            self._set_target_failures += 1
+            self._set_target_consecutive_failures += 1
 
     def _blend_modes(self, dt: float) -> None:
         """Cross-fade posture weights (~250 ms) so mode flips never step."""
@@ -287,9 +657,16 @@ class Choreographer(threading.Thread):
         sac_yaw = self._saccade_yaw.step(dt, freeze=self._still) * idle * calm
         sac_pitch = self._saccade_pitch.step(dt, freeze=self._still) * idle * calm
 
-        # Conversation posture.
+        # Conversation posture. Speaking gets an obvious but bounded nod so the
+        # robot reads as actively talking rather than merely holding a pose.
         pitch += 0.06 * listen - 0.03 * speak  # lean in to listen, lift to speak
         roll += 0.05 * listen * calm * math.sin(2 * math.pi * 0.05 * t)  # curious tilt
+        speak_nod = speak * calm * (
+            0.075 * math.sin(2 * math.pi * 1.15 * t)
+            + 0.018 * math.sin(2 * math.pi * 2.3 * t + 0.8)
+        )
+        pitch += speak_nod
+        roll += 0.018 * speak * calm * math.sin(2 * math.pi * 0.58 * t + 0.4)
 
         # After long silence, drift the gaze home.
         if now - self._last_voice_at > 45.0:
@@ -298,12 +675,88 @@ class Choreographer(threading.Thread):
         yaw = self._gaze.step(dt, freeze=self._still) + sac_yaw
         pose = rpy_pose(roll, pitch + sac_pitch, yaw, z)
 
-        # Antennas: perked and still when listening, dancing when speaking.
-        target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen)
-        sway = 0.05 * idle * math.sin(2 * math.pi * 0.3 * t) + 0.10 * speak * math.sin(
-            2 * math.pi * 1.4 * t
-        )
-        goal = np.array([target + sway, target - sway])
+        # One-shot expressive move layered on top of the composed pose.
+        moffs = self._move_offsets(now, dt)
+        if moffs is not None:
+            m_roll, m_pitch, m_yaw, m_ant = moffs
+            roll += m_roll
+            pitch += m_pitch
+            yaw += m_yaw
+            pose = rpy_pose(roll, pitch + sac_pitch, yaw, z)
+        else:
+            m_ant = 0.0
+
+        # Recorded move (official emotion library) takes over the pose
+        # entirely while playing, with a 300 ms blend in/out so neither
+        # start nor end ever steps.
+        rmv = self._recorded_move
+        if rmv is not None:
+            rel = now - self._recorded_start
+            dur = self._recorded_duration
+            if rel >= dur:
+                self._recorded_move = None
+            else:
+                try:
+                    rec_pose, rec_ant, _ = rmv.evaluate(rel)
+                    blend = min(1.0, rel / 0.3, (dur - rel) / 0.3)
+                    # Interpolate pose elements (position + rotation matrix)
+                    # between the composed pose and the recorded pose.
+                    pose = _blend_pose(pose, np.asarray(rec_pose, dtype=np.float64), blend)
+                    ra = np.asarray(rec_ant, dtype=np.float64)
+                    m_ant = float((ra[0] + ra[1]) / 2.0)
+                except Exception:
+                    self._recorded_move = None
+
+        # Antennas: freeze when listening (official app pattern), sway otherwise.
+        if listen > 0.5:
+            if not hasattr(self, '_listen_antennas') or getattr(self, '_last_listen', 0) < 0.5:
+                self._listen_antennas = self._antennas.copy()
+            goal = self._listen_antennas.copy()
+        else:
+            if hasattr(self, '_listen_antennas') and getattr(self, '_last_listen', 0) > 0.5:
+                self._antenna_blend = 0.0
+            self._antenna_blend = min(1.0, getattr(self, '_antenna_blend', 1.0) + dt / 0.4)
+            target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen) + m_ant
+            sway = 0.05 * idle * math.sin(2 * math.pi * 0.3 * t) + 0.10 * speak * math.sin(
+                2 * math.pi * 1.4 * t
+            )
+            target_arr = np.array([target + sway, target - sway])
+            if hasattr(self, '_listen_antennas'):
+                target_arr = self._listen_antennas * (1.0 - self._antenna_blend) + target_arr * self._antenna_blend
+            goal = target_arr
+        self._last_listen = listen
         goal = goal * (1.0 - self._still) + self._antennas * self._still  # freeze in place
         self._antennas += (goal - self._antennas) * min(dt / 0.12, 1.0)
+        pose, antennas = self._apply_startup_blend(pose, self._antennas, now)
+        self._antennas = antennas.copy()
         return pose, [float(self._antennas[0]), float(self._antennas[1])]
+
+    def _apply_startup_blend(
+        self,
+        pose: np.ndarray,
+        antennas: np.ndarray,
+        now: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if (
+            self._startup_pose is None
+            and self._startup_antennas is None
+        ) or self._startup_blend_duration <= 0:
+            return pose, antennas
+
+        if self._startup_started_at is None:
+            self._startup_started_at = now
+        alpha = _smoothstep((now - self._startup_started_at) / self._startup_blend_duration)
+
+        if alpha >= 1.0:
+            self._startup_pose = None
+            self._startup_antennas = None
+            return pose, antennas
+
+        blended_pose = pose
+        if self._startup_pose is not None:
+            blended_pose = _blend_pose(self._startup_pose, pose, alpha)
+
+        blended_antennas = antennas
+        if self._startup_antennas is not None:
+            blended_antennas = self._startup_antennas * (1.0 - alpha) + antennas * alpha
+        return blended_pose, blended_antennas

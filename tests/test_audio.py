@@ -41,7 +41,6 @@ class FakeMedia:
     def clear_player(self):
         self.cleared += 1
 
-
 def test_duplex_audio_profile_uses_verified_sdk_config():
     class ConfigurableAudio:
         def __init__(self):

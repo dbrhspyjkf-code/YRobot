@@ -315,6 +315,110 @@ def test_spoken_control_ignores_ambiguous_speaker_phrase(tmp_path):
     assert volume.writes == []
 
 
+
+class SequenceOpener:
+    def __init__(self, documents):
+        self.documents = list(documents)
+        self.calls = []
+
+    def __call__(self, request, timeout):
+        self.calls.append((request, timeout))
+        if not self.documents:
+            raise AssertionError("unexpected request")
+        return FakeResponse(self.documents.pop(0))
+
+
+def test_spoken_control_sonos_volume_up_steps_by_10_and_caps_at_70(tmp_path):
+    opener = SequenceOpener([
+        {"entity_id": "media_player.ke_ting", "state": "idle", "attributes": {"volume_level": 0.65}},
+        {},
+    ])
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音响音量调大")
+
+    assert result == {
+        "ok": True,
+        "device": "音响音量",
+        "action": "volume_up",
+        "volume_percent": 70,
+    }
+    get_request, _ = opener.calls[0]
+    post_request, _ = opener.calls[1]
+    assert get_request.full_url == "http://homeassistant.local:8123/api/states/media_player.ke_ting"
+    assert post_request.full_url == "http://homeassistant.local:8123/api/services/media_player/volume_set"
+    assert json.loads(post_request.data) == {
+        "entity_id": "media_player.ke_ting",
+        "volume_level": 0.7,
+    }
+
+
+def test_spoken_control_sonos_volume_down_steps_by_10(tmp_path):
+    opener = SequenceOpener([
+        {"entity_id": "media_player.ke_ting", "state": "idle", "attributes": {"volume_level": 0.2}},
+        {},
+    ])
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音响音量调小")
+
+    assert result == {
+        "ok": True,
+        "device": "音响音量",
+        "action": "volume_down",
+        "volume_percent": 10,
+    }
+    post_request, _ = opener.calls[1]
+    assert json.loads(post_request.data) == {
+        "entity_id": "media_player.ke_ting",
+        "volume_level": 0.1,
+    }
+
+
+def test_spoken_control_sonos_short_volume_up_steps_by_10(tmp_path):
+    opener = SequenceOpener([
+        {"entity_id": "media_player.ke_ting", "state": "idle", "attributes": {"volume_level": 0.2}},
+        {},
+    ])
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音量大")
+
+    assert result == {
+        "ok": True,
+        "device": "音响音量",
+        "action": "volume_up",
+        "volume_percent": 30,
+    }
+    post_request, _ = opener.calls[1]
+    assert json.loads(post_request.data) == {
+        "entity_id": "media_player.ke_ting",
+        "volume_level": 0.3,
+    }
+
+
+def test_spoken_control_sonos_short_volume_down_steps_by_10(tmp_path):
+    opener = SequenceOpener([
+        {"entity_id": "media_player.ke_ting", "state": "idle", "attributes": {"volume_level": 0.2}},
+        {},
+    ])
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("音量小")
+
+    assert result == {
+        "ok": True,
+        "device": "音响音量",
+        "action": "volume_down",
+        "volume_percent": 10,
+    }
+    post_request, _ = opener.calls[1]
+    assert json.loads(post_request.data) == {
+        "entity_id": "media_player.ke_ting",
+        "volume_level": 0.1,
+    }
+
+
 def test_spoken_control_routes_sonos_volume_away_from_robot_speaker(tmp_path):
     opener = RecordingOpener({"ok": True, "result": "Sonos volume set"})
     volume = FakeVolumeController(50)
@@ -375,17 +479,11 @@ def test_spoken_control_treats_truncated_sonos_volume_digit_as_tens(tmp_path):
     assert body["arguments"]["prompt"] == "音响音量调到20"
 
 
-def test_spoken_control_reports_unclear_sonos_volume_target(tmp_path):
+def test_spoken_control_ignores_incomplete_sonos_volume_fragment(tmp_path):
     opener = RecordingOpener({"ok": True, "result": "should not call"})
     executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
 
-    result = executor.execute_spoken_control("音响音量")
-
-    assert result == {
-        "ok": False,
-        "device": "音响音量",
-        "error": "没听清音响音量要调到多少",
-    }
+    assert executor.execute_spoken_control("音响音量") is None
     assert opener.calls == []
 
 
@@ -555,3 +653,166 @@ def test_tool_result_is_bounded_and_contains_no_token(tmp_path):
 
     assert len(serialized.encode()) <= 4096
     assert "private-ha-token" not in serialized
+
+
+def test_spoken_control_sonos_ignores_complaint_with_chinese_one(tmp_path):
+    executor = ToolExecutor(make_settings(tmp_path))
+
+    assert executor.execute_spoken_control("我说音响，然后他一直调") is None
+
+
+def test_spoken_control_sonos_allows_explicit_numeric_set(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True}
+
+    executor = ToolExecutor(make_settings(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    assert executor.execute_spoken_control("音响音量调到20") == {"ok": True}
+    assert calls == [("control_sonos", {"prompt": "音响音量调到20"})]
+
+def test_spoken_control_routes_spoken_stock_code_to_hermes_price(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "乐鑫科技 当前价格 114.64 元"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("帮我查询六八八零幺八的价格")
+
+    assert result == {"ok": True, "result": "乐鑫科技 当前价格 114.64 元"}
+    assert calls == [("get_stock_price", {"prompt": "688018"})]
+
+
+def test_spoken_control_routes_arabic_stock_code_to_hermes_price(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "乐鑫科技 当前价格 114.64 元"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("查询688018价格")
+
+    assert result == {"ok": True, "result": "乐鑫科技 当前价格 114.64 元"}
+    assert calls == [("get_stock_price", {"prompt": "688018"})]
+
+def test_spoken_control_recovers_dropped_zero_in_688_stock_code(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "乐鑫科技 当前价格 114.64 元"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("查询六八八幺八价格")
+
+    assert result == {"ok": True, "result": "乐鑫科技 当前价格 114.64 元"}
+    assert calls == [("get_stock_price", {"prompt": "688018"})]
+
+
+
+
+
+def test_spoken_control_routes_portfolio_query_to_hermes(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "portfolio result"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("查询我的自选股")
+
+    assert result == {"ok": True, "result": "portfolio result"}
+    assert calls == [("get_portfolio_stocks", {})]
+
+
+def test_spoken_control_routes_add_portfolio_stock_to_hermes(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "added"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("把乐鑫科技加入自选股")
+
+    assert result == {"ok": True, "result": "added"}
+    assert calls == [("add_portfolio_stock", {"name": "乐鑫科技"})]
+
+
+def test_spoken_control_routes_remove_portfolio_stock_to_hermes(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "removed"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("从自选股删除芒果超媒")
+
+    assert result == {"ok": True, "result": "removed"}
+    assert calls == [("remove_portfolio_stock", {"name": "芒果超媒"})]
+
+
+def test_spoken_control_routes_portfolio_advice_to_hermes(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "portfolio advice"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("查询自选股建议")
+
+    assert result == {"ok": True, "result": "portfolio advice"}
+    assert calls == [("get_stock_advice", {"prompt": "自选股"})]
+
+
+def test_spoken_control_does_not_route_single_stock_advice_to_portfolio_tool(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "advice"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    assert executor.execute_spoken_control("六八八零一八能不能买") is None
+    assert calls == []
+
+
+def test_spoken_control_routes_stock_detail_to_hermes(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_execute(name, arguments):
+        calls.append((name, arguments))
+        return {"ok": True, "result": "detail"}
+
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    monkeypatch.setattr(executor, "execute", fake_execute)
+
+    result = executor.execute_spoken_control("查询六八八零一八基本面")
+
+    assert result == {"ok": True, "result": "detail"}
+    assert calls == [("get_stock_detail", {"prompt": "688018"})]

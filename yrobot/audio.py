@@ -8,13 +8,14 @@ import os
 import threading
 import time
 
+
 logger = logging.getLogger(__name__)
 
 FRAME_MS = 20
 FRAME_SAMPLES = 16_000 * FRAME_MS // 1000  # 320
 SILENT_DB = -120.0
 # Tunable VAD threshold: set via environment or /api/audio/vad runtime.
-_vad_rms_min = float(os.environ.get("YROBOT_VAD_RMS_MIN", "0.065"))
+_vad_rms_min = float(os.environ.get("YROBOT_VAD_RMS_MIN", "0.11"))
 DASHBOARD_MIC_SILENT_DB = -60.0
 DASHBOARD_MIC_LOUD_DB = 0.0
 DASHBOARD_MIC_VOICED_RMS = 0.004
