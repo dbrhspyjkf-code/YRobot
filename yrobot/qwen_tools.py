@@ -298,6 +298,9 @@ class ToolExecutor:
         stock_result = self._execute_spoken_stock_tool(text)
         if stock_result is not None:
             return stock_result
+        weather_result = self._execute_spoken_weather_query(text)
+        if weather_result is not None:
+            return weather_result
         volume_result = self._execute_spoken_volume_control(text)
         if volume_result is not None:
             return volume_result
@@ -325,6 +328,61 @@ class ToolExecutor:
                 self._last_spoken_at = timestamp
             return result
         return None
+
+
+    def _execute_spoken_weather_query(self, text: str) -> dict[str, Any] | None:
+        if "天气" not in text or not self.settings.hermes_tools_enabled:
+            return None
+        city = text
+        for token in (
+            "今天", "明天", "后天", "现在", "当前", "实时", "查询", "查一下",
+            "帮我", "请", "看看", "问一下", "一下", "的", "天气预报", "天气",
+            "怎么样", "如何", "好吗", "咋样", "啊", "呀", "呢", "吗",
+        ):
+            city = city.replace(token, "")
+        city = city.strip()
+        if not city:
+            return None
+        result = self.execute("get_weather", {"city": city})
+        if result.get("ok") is not True:
+            return result
+        return {"ok": True, "result": self._format_weather_result(result, city)}
+
+    @staticmethod
+    def _format_weather_result(result: dict[str, Any], fallback_city: str) -> str:
+        city = str(result.get("city") or fallback_city).strip()
+        condition = str(result.get("condition") or "").strip()
+
+        def compact_number(value: Any) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return ""
+            try:
+                number = float(text)
+            except ValueError:
+                return text
+            if number.is_integer():
+                return str(int(number))
+            return str(number)
+
+        parts = []
+        temp = compact_number(result.get("temp_c"))
+        feels_like = compact_number(result.get("feels_like_c"))
+        humidity = compact_number(result.get("humidity"))
+        wind = compact_number(result.get("wind_kmph"))
+        if condition:
+            parts.append(condition)
+        if temp:
+            parts.append(f"{temp}度")
+        if feels_like:
+            parts.append(f"体感{feels_like}度")
+        if humidity:
+            parts.append(f"湿度{humidity}%")
+        if wind:
+            parts.append(f"风速{wind}公里每小时")
+        if not parts:
+            return f"{city}天气已查到。"
+        return f"{city}天气：" + "，".join(parts) + "。"
 
 
     def _execute_spoken_stock_tool(self, text: str) -> dict[str, Any] | None:

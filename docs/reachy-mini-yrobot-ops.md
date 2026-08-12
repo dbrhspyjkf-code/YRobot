@@ -1211,3 +1211,12 @@ Verification: added test_function_call_followup_retries_after_active_response_ra
 Change: default YRobot persona now identifies as "小白" instead of "Reachy". Wake words remain unchanged; the assistant should answer as 小白 and no longer introduce itself as Reachy or mention hardware identity by default.
 
 Verification: added test_default_persona_identifies_as_xiaobai_not_reachy; py_compile passed for yrobot/config.py, yrobot/qwen_realtime.py, and yrobot/main.py; focused config/QWEN wake/session tests passed.
+
+
+## 2026-08-12 14:50 - Local deterministic weather spoken route
+
+Symptom: ASR correctly heard "今天深圳天气怎么样啊？", but QWEN did not call get_weather and replied by repeating/rewriting the question. Root cause: weather depended on model-selected function calling after local spoken-control miss.
+
+Change: YRobot spoken control now directly routes phrases containing "天气" to the verified Hermes REST weather endpoint when Hermes tools are enabled. It extracts the city locally, formats the structured weather response into an exact result sentence, and uses the existing exact-TTS path instead of letting the main model rewrite it.
+
+Verification: added test_spoken_control_routes_weather_query_to_exact_result; py_compile passed for yrobot/qwen_tools.py and yrobot/main.py; focused weather/stock/exact-result tests passed; live read-only ToolExecutor check for "今天深圳天气怎么样啊？" returned an exact Shenzhen weather sentence.

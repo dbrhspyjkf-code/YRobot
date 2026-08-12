@@ -153,6 +153,32 @@ def test_rest_weather_uses_only_verified_8766_route(tmp_path):
     assert timeout == 5.0
 
 
+def test_spoken_control_routes_weather_query_to_exact_result(tmp_path):
+    opener = RecordingOpener(
+        {
+            "ok": True,
+            "city": "深圳",
+            "condition": "少云",
+            "temp_c": "33.0",
+            "feels_like_c": "34.0",
+            "humidity": "68",
+            "wind_kmph": "25.0",
+        }
+    )
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
+
+    result = executor.execute_spoken_control("今天深圳天气怎么样啊？")
+
+    assert result == {
+        "ok": True,
+        "result": "深圳天气：少云，33度，体感34度，湿度68%，风速25公里每小时。",
+    }
+    request, timeout = opener.calls[0]
+    assert request.full_url == "http://192.168.1.200:8766/weather?city=%E6%B7%B1%E5%9C%B3"
+    assert request.get_method() == "GET"
+    assert timeout == 5.0
+
+
 def test_ha_light_action_uses_whitelist_mapping_not_model_entity_id(tmp_path):
     opener = RecordingOpener([])
     settings = make_settings(
