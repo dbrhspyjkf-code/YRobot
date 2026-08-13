@@ -172,6 +172,25 @@ class QwenRealtimeClient:
     async def commit_turn(self) -> None:
         await self._send({"type": "input_audio_buffer.commit"})
 
+    async def resend_session_update(self) -> None:
+        """Re-emit the current session.update payload.
+
+        Used by main.py when the recognised speaker changes mid-session
+        so the model can address the new person by name. QWEN
+        Qwen-Omni-Flash-Realtime applies the new session config to
+        the next response (an in-flight response is unaffected).
+        """
+        await self._send(self.session_update())
+
+    async def resend_session_update_with(self, *, instructions_override: str) -> None:
+        """Re-emit session.update with a caller-supplied instructions
+        string. main.py uses this to splice in 'you are now talking
+        to {name}' without rebuilding the rest of the session dict.
+        """
+        payload = self.session_update()
+        payload["session"]["instructions"] = instructions_override
+        await self._send(payload)
+
     async def request_response(self, *, cancel_active: bool = True) -> None:
         if cancel_active:
             await self._cancel_active_response()
@@ -209,15 +228,18 @@ class QwenRealtimeClient:
         # 'Conversation already has an active response', which cascades
         # into the service going to safe_mode.
         import asyncio as _asyncio
+
         await _asyncio.sleep(0.4)
-        await self._send({
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": role,
-                "content": [{"type": "input_text", "text": text}],
-            },
-        })
+        await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": role,
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
         await self.request_response()
 
     async def set_turn_detection(self, mode: str | None) -> None:
@@ -258,7 +280,11 @@ class QwenRealtimeClient:
             elapsed = None
             if self._speech_started_at is not None:
                 elapsed = time.monotonic() - self._speech_started_at
-            logger.info("QWEN ASR completed: elapsed_s=%s transcript=%r", None if elapsed is None else round(elapsed, 3), transcript)
+            logger.info(
+                "QWEN ASR completed: elapsed_s=%s transcript=%r",
+                None if elapsed is None else round(elapsed, 3),
+                transcript,
+            )
             self._on_input_transcript(transcript)
         elif event_type == "response.audio_transcript.done":
             self._on_output_transcript(str(event.get("transcript") or ""))
@@ -272,7 +298,10 @@ class QwenRealtimeClient:
             elapsed = None
             if self._speech_started_at is not None:
                 elapsed = time.monotonic() - self._speech_started_at
-            logger.info("QWEN ASR speech_stopped: elapsed_s=%s", None if elapsed is None else round(elapsed, 3))
+            logger.info(
+                "QWEN ASR speech_stopped: elapsed_s=%s",
+                None if elapsed is None else round(elapsed, 3),
+            )
         elif event_type == "response.function_call_arguments.done":
             await self._complete_tool_call(event)
         elif event_type == "response.done":

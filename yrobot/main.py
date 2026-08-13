@@ -20,6 +20,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
@@ -34,6 +35,7 @@ from yrobot.app_config import (
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
+from yrobot.faces import FaceDB
 from yrobot.vision import LatestCamera
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
@@ -86,9 +88,7 @@ class RecentTranscriptWindow:
         if not text:
             return []
         current = time.monotonic() if now is None else now
-        self._items = [
-            (at, value) for at, value in self._items if current - at <= self.window_s
-        ]
+        self._items = [(at, value) for at, value in self._items if current - at <= self.window_s]
         self._items.append((current, text))
         self._items = self._items[-self.max_items :]
         values = [value for _, value in self._items]
@@ -122,6 +122,7 @@ def _clear_startup_failure_counter() -> None:
 
 def _start_motion_connection_watchdog(choreo, stop_event: threading.Event) -> threading.Thread:
     """Restart YRobot when the SDK set_target connection is gone for ~30s."""
+
     def _watch() -> None:
         while not stop_event.wait(5.0):
             try:
@@ -136,6 +137,7 @@ def _start_motion_connection_watchdog(choreo, stop_event: threading.Event) -> th
                     consecutive,
                 )
                 os._exit(70)
+
     thread = threading.Thread(target=_watch, name="motion-connection-watchdog", daemon=True)
     thread.start()
     return thread
@@ -200,7 +202,12 @@ def _qwen_normalize_for_control(value: str) -> str:
 
 def _qwen_sonos_fragment(value: str) -> bool:
     return _qwen_normalize_for_control(value) in {
-        "音响", "音响音", "音响音量", "音箱", "音箱音", "音箱音量"
+        "音响",
+        "音响音",
+        "音响音量",
+        "音箱",
+        "音箱音",
+        "音箱音量",
     }
 
 
@@ -211,7 +218,10 @@ def _qwen_step_direction(value: str) -> str | None:
     # recent Sonos-volume fragment, so mapping those narrow homophones
     # is safer than letting the model claim it adjusted volume without
     # a local tool result.
-    if any(phrase in text for phrase in ("调大", "搅拌", "交大", "大一点", "大点", "声音大", "加大", "加点", "提高")):
+    if any(
+        phrase in text
+        for phrase in ("调大", "搅拌", "交大", "大一点", "大点", "声音大", "加大", "加点", "提高")
+    ):
         return "调大"
     if any(phrase in text for phrase in ("调小", "小一点", "小点", "声音小", "减小", "降低")):
         return "调小"
@@ -229,11 +239,11 @@ def _qwen_contextual_sonos_step_command(last_user_text: str, current_user_text: 
     return f"音响音量{direction}" if direction else None
 
 
-
 def _qwen_should_request_response_after_local_control(
     local_matched: bool, command_recognizer_matched: bool
 ) -> bool:
     return not local_matched and not command_recognizer_matched
+
 
 def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
     return gate.active
@@ -379,7 +389,12 @@ class Yrobot(ReachyMiniApp):
         from yrobot.audio import _publish_dashboard_mic, get_vad_rms_min
         from yrobot.audio_runtime import PcmPlayback, WakeGate
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
-        from yrobot.qwen_realtime import QwenRealtimeClient, _model_url
+        from yrobot.qwen_realtime import (
+            DEFAULT_INSTRUCTIONS,
+            QwenRealtimeClient,
+            VISION_POLICY,
+            _model_url,
+        )
         from yrobot.qwen_tools import ToolExecutor
 
         startup_head_pose = None
@@ -419,6 +434,7 @@ class Yrobot(ReachyMiniApp):
 
         # ── SpeakerTracker: audio DoA + visual face (shared with XIAOZHI) ──
         from yrobot.tracking import SpeakerTracker
+
         tracker = SpeakerTracker(
             reachy_mini,
             choreo,
@@ -493,6 +509,42 @@ class Yrobot(ReachyMiniApp):
                         camera.mark_sent()
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("append_image failed: %s", exc)
+
+            # ── Face recognition ─────────────────────────────────────────
+            # FaceDB is opened once per QWEN session; on-disk state
+            # survives restarts. Recognition runs after every audio
+            # chunk that has a fresh JPEG cached, and a speaker
+            # change triggers a session.update re-emit so the model
+            # can address the new person by name.
+            face_db = FaceDB()
+            _current_speaker = [""]  # mutable; "" = unknown
+
+            async def _drain_face() -> None:
+                if camera is None:
+                    return
+                jpeg = camera.take_latest()
+                if jpeg is None:
+                    return
+                arr = np.frombuffer(jpeg, np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    return
+                name = face_db.recognize(frame) or ""
+                if name == _current_speaker[0]:
+                    return
+                _current_speaker[0] = name
+                speaker_prompt = f"\n\n你正在跟 {name} 说话。\n" if name else "\n"
+                try:
+                    extra = (
+                        f"{DEFAULT_INSTRUCTIONS}\n{speaker_prompt}"
+                        f"{settings.effective_system_prompt}"
+                    )
+                    if settings.send_video:
+                        extra = f"{extra}\n\n{VISION_POLICY}"
+                    await client.resend_session_update_with(instructions_override=extra)
+                    logger.info("QWEN session.update re-emitted: speaker=%r", name or None)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("session.update on speaker change failed: %s", exc)
 
             def save_asr_debug_wav(transcript: str) -> None:
                 nonlocal asr_capture, asr_capturing
@@ -577,17 +629,26 @@ class Yrobot(ReachyMiniApp):
                         max_size=10_000_000,
                     ) as ws:
                         await ws.send(_json.dumps(session_payload, ensure_ascii=False))
-                        await ws.send(_json.dumps({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "message",
-                                "role": "user",
-                                "content": [{
-                                    "type": "input_text",
-                                    "text": "朗读以下原文，不要改写：" + chr(10) + exact,
-                                }],
-                            },
-                        }, ensure_ascii=False))
+                        await ws.send(
+                            _json.dumps(
+                                {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "input_text",
+                                                "text": "朗读以下原文，不要改写："
+                                                + chr(10)
+                                                + exact,
+                                            }
+                                        ],
+                                    },
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
                         await ws.send(_json.dumps({"type": "response.create"}))
                         while True:
                             msg = _json.loads(await ws.recv())
@@ -597,7 +658,10 @@ class Yrobot(ReachyMiniApp):
                                 if delta:
                                     on_audio(_base64.b64decode(delta))
                             elif event_type == "response.audio_transcript.done":
-                                logger.info("qwen exact tts transcript: %s", str(msg.get("transcript") or "")[:160])
+                                logger.info(
+                                    "qwen exact tts transcript: %s",
+                                    str(msg.get("transcript") or "")[:160],
+                                )
                             elif event_type == "response.done":
                                 on_response_done()
                                 return True
@@ -667,9 +731,7 @@ class Yrobot(ReachyMiniApp):
                                 "不要提供任何股票代码、价格、涨跌幅或其他数字。"
                             )
                             return True
-                        await client.cancel_and_inject(
-                            _qwen_spoken_control_result_feedback(result)
-                        )
+                        await client.cancel_and_inject(_qwen_spoken_control_result_feedback(result))
                         return True
                 feedback = _qwen_unmatched_spoken_control_feedback(candidates)
                 if feedback:
@@ -697,7 +759,9 @@ class Yrobot(ReachyMiniApp):
                     last_sonos_fragment = transcript
                     last_sonos_fragment_at = now
                 candidates = transcript_window.candidates(transcript)
-                contextual_command = _qwen_contextual_sonos_step_command(last_sonos_fragment, transcript)
+                contextual_command = _qwen_contextual_sonos_step_command(
+                    last_sonos_fragment, transcript
+                )
                 if contextual_command and now - last_sonos_fragment_at <= 15.0:
                     candidates = [*candidates, contextual_command]
                 if gate.observe_transcript(transcript):
@@ -705,13 +769,17 @@ class Yrobot(ReachyMiniApp):
                     choreo.play_move("nod")
                     asyncio.create_task(activate_from_wake())
                 if gate.active and candidates:
+
                     async def _run_spoken_control() -> None:
                         matched = await execute_local_spoken_control(candidates)
                         command_matched = False
                         if not matched and wav_bytes:
                             command_matched = await execute_command_recognizer(wav_bytes)
-                        if _qwen_should_request_response_after_local_control(matched, command_matched):
+                        if _qwen_should_request_response_after_local_control(
+                            matched, command_matched
+                        ):
                             await client.request_response()
+
                     asyncio.create_task(_run_spoken_control())
 
             def on_output_transcript(transcript: str) -> None:
@@ -723,9 +791,7 @@ class Yrobot(ReachyMiniApp):
             def on_error(message: str) -> None:
                 RUNTIME_HEALTH.update(last_error=message)
 
-            tool_executor = ToolExecutor(
-                settings, volume_controller=volume_controller_singleton()
-            )
+            tool_executor = ToolExecutor(settings, volume_controller=volume_controller_singleton())
             command_recognizer = CommandRecognizer(settings)
             client = QwenRealtimeClient(
                 settings,
@@ -800,6 +866,7 @@ class Yrobot(ReachyMiniApp):
                             asr_capture.extend(pcm)
                         await client.append_pcm(pcm)
                         await _drain_camera()
+                        await _drain_face()
                         turn_frames += 1
                         if silence_frames >= 16 or turn_frames >= 167:
                             await client.commit_turn()
@@ -823,6 +890,7 @@ class Yrobot(ReachyMiniApp):
 
                     await client.append_pcm(pcm)
                     await _drain_camera()
+                    await _drain_face()
                     turn_frames += 1
                     if silence_frames >= 8 or turn_frames >= 167:
                         await client.commit_turn()
@@ -873,14 +941,13 @@ class Yrobot(ReachyMiniApp):
         import sounddevice as _sd
         import subprocess as _sp
         import websockets as _ws
-        import cv2
-        import math
         import opuslib
-        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer, SoundCompass, head_yaw_of
+        from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.audio import _publish_dashboard_mic
         from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
         import time as _sleep
+
         settings = Settings.from_env()
 
         # ── Safe motor startup with slow Choreographer rise ───────
@@ -928,19 +995,24 @@ class Yrobot(ReachyMiniApp):
         choreo._gaze._max_vel = 0.3
         choreo._gaze._omega = 2.0
         from yrobot.app_config import motion_controller_singleton
+
         motion_controller_singleton().set(choreo)
         # Official emotion library (85 recorded moves) — lazy singleton so
         # playback works even if the library is slow to load on first use.
         _recorded_moves = [None]
+
         def _get_recorded():
             if _recorded_moves[0] is None:
                 try:
                     from reachy_mini.motion.recorded_move import RecordedMoves
+
                     _recorded_moves[0] = RecordedMoves(
-                        "pollen-robotics/reachy-mini-emotions-library")
+                        "pollen-robotics/reachy-mini-emotions-library"
+                    )
                 except Exception as exc:
                     logger.warning("emotion library unavailable: %s", exc)
             return _recorded_moves[0]
+
         motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
         _start_motion_connection_watchdog(choreo, stop_event)
@@ -952,6 +1024,7 @@ class Yrobot(ReachyMiniApp):
 
         # ── SpeakerTracker: audio DoA + visual face (shared with QWEN) ───
         from yrobot.tracking import SpeakerTracker
+
         tracker = SpeakerTracker(
             reachy_mini,
             choreo,
@@ -983,12 +1056,12 @@ class Yrobot(ReachyMiniApp):
         mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
 
-
         # Playback is intentionally isolated from the WebSocket event loop.
         # aplay writes can block on ALSA; the receive coroutine must never wait
         # on that pipe or it will stall incoming TTS packets.
         import queue as _pq
         import threading as _th
+
         _audio_q = BoundedLatestQueue[bytes | None](maxsize=50)
         _writer_stop = _th.Event()
         _audio_proc_lock = _th.Lock()
@@ -1019,7 +1092,9 @@ class Yrobot(ReachyMiniApp):
                                 with _audio_proc_lock:
                                     _audio_proc[0] = proc
                                 _audio_stats["restarts"] += 1
-                                logger.info("audio-out: started aplay (%d)", _audio_stats["restarts"])
+                                logger.info(
+                                    "audio-out: started aplay (%d)", _audio_stats["restarts"]
+                                )
                             proc.stdin.write(chunk)
                             _audio_stats["written"] += 1
                             break
@@ -1093,13 +1168,36 @@ class Yrobot(ReachyMiniApp):
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
-            hdrs = {"Authorization": f"Bearer {XIAOZHI_TOKEN}", "Device-Id": XIAOZHI_DEVICE_ID, "Protocol-Version": "1"}
+            hdrs = {
+                "Authorization": f"Bearer {XIAOZHI_TOKEN}",
+                "Device-Id": XIAOZHI_DEVICE_ID,
+                "Protocol-Version": "1",
+            }
             RUNTIME_HEALTH.update(ws_state="connecting")
-            async with _ws.connect(XIAOZHI_CONV_URL, additional_headers=hdrs, open_timeout=12, ping_interval=20, ping_timeout=10) as ws:
-                await ws.send(_j.dumps({"type":"hello","version":1,"transport":"websocket",
-                    "audio_params":{"format":"opus","sample_rate":16000,"channels":1,"frame_duration":60}}))
+            async with _ws.connect(
+                XIAOZHI_CONV_URL,
+                additional_headers=hdrs,
+                open_timeout=12,
+                ping_interval=20,
+                ping_timeout=10,
+            ) as ws:
+                await ws.send(
+                    _j.dumps(
+                        {
+                            "type": "hello",
+                            "version": 1,
+                            "transport": "websocket",
+                            "audio_params": {
+                                "format": "opus",
+                                "sample_rate": 16000,
+                                "channels": 1,
+                                "frame_duration": 60,
+                            },
+                        }
+                    )
+                )
                 data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
-                sid = data.get("session_id","")
+                sid = data.get("session_id", "")
                 params = data.get("audio_params", {})
                 tts_rate = int(params.get("sample_rate", 24000))
                 tts_duration = int(params.get("frame_duration", 60))
@@ -1108,7 +1206,9 @@ class Yrobot(ReachyMiniApp):
                 tts_packets = 0
                 tts_decode_errors = 0
                 _tts_start_at = 0.0
-                logger.info("xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration)
+                logger.info(
+                    "xiaozhi ready sid=%s audio=%dHz/%dms", sid[:12], tts_rate, tts_duration
+                )
                 RUNTIME_HEALTH.update(
                     ws_state="connected",
                     session_id=sid,
@@ -1123,7 +1223,15 @@ class Yrobot(ReachyMiniApp):
                 _waked = False
                 _wake_deadline = 0.0
                 _wake_at = 0.0  # discard stale TTS from before wake
-                WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
+                WAKE_WORDS = (
+                    "你好小白",
+                    "小白",
+                    "阿皮",
+                    "reachy",
+                    "hey reachy",
+                    "嘿",
+                    "Hello Reachy",
+                )
                 WAKE_TIMEOUT = 60.0  # reset on every speech burst
 
                 async def recv():
@@ -1132,7 +1240,7 @@ class Yrobot(ReachyMiniApp):
                     while not stop_event.is_set():
                         try:
                             raw = await ws.recv()
-                        except _a.TimeoutError:
+                        except TimeoutError:
                             continue
                         if isinstance(raw, bytes):
                             if not _waked:
@@ -1151,24 +1259,30 @@ class Yrobot(ReachyMiniApp):
                             _aplay_add._count += 1
                             try:
                                 pcm = dec.decode(raw, tts_frame_size)
-                                pcm_f32 = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+                                pcm_f32 = (
+                                    np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+                                )
                                 ratio = tts_rate / 16000
                                 idx = np.arange(0, len(pcm_f32), ratio).astype(int)
-                                pcm_16k = pcm_f32[idx[:min(len(idx), len(pcm_f32))]]
+                                pcm_16k = pcm_f32[idx[: min(len(idx), len(pcm_f32))]]
                                 stereo = np.column_stack([pcm_16k, pcm_16k])
                                 _aplay_add(stereo)
                                 if tts_packets % 10 == 0:
-                                    logger.info("xz audio packets=%d latest=%dB", tts_packets, len(raw))
+                                    logger.info(
+                                        "xz audio packets=%d latest=%dB", tts_packets, len(raw)
+                                    )
                             except Exception as exc:
                                 tts_decode_errors += 1
                                 logger.warning(
                                     "xz opus decode failed packet=%d bytes=%d error=%s",
-                                    tts_packets, len(raw), exc,
+                                    tts_packets,
+                                    len(raw),
+                                    exc,
                                 )
                         else:
                             RUNTIME_HEALTH.update(last_rx_at=time.time())
                             d = _j.loads(raw)
-                            t = d.get("type","")
+                            t = d.get("type", "")
                             if t == "llm":
                                 # Xiaozhi sends the model's emotion/expression here
                                 # (e.g. {"type":"llm","emotion":"happy","text":"😀"});
@@ -1180,12 +1294,21 @@ class Yrobot(ReachyMiniApp):
                                 # If a manual/MCP move is playing, emotions are ignored
                                 # so a tool-triggered dance is never cut short.
                                 emo = (d.get("emotion") or "").strip().lower()
-                                if choreo.current_move() is not None or choreo.current_recorded() is not None:
+                                if (
+                                    choreo.current_move() is not None
+                                    or choreo.current_recorded() is not None
+                                ):
                                     logger.info("xz emotion %s ignored (move in progress)", emo)
                                 else:
-                                    _handle_xiaozhi_emotion(choreo, emo, tracker._last_emotion_move, _get_recorded, prefer_recorded=False)
+                                    _handle_xiaozhi_emotion(
+                                        choreo,
+                                        emo,
+                                        tracker._last_emotion_move,
+                                        _get_recorded,
+                                        prefer_recorded=False,
+                                    )
                             if t == "stt":
-                                text = d.get("text","")
+                                text = d.get("text", "")
                                 logger.info("xz stt: %s", text)
                                 # Wake word gate (skip if force-wake flag set).
                                 _force = False
@@ -1205,12 +1328,15 @@ class Yrobot(ReachyMiniApp):
                                     logger.info("xz stt ignored (not waked): %.60s", text)
                                     continue
                                 choreo.set_mode(LISTEN)
-                            elif t == "tts" and d.get("state")=="start":
+                            elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
                                     continue
                                 now_ts = time.time()
                                 if _wake_at > 0 and now_ts - _wake_at < 1.5:
-                                    logger.info("xz tts start ignored (stale, %.1fs post-wake)", now_ts - _wake_at)
+                                    logger.info(
+                                        "xz tts start ignored (stale, %.1fs post-wake)",
+                                        now_ts - _wake_at,
+                                    )
                                     _skip_audio_until = now_ts + 1.5
                                     continue
                                 logger.info("xz tts start")
@@ -1228,8 +1354,8 @@ class Yrobot(ReachyMiniApp):
                                 _aplay_add._count = 0
                                 choreo.set_mode(SPEAK)
                                 choreo.release_still()
-                            elif t == "tts" and d.get("state")=="sentence_start":
-                                logger.info("xz tts text: %s", d.get("text","")[:80])
+                            elif t == "tts" and d.get("state") == "sentence_start":
+                                logger.info("xz tts text: %s", d.get("text", "")[:80])
                             elif t == "tts" and d.get("state") == "sentence_end":
                                 logger.info(
                                     "xz tts sentence_end packets=%d audio(enqueued=%d written=%d pending=%d)",
@@ -1249,7 +1375,11 @@ class Yrobot(ReachyMiniApp):
                                     _audio_stats["written"],
                                     _audio_q.qsize(),
                                 )
-                                logger.info("xz audio summary packets=%d decode_errors=%d", tts_packets, tts_decode_errors)
+                                logger.info(
+                                    "xz audio summary packets=%d decode_errors=%d",
+                                    tts_packets,
+                                    tts_decode_errors,
+                                )
                                 _aplay_flush()
                                 choreo.set_mode(IDLE)
 
@@ -1259,6 +1389,7 @@ class Yrobot(ReachyMiniApp):
                     # louder speech required to trigger; normalized 0..1 value
                     # from the shared config (default 2000/32768 ≈ 0.061).
                     from yrobot.audio import get_vad_rms_min as _get_vad_min
+
                     SILENCE_RMS = max(500, int(_get_vad_min() * 32768))
                     logger.info("xz silence floor rms=%.0f", SILENCE_RMS)
                     while not stop_event.is_set():
@@ -1285,7 +1416,8 @@ class Yrobot(ReachyMiniApp):
                                 logger.warning(
                                     "tts stall: packets=%d age=%.1fs, forcing idle",
                                     tts_watchdog.packets,
-                                    time.monotonic() - max(
+                                    time.monotonic()
+                                    - max(
                                         tts_watchdog.last_packet_at or tts_watchdog.started_at,
                                         0.0,
                                     ),
@@ -1295,15 +1427,26 @@ class Yrobot(ReachyMiniApp):
                             await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0)
                             continue
-                        if _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled()):
+                        if _xiaozhi_should_pause_for_mic(
+                            audio_input_controller_singleton().enabled()
+                        ):
                             raise _XiaozhiPaused("mic input disabled")
                         frames = []
                         rms_max = 0
                         for _ in range(16):
                             buf, _ = await _a.to_thread(mic_stream.read, 960)
-                            rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            rms = float(
+                                np.sqrt(
+                                    np.mean(
+                                        np.square(
+                                            np.frombuffer(buf, dtype=np.int16).astype(np.float64)
+                                        )
+                                    )
+                                )
+                            )
                             _publish_dashboard_mic(float(rms) / 32768.0)
-                            if rms > rms_max: rms_max = rms
+                            if rms > rms_max:
+                                rms_max = rms
                             frames.append(buf)
                         if rms_max < SILENCE_RMS:
                             continue
@@ -1311,33 +1454,59 @@ class Yrobot(ReachyMiniApp):
                         if _waked:
                             _wake_deadline = time.time() + WAKE_TIMEOUT
                         _user_speaking[0] = True
-                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"start","mode":"manual"}))
+                        await ws.send(
+                            _j.dumps(
+                                {
+                                    "session_id": sid,
+                                    "type": "listen",
+                                    "state": "start",
+                                    "mode": "manual",
+                                }
+                            )
+                        )
                         sent = 0
                         for buf in frames:
                             try:
-                                await _a.wait_for(ws.send(enc.encode(buf.tobytes(), 960)), timeout=3)
+                                await _a.wait_for(
+                                    ws.send(enc.encode(buf.tobytes(), 960)), timeout=3
+                                )
                                 sent += 1
                                 await _a.sleep(0)
-                            except Exception: break
+                            except Exception:
+                                break
                         deadline = time.monotonic() + 6.0
                         min_deadline = time.monotonic() + 3.0
                         while time.monotonic() < deadline and not stop_event.is_set():
                             buf, _ = await _a.to_thread(mic_stream.read, 960)
-                            rms = float(np.sqrt(np.mean(np.square(np.frombuffer(buf, dtype=np.int16).astype(np.float64)))))
+                            rms = float(
+                                np.sqrt(
+                                    np.mean(
+                                        np.square(
+                                            np.frombuffer(buf, dtype=np.int16).astype(np.float64)
+                                        )
+                                    )
+                                )
+                            )
                             _publish_dashboard_mic(float(rms) / 32768.0)
                             try:
-                                await _a.wait_for(ws.send(enc.encode(buf.tobytes(), 960)), timeout=3)
+                                await _a.wait_for(
+                                    ws.send(enc.encode(buf.tobytes(), 960)), timeout=3
+                                )
                                 sent += 1
                                 await _a.sleep(0)
-                            except Exception: break
+                            except Exception:
+                                break
                             if time.monotonic() > min_deadline and rms < 1000:
                                 break
-                        await ws.send(_j.dumps({"session_id":sid,"type":"listen","state":"stop"}))
+                        await ws.send(
+                            _j.dumps({"session_id": sid, "type": "listen", "state": "stop"})
+                        )
                         _user_speaking[0] = False
                         if sent:
                             logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
                         for _ in range(20):
-                            if stop_event.is_set(): break
+                            if stop_event.is_set():
+                                break
                             await _a.sleep(0.2)
                 finally:
                     if not rt.done():
@@ -1357,9 +1526,8 @@ class Yrobot(ReachyMiniApp):
                 if _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled()):
                     RUNTIME_HEALTH.update(ws_state="paused", session_id=None, tts_active=False)
                     logger.info("xiaozhi paused while mic input disabled")
-                    while (
-                        not stop_event.is_set()
-                        and _xiaozhi_should_pause_for_mic(audio_input_controller_singleton().enabled())
+                    while not stop_event.is_set() and _xiaozhi_should_pause_for_mic(
+                        audio_input_controller_singleton().enabled()
                     ):
                         stop_event.wait(0.5)
                     if stop_event.is_set():
@@ -1372,7 +1540,9 @@ class Yrobot(ReachyMiniApp):
                     logger.info("xiaozhi paused: %s", e)
                     continue
                 except _XiaozhiReconnect as e:
-                    RUNTIME_HEALTH.update(ws_state="reconnecting", session_id=None, tts_active=False)
+                    RUNTIME_HEALTH.update(
+                        ws_state="reconnecting", session_id=None, tts_active=False
+                    )
                     logger.warning("xiaozhi session closed, reconnecting: %s", e)
                 except Exception as e:
                     RUNTIME_HEALTH.update(ws_state="error", session_id=None, tts_active=False)
@@ -1410,7 +1580,9 @@ def _enter_safe_mode(
     fails = _record_startup_failure()
     logger.error(
         "YRobot safe mode: %d/%d consecutive startup failures (last: %s)",
-        fails, _MAX_STARTUP_FAILURES, exc,
+        fails,
+        _MAX_STARTUP_FAILURES,
+        exc,
     )
     if fails >= _MAX_STARTUP_FAILURES:
         logger.error(

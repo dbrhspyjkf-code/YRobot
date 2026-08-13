@@ -7,6 +7,7 @@ not provide, so managed deployments can keep controlling YRobot centrally.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -1134,6 +1135,61 @@ def register_settings_routes(
                 status_code=503, detail=f"could not save video env: {exc}"
             ) from exc
         return {"video_enabled": enabled, "restart_required": True}
+
+    # ── Face registry routes ─────────────────────────────────────────
+    # We deliberately create a single FaceDB per process so the
+    # YuNet model is loaded at most once. The DB itself persists
+    # to ~/.config/yrobot/faces.json so registrations survive
+    # restarts.
+    from yrobot.faces import FaceDB
+
+    face_db = FaceDB()
+
+    @app.get("/api/face")
+    def get_faces() -> dict[str, Any]:
+        return {"faces": face_db.list_profiles()}
+
+    @app.post("/api/face")
+    async def post_face(document: dict[str, Any]) -> dict[str, Any]:
+        name = (document or {}).get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=422, detail="'name' must be a non-empty string"
+            )
+        media_obj = media_holder.media if media_holder is not None else None
+        if media_obj is None or not hasattr(media_obj, "get_frame"):
+            raise HTTPException(
+                status_code=503,
+                detail="camera is not initialised yet; try again after boot",
+            )
+        # Capture 10 frames spaced 200 ms apart so the user can
+        # slowly turn their head and we get enough variety for
+        # template matching.
+        frames: list[np.ndarray] = []
+        for _ in range(10):
+            frame = media_obj.get_frame()
+            if frame is not None:
+                frames.append(frame)
+            await asyncio.sleep(0.2)
+        if not frames:
+            raise HTTPException(
+                status_code=422,
+                detail="camera returned no frames during the capture window",
+            )
+        try:
+            sample_count = face_db.register(name, frames)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"name": name, "samples": sample_count}
+
+    @app.delete("/api/face/{name}")
+    def delete_face(name: str) -> dict[str, Any]:
+        deleted = face_db.delete(name)
+        if not deleted:
+            raise HTTPException(
+                status_code=404, detail=f"no face profile named {name!r}"
+            )
+        return {"deleted": True, "name": name}
 
     @app.post("/api/conversation/voice/preview")
     async def post_voice_preview(voice: str) -> dict[str, Any]:
