@@ -26,6 +26,10 @@
 	<string>YRobot Remote uses Bluetooth to provision Wi-Fi on your Reachy Mini when it is offline.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>YRobot Remote discovers and talks to your Reachy Mini on the local Wi-Fi network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_reachy-mini._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

@@ -36,6 +36,8 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: "YRobot Remote discovers and talks to your Reachy Mini on the local Wi-Fi network."
+        NSBonjourServices:
+          - _reachy-mini._tcp
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSBluetoothAlwaysUsageDescription: "YRobot Remote uses Bluetooth to provision Wi-Fi on your Reachy Mini when it is offline."
@@ -44,6 +46,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.proma.yrobotremote
+        DEVELOPMENT_TEAM: 26AC3BDBFG
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         IPHONEOS_DEPLOYMENT_TARGET: "26.0"

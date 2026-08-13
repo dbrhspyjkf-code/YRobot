@@ -388,6 +388,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					6BF83AFAE7BD86E0390E7C3F = {
+						DevelopmentTeam = 26AC3BDBFG;
+					};
 				};
 			};
 			buildConfigurationList = 5137FCA2FB936EEEC968686A /* Build configuration list for PBXProject "YRobotRemote" */;
