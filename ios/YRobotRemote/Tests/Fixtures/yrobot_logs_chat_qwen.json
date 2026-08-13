@@ -1,0 +1,72 @@
+{
+  "unit": "yrobot.service",
+  "level": "info",
+  "filter": "chat",
+  "lines": 8,
+  "logs": [
+    {
+      "timestamp_us": 1786341186000001,
+      "timestamp": "2026-08-12 09:33:06",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen stt: 你好小白"
+    },
+    {
+      "timestamp_us": 1786341187000002,
+      "timestamp": "2026-08-12 09:33:07",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen response: 您好，我是小白。有什么可以帮您？"
+    },
+    {
+      "timestamp_us": 1786341192000003,
+      "timestamp": "2026-08-12 09:33:12",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen stt: 明天天气怎么样"
+    },
+    {
+      "timestamp_us": 1786341194000004,
+      "timestamp": "2026-08-12 09:33:14",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen response: 我帮您查询一下本地天气信息。"
+    },
+    {
+      "timestamp_us": 1786341196000005,
+      "timestamp": "2026-08-12 09:33:16",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen stt: 几点了"
+    },
+    {
+      "timestamp_us": 1786341197000006,
+      "timestamp": "2026-08-12 09:33:17",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen response: 现在是 2026 年 8 月 12 日 17 点 33 分。"
+    },
+    {
+      "timestamp_us": 1786341201000007,
+      "timestamp": "2026-08-12 09:33:21",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen stt: 谢谢"
+    },
+    {
+      "timestamp_us": 1786341202000008,
+      "timestamp": "2026-08-12 09:33:22",
+      "level": "info",
+      "logger": "qwen_realtime",
+      "pid": 1099,
+      "message": "qwen response: 不客气，随时找我。"
+    }
+  ]
+}

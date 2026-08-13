@@ -1402,3 +1402,17 @@ reads.
 Acceptance: `GET /api/logs?filter=chat&limit=200` returned 33 real historical
 dialogue records after restart; `/api/status` reported active QWEN,
 `video_enabled=true`, WebSocket `connected`, and no runtime error.
+
+
+## 2026-08-13 14:00 - Integrate iOS Remote source into YRobot repository
+
+The `ios/YRobotRemote` SwiftUI project is now versioned with the current
+YRobot production branch and GitHub. It was imported path-only from the
+dedicated iOS branch after regenerating its Xcode project with XcodeGen and
+running XCTest on the iPhone 17 Pro simulator.
+
+Scope: only iOS source, fixtures, tests, build documentation, and iOS design
+progress records are included. No older iOS-branch robot backend, test, or
+script changes were merged. `.DS_Store`, `xcuserdata`, and `.xcuserstate` are
+ignored. The iOS source is not copied to Reachy, which remains a runtime host
+only.
