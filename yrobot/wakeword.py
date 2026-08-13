@@ -93,22 +93,35 @@ class WakeWordDetector:
     def _search(self, audio_16k: np.ndarray) -> bool:
         try:
             assert self._model is not None
+            # faster-whisper expects float32 in [-1, 1]. The mic path
+            # hands us int16 samples; if a future caller forgets to
+            # normalise, transcribe() silently returns zero segments
+            # which is why production never saw the raw= log line.
+            if audio_16k.dtype != np.float32:
+                audio_16k = audio_16k.astype(np.float32) / 32768.0
             segments, _info = self._model.transcribe(
                 audio_16k,
                 language="zh",
                 beam_size=1,
                 vad_filter=False,
             )
-            for seg in segments:
-                text = seg.text.replace(" ", "")
-                # debug: log the transcription so we can tune sensitivity
-                logger.info("wake-word whisper: raw=%r", seg.text[:60])
-                if self._wake_phrase in text:
-                    logger.info("WAKE PHRASE DETECTED: %r", text)
-                    self._buf.clear()
-                    return True
+            segment_list = list(segments)
+            if segment_list:
+                joined = " ".join(seg.text for seg in segment_list)
+                logger.info("wake-word whisper: raw=%r", joined[:80])
+                for seg in segment_list:
+                    text = seg.text.replace(" ", "")
+                    if self._wake_phrase in text:
+                        logger.info("WAKE PHRASE DETECTED: %r", text)
+                        self._buf.clear()
+                        return True
+            else:
+                logger.info(
+                    "wake-word whisper: no segments in %.2fs window",
+                    len(self._buf) * FRAME_MS / 1000.0,
+                )
         except Exception as exc:
-            logger.debug("wake-word inference skipped: %s", exc)
+            logger.warning("wake-word inference failed: %s", exc)
         return False
 
     def feed_raw(self, chunk: np.ndarray, frame_samples: int = 320) -> bool:
