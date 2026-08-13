@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 
 def requested_emotion(transcript: str) -> str | None:
     """Map explicit conversational requests to one bounded gesture."""
@@ -29,3 +31,23 @@ def requested_dance(transcript: str) -> tuple[str, str | None] | None:
     if "开心" in text or "高兴" in text:
         return ("play", "yeah_nod")
     return ("play", "simple_nod")
+
+
+@dataclass
+class IdentityStabilizer:
+    """Announce an identity only after it remains stable for a short window."""
+
+    stable_after_s: float = 3.0
+    current: str = ""
+    candidate: str = ""
+    candidate_since: float = 0.0
+
+    def observe(self, name: str, *, now: float) -> str | None:
+        if name != self.candidate:
+            self.candidate = name
+            self.candidate_since = now
+            return None
+        if now - self.candidate_since < self.stable_after_s or name == self.current:
+            return None
+        self.current = name
+        return name or None

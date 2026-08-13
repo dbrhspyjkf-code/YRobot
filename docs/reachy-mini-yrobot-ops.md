@@ -1456,3 +1456,16 @@ Verification: local intent tests passed; syntax checks passed for the QWEN
 matcher, motion worker, and main runtime. On Reachy, only `yrobot.service` was
 restarted. The official daemon remained active, motors enabled, motion loop
 about 50 Hz, QWEN connected, and no runtime error.
+
+
+## 2026-08-13 15:05 - Local face greeting during QWEN conversation
+
+While the 60-second QWEN conversation window is active, YRobot now checks the
+already cached local camera JPEG once per second. A face identity must remain
+the same for three seconds before it is accepted. On confirmation, YRobot
+updates QWEN's session context with the local name and speaks one short local
+greeting such as “阿皮，你好！”. The same identity is greeted only once per
+YRobot/QWEN session.
+
+No additional image is sent to QWEN by this monitor. It uses only the local
+`FaceDB`; normal image upload remains limited to explicit visual questions.

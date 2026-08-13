@@ -35,7 +35,7 @@ from yrobot.app_config import (
 from yrobot.audio import apply_audio_startup_config
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
-from yrobot.qwen_emotion import requested_dance, requested_emotion
+from yrobot.qwen_emotion import IdentityStabilizer, requested_dance, requested_emotion
 from yrobot.faces import FaceDB
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
@@ -519,9 +519,10 @@ class Yrobot(ReachyMiniApp):
             # change triggers a session.update re-emit so the model
             # can address the new person by name.
             face_db = FaceDB()
-            _current_speaker = [""]  # mutable; "" = unknown
-            _candidate_speaker = [""]
-            _candidate_speaker_since = [0.0]
+            speaker_identity = IdentityStabilizer(
+                stable_after_s=_QWEN_FACE_SPEAKER_STABLE_S
+            )
+            greeted_speakers: set[str] = set()
 
             async def _drain_face() -> None:
                 jpeg = camera_streamer.latest()
@@ -533,16 +534,10 @@ class Yrobot(ReachyMiniApp):
                     return
                 name = face_db.recognize(frame) or ""
                 now = time.monotonic()
-                if name != _candidate_speaker[0]:
-                    _candidate_speaker[0] = name
-                    _candidate_speaker_since[0] = now
+                confirmed_name = speaker_identity.observe(name, now=now)
+                if confirmed_name is None:
                     return
-                if now - _candidate_speaker_since[0] < _QWEN_FACE_SPEAKER_STABLE_S:
-                    return
-                if name == _current_speaker[0]:
-                    return
-                _current_speaker[0] = name
-                speaker_prompt = f"\n\n你正在跟 {name} 说话。\n" if name else "\n"
+                speaker_prompt = f"\n\n你正在跟 {confirmed_name} 说话。\n"
                 try:
                     extra = (
                         f"{DEFAULT_INSTRUCTIONS}\n{speaker_prompt}"
@@ -551,9 +546,18 @@ class Yrobot(ReachyMiniApp):
                     if settings.send_video:
                         extra = f"{extra}\n\n{VISION_POLICY}"
                     await client.resend_session_update_with(instructions_override=extra)
-                    logger.info("QWEN session.update re-emitted: speaker=%r", name or None)
+                    logger.info("QWEN local face confirmed: speaker=%r", confirmed_name)
+                    if not response_started and confirmed_name not in greeted_speakers:
+                        greeted_speakers.add(confirmed_name)
+                        asyncio.create_task(speak_exact_text(f"{confirmed_name}，你好！"))
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("session.update on speaker change failed: %s", exc)
+
+            async def monitor_face_identity() -> None:
+                while not stop_event.is_set():
+                    if gate.active:
+                        await _drain_face()
+                    await asyncio.sleep(1.0)
 
             async def _append_visual_snapshot(transcript: str) -> None:
                 if not settings.send_video or not _qwen_wants_visual_snapshot(transcript):
@@ -873,6 +877,7 @@ class Yrobot(ReachyMiniApp):
             )
             cloud_task = asyncio.create_task(client.run(stop_event))
             ready_task = asyncio.create_task(client.ready.wait())
+            face_task: asyncio.Task[None] | None = None
             try:
                 done, _ = await asyncio.wait(
                     {cloud_task, ready_task},
@@ -883,6 +888,8 @@ class Yrobot(ReachyMiniApp):
                     await cloud_task
                 if ready_task not in done:
                     raise TimeoutError("QWEN session setup timed out")
+
+                face_task = asyncio.create_task(monitor_face_identity())
 
                 if _qwen_should_resume_wake_after_reconnect(gate):
                     logger.info("QWEN wake still active after reconnect; resuming")
@@ -983,7 +990,11 @@ class Yrobot(ReachyMiniApp):
             finally:
                 ready_task.cancel()
                 cloud_task.cancel()
-                for task in (ready_task, cloud_task):
+                if face_task is not None:
+                    face_task.cancel()
+                for task in (ready_task, cloud_task, face_task):
+                    if task is None:
+                        continue
                     try:
                         await task
                     except asyncio.CancelledError:
