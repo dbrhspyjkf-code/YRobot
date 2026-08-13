@@ -17,3 +17,15 @@ def requested_emotion(transcript: str) -> str | None:
     if "难过" in text or "伤心" in text:
         return "sad"
     return None
+
+
+def requested_dance(transcript: str) -> tuple[str, str | None] | None:
+    """Recognize only explicit dance commands, never conversational mentions."""
+    text = transcript.casefold().replace(" ", "")
+    if "跳" not in text or "舞" not in text:
+        return None
+    if "停止" in text or "别跳" in text or "停下" in text:
+        return ("stop", None)
+    if "开心" in text or "高兴" in text:
+        return ("play", "yeah_nod")
+    return ("play", "simple_nod")

@@ -1443,3 +1443,16 @@ locally before the response begins: “给我一个惊喜”, “开心的笑话
 queue `surprised`, `happy`, and `thinking` respectively. Device control and
 status/query wording are excluded. The queued gesture plays on the first QWEN
 audio packet, so it accompanies rather than follows the spoken response.
+
+
+## 2026-08-13 14:55 - QWEN explicit dance commands
+
+QWEN accepts only explicit local dance commands: “小白跳个舞” starts the short
+`simple_nod` dance, “小白跳开心舞” starts `yeah_nod`, and “停止跳舞” cancels the
+currently active recorded emotion or dance at the next motion tick. Dance is
+never selected automatically from a normal reply.
+
+Verification: local intent tests passed; syntax checks passed for the QWEN
+matcher, motion worker, and main runtime. On Reachy, only `yrobot.service` was
+restarted. The official daemon remained active, motors enabled, motion loop
+about 50 Hz, QWEN connected, and no runtime error.

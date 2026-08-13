@@ -35,7 +35,7 @@ from yrobot.app_config import (
 from yrobot.audio import apply_audio_startup_config
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
-from yrobot.qwen_emotion import requested_emotion
+from yrobot.qwen_emotion import requested_dance, requested_emotion
 from yrobot.faces import FaceDB
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
@@ -796,6 +796,14 @@ class Yrobot(ReachyMiniApp):
                     asyncio.create_task(activate_from_wake())
                 if gate.active:
                     pending_qwen_emotion[0] = requested_emotion(transcript)
+                    dance_request = requested_dance(transcript)
+                    if dance_request is not None:
+                        action, dance = dance_request
+                        if action == "stop":
+                            choreo.stop_recorded()
+                            logger.info("qwen dance stopped")
+                        elif dance is not None and choreo.play_dance(dance):
+                            logger.info("qwen dance -> %s", dance)
                 if gate.active and candidates:
 
                     async def _run_spoken_control() -> None:

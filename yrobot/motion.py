@@ -411,6 +411,10 @@ class Choreographer(threading.Thread):
             return False
         return self._enqueue_command("play_recorded", (name, move, time.monotonic()))
 
+    def stop_recorded(self) -> bool:
+        """Stop an active recorded emotion or dance at the next motion tick."""
+        return self._enqueue_command("stop_recorded")
+
     def current_move(self) -> str | None:
         return self._move_name
 
@@ -435,6 +439,9 @@ class Choreographer(threading.Thread):
                 self._recorded_name = name
                 self._recorded_start = start
                 self._recorded_duration = float(move.duration)
+            elif command == "stop_recorded":
+                self._recorded_move = None
+                self._recorded_name = None
             elif command == "set_gaze_target":
                 if len(payload) == 2:
                     target, voice_at = payload
