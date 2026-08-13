@@ -122,6 +122,15 @@ def test_qwen_wake_list_contains_nihao_xiaobai():
     assert gate.active is True
 
 
+def test_qwen_wake_accepts_observed_xiaobai_asr_aliases():
+    assert WakeGate().observe_transcript("明白。", now=100.0) is True
+    assert WakeGate().observe_transcript("你好明白", now=100.0) is True
+
+
+def test_qwen_wake_asr_alias_does_not_match_inside_longer_sentence():
+    assert WakeGate().observe_transcript("我明白了", now=100.0) is False
+
+
 def test_qwen_wake_expires_after_sixty_seconds():
     gate = WakeGate()
     gate.observe_transcript("你好小白", now=100.0)

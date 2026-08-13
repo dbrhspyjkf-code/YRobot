@@ -11,7 +11,15 @@ from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
+WAKE_ASR_ALIASES = ("明白", "你好明白")
 WAKE_TIMEOUT = 60.0
+
+
+def _compact_wake_text(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+WAKE_ASR_ALIAS_TEXTS = frozenset(_compact_wake_text(alias) for alias in WAKE_ASR_ALIASES)
 
 
 class BoundedLatestQueue(Generic[T]):
@@ -67,7 +75,9 @@ class WakeGate:
         if self.active:
             return False
         text = transcript.casefold()
-        if not any(phrase.casefold() in text for phrase in self.phrases):
+        compact_text = _compact_wake_text(transcript)
+        alias_match = compact_text in WAKE_ASR_ALIAS_TEXTS
+        if not alias_match and not any(phrase.casefold() in text for phrase in self.phrases):
             return False
         current = time.monotonic() if now is None else now
         self.active = True

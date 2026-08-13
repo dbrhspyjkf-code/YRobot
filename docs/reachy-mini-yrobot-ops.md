@@ -1240,3 +1240,12 @@ Root cause: the new experimental local KWS path was enabled by default, but it d
 Change: disabled local KWS by default again; it remains opt-in via YROBOT_WAKE_ENABLED=1. Current robot config keeps YROBOT_VAD_RMS_MIN at 0.015 so normal speech uploads to QWEN for cloud-ASR wake matching.
 
 Verification: py_compile passed for yrobot/config.py, yrobot/main.py, and yrobot/audio_runtime.py; focused wake/config tests passed. Runtime config check showed wake_enabled False, wake_phrase "你好小白", vad_rms_min 0.015, backend qwen.
+
+
+## 2026-08-13 11:50 - Add narrow QWEN wake ASR alias
+
+Symptom: after restoring cloud-ASR wake, a real spoken "你好小白" still did not open the gate.
+
+Evidence: QWEN was connected and receiving audio, but recent ASR logs showed the wake utterance as "明白。" or empty text instead of "你好小白" / "小白".
+
+Change: added strict wake aliases "明白" and "你好明白" for the observed "小白" ASR confusion. These aliases are exact after punctuation/space cleanup; longer phrases such as "我明白了" do not wake the robot.
