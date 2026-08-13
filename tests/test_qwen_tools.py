@@ -100,6 +100,19 @@ def test_unknown_tool_is_rejected_before_network(tmp_path):
     assert opener.calls == []
 
 
+def test_qwen_emotion_tool_uses_only_safe_local_emotion(tmp_path):
+    played = []
+    executor = ToolExecutor(
+        make_settings(tmp_path),
+        emotion_player=lambda emotion: played.append(emotion) or True,
+    )
+
+    result = executor.execute("express_emotion", {"emotion": "happy"})
+
+    assert result == {"ok": True, "emotion": "happy"}
+    assert played == ["happy"]
+
+
 def test_unknown_device_is_rejected_before_network(tmp_path):
     opener = RecordingOpener()
     executor = ToolExecutor(make_settings(tmp_path), opener=opener)

@@ -1416,3 +1416,23 @@ progress records are included. No older iOS-branch robot backend, test, or
 script changes were merged. `.DS_Store`, `xcuserdata`, and `.xcuserstate` are
 ignored. The iOS source is not copied to Reachy, which remains a runtime host
 only.
+
+
+## 2026-08-13 14:37 - QWEN expressive conversation gestures
+
+QWEN now has one local-only function, `express_emotion`, for clearly suitable
+conversational responses. It is limited to `happy`, `thinking`, `surprised`,
+`sad`, and `loving`, which map only to the existing bounded programmatic
+motions. It never selects arbitrary recorded moves or dances.
+
+Safety: the system prompt excludes ordinary answers, device control, numeric
+queries, and serious content; an emotion has a five-second cooldown and is
+skipped whenever a manual or recorded move is already active. The function
+executes inside YRobot and does not call Home Assistant, Hermes, or the
+official Reachy daemon.
+
+Verification: focused local tool and QWEN function-call tests passed, Python
+compilation passed, and Reachy restarted only `yrobot.service`. Post-restart
+status reported daemon running, motors enabled, motion worker alive at about
+51 Hz, QWEN WebSocket connected, and no runtime error. Final acceptance is a
+spoken conversation that naturally produces one of the permitted gestures.

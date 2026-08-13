@@ -817,7 +817,32 @@ class Yrobot(ReachyMiniApp):
             def on_error(message: str) -> None:
                 RUNTIME_HEALTH.update(last_error=message)
 
-            tool_executor = ToolExecutor(settings, volume_controller=volume_controller_singleton())
+            last_qwen_emotion: dict[str, float] = {}
+
+            def play_qwen_emotion(emotion: str) -> bool:
+                from yrobot.motion import EMOTION_FALLBACK_MOVE
+
+                if choreo.current_move() is not None or choreo.current_recorded() is not None:
+                    logger.info("qwen emotion %s skipped: move in progress", emotion)
+                    return False
+                move = EMOTION_FALLBACK_MOVE.get(emotion)
+                if move is None:
+                    return False
+                now = time.monotonic()
+                if now - last_qwen_emotion.get(emotion, -1e9) < 5.0:
+                    logger.info("qwen emotion %s skipped: cooldown", emotion)
+                    return False
+                if not choreo.play_move(move):
+                    return False
+                last_qwen_emotion[emotion] = now
+                logger.info("qwen emotion %s -> %s", emotion, move)
+                return True
+
+            tool_executor = ToolExecutor(
+                settings,
+                volume_controller=volume_controller_singleton(),
+                emotion_player=play_qwen_emotion,
+            )
             command_recognizer = CommandRecognizer(settings)
             client = QwenRealtimeClient(
                 settings,
