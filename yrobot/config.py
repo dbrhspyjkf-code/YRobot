@@ -169,12 +169,11 @@ class Settings:
     frame_period_idle_s: float = 3.0
     scene_change_threshold: float = 0.04
 
-    # Local wake-word gate. When wake_enabled is true, audio chunks are
-    # only forwarded to the realtime backend after the user has said
-    # the wake phrase (default: "你好小白"). The phrase is configurable
-    # via YROBOT_WAKE_PHRASE so operators can re-train users to a
-    # different trigger without code changes.
-    wake_enabled: bool = True
+    # Local wake-word gate (deprecated — QWEN relies on the cloud
+    # ASR transcript matching via WakeGate.observe_transcript, not on
+    # this local faster-whisper detector which proved far too slow on
+    # the Pi 5 CPU). Kept as False so no code path re-instantiates it.
+    wake_enabled: bool = False
     wake_phrase: str = "你好小白"
     wake_model_path: str = "/home/pollen/stt-models/faster-whisper-medium"
     wake_window_s: float = 1.5

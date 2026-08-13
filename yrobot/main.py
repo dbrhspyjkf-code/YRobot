@@ -396,7 +396,6 @@ class Yrobot(ReachyMiniApp):
             _model_url,
         )
         from yrobot.qwen_tools import ToolExecutor
-        from yrobot.wakeword import WakeWordDetector
 
         startup_head_pose = None
         startup_antennas = None
@@ -447,25 +446,6 @@ class Yrobot(ReachyMiniApp):
             reachy_mini.media.stop_playing()
         except Exception as exc:
             logger.warning("could not release SDK speaker for QWEN: %s", exc)
-
-        # Local wake-word gate. When wake_enabled is true, audio
-        # chunks are first fed to WakeWordDetector.feed_raw; only
-        # when the configured phrase (default "你好小白") is
-        # detected does WakeGate get note_speech'd, which is the
-        # precondition for the audio uplink further down. The
-        # WakeGate then keeps the uplink open for its 60 s window
-        # so the user can follow up with the actual command.
-        wake_detector: WakeWordDetector | None = None
-        if settings.wake_enabled:
-            wake_detector = WakeWordDetector(
-                model_path=settings.wake_model_path,
-                wake_phrase=settings.wake_phrase,
-            )
-            logger.info(
-                "wake-word armed: phrase=%r model=%s",
-                settings.wake_phrase,
-                settings.wake_model_path,
-            )
 
         mic_stream = sd.InputStream(
             device="reachymini_audio_src",
@@ -853,22 +833,6 @@ class Yrobot(ReachyMiniApp):
                     frame, _ = await asyncio.to_thread(mic_stream.read, 960)
                     pcm_int16 = frame.astype("<i2", copy=False)
                     pcm = pcm_int16.tobytes()
-                    # Feed the local wake-word detector before anything
-                    # else: when settings.wake_enabled is on, this is
-                    # the only path that opens the audio uplink to
-                    # QWEN. We do not block on it — feed_raw returns
-                    # False until a whisper pass completes (~4 s).
-                    if wake_detector is not None and not gate.active:
-                        try:
-                            if wake_detector.feed_raw(pcm_int16, frame_samples=960):
-                                gate.note_speech()
-                                RUNTIME_HEALTH.update(wake_active=True)
-                                logger.info(
-                                    "WAKE PHRASE DETECTED: %r; audio uplink open for 60 s",
-                                    settings.wake_phrase,
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.debug("wake-word feed failed: %s", exc)
                     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
                     rms = float(np.sqrt(np.mean(np.square(samples))))
                     _publish_dashboard_mic(rms / 32768.0)
@@ -894,7 +858,6 @@ class Yrobot(ReachyMiniApp):
                             silence_frames += 1
                         else:
                             if gate.expire():
-                                RUNTIME_HEALTH.update(wake_active=False)
                                 await client.set_turn_detection(None)
                                 playback.flush()
                                 choreo.set_mode(IDLE)
