@@ -183,7 +183,7 @@ def test_spoken_control_routes_bare_weather_to_default_shenzhen(tmp_path):
     opener = RecordingOpener({"ok": True, "city": "深圳", "condition": "晴", "temp_c": 28})
     executor = ToolExecutor(make_settings_with_hermes(tmp_path), opener=opener)
 
-    result = executor.execute_spoken_control("天气。")
+    result = executor.execute_spoken_control("天气吧。")
 
     assert result == {"ok": True, "result": "深圳天气：晴，28度。"}
     request, _ = opener.calls[0]

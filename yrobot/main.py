@@ -76,6 +76,7 @@ _QWEN_RECONNECT_MESSAGES = (
 _QWEN_ACTIVE_SILENCE_FRAMES = 16
 _QWEN_PRE_WAKE_SILENCE_FRAMES = 24
 _QWEN_MAX_TURN_FRAMES = 167
+_QWEN_FACE_SPEAKER_STABLE_S = 3.0
 
 
 class RecentTranscriptWindow:
@@ -250,6 +251,10 @@ def _qwen_should_request_response_after_local_control(
 
 def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
     return gate.active
+
+
+def _qwen_should_send_vision(gate_active: bool) -> bool:
+    return gate_active
 
 
 class _XiaozhiReconnect(Exception):
@@ -537,6 +542,8 @@ class Yrobot(ReachyMiniApp):
             # can address the new person by name.
             face_db = FaceDB()
             _current_speaker = [""]  # mutable; "" = unknown
+            _candidate_speaker = [""]
+            _candidate_speaker_since = [0.0]
 
             async def _drain_face() -> None:
                 if camera is None:
@@ -549,6 +556,13 @@ class Yrobot(ReachyMiniApp):
                 if frame is None:
                     return
                 name = face_db.recognize(frame) or ""
+                now = time.monotonic()
+                if name != _candidate_speaker[0]:
+                    _candidate_speaker[0] = name
+                    _candidate_speaker_since[0] = now
+                    return
+                if now - _candidate_speaker_since[0] < _QWEN_FACE_SPEAKER_STABLE_S:
+                    return
                 if name == _current_speaker[0]:
                     return
                 _current_speaker[0] = name
@@ -806,7 +820,10 @@ class Yrobot(ReachyMiniApp):
                 logger.info("qwen response: %s", transcript[:160])
 
             def on_state(state: str) -> None:
-                RUNTIME_HEALTH.update(ws_state=state)
+                if state == "connected":
+                    RUNTIME_HEALTH.update(ws_state=state, last_error=None)
+                else:
+                    RUNTIME_HEALTH.update(ws_state=state)
 
             def on_error(message: str) -> None:
                 RUNTIME_HEALTH.update(last_error=message)
@@ -900,8 +917,9 @@ class Yrobot(ReachyMiniApp):
                         if asr_capturing and len(asr_capture) < asr_debug_max_bytes:
                             asr_capture.extend(pcm)
                         await client.append_pcm(pcm)
-                        await _drain_camera()
-                        await _drain_face()
+                        if _qwen_should_send_vision(gate.active):
+                            await _drain_camera()
+                            await _drain_face()
                         turn_frames += 1
                         if (
                             silence_frames >= _QWEN_ACTIVE_SILENCE_FRAMES
@@ -927,8 +945,6 @@ class Yrobot(ReachyMiniApp):
                         continue
 
                     await client.append_pcm(pcm)
-                    await _drain_camera()
-                    await _drain_face()
                     turn_frames += 1
                     if (
                         silence_frames >= _QWEN_PRE_WAKE_SILENCE_FRAMES

@@ -15,10 +15,12 @@ from yrobot.main import (
     _qwen_spoken_control_result_feedback,
     _qwen_spoken_control_result_text,
     _QWEN_ACTIVE_SILENCE_FRAMES,
+    _QWEN_FACE_SPEAKER_STABLE_S,
     _QWEN_PRE_WAKE_SILENCE_FRAMES,
     _qwen_should_request_response_after_local_control,
     _qwen_should_reconnect,
     _qwen_should_resume_wake_after_reconnect,
+    _qwen_should_send_vision,
 )
 
 
@@ -130,6 +132,7 @@ def test_qwen_wake_accepts_observed_xiaobai_asr_aliases():
     assert WakeGate().observe_transcript("你好明白", now=100.0) is True
     assert WakeGate().observe_transcript("你老来。", now=100.0) is True
     assert WakeGate().observe_transcript("你说，你咋？", now=100.0) is True
+    assert WakeGate().observe_transcript("你等会儿。", now=100.0) is True
 
 
 def test_qwen_wake_asr_alias_does_not_match_inside_longer_sentence():
@@ -181,6 +184,15 @@ def test_qwen_wake_resumes_after_reconnect_when_gate_is_active():
     assert _qwen_should_resume_wake_after_reconnect(gate) is True
     assert gate.expire(now=170.0) is True
     assert _qwen_should_resume_wake_after_reconnect(gate) is False
+
+
+def test_qwen_vision_is_sent_only_after_wake_gate_is_active():
+    assert _qwen_should_send_vision(False) is False
+    assert _qwen_should_send_vision(True) is True
+
+
+def test_qwen_face_speaker_update_requires_stable_detection_window():
+    assert _QWEN_FACE_SPEAKER_STABLE_S == 3.0
 
 
 def test_qwen_idle_timeout_is_reconnectable():

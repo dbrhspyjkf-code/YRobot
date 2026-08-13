@@ -11,7 +11,7 @@ from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
-WAKE_ASR_ALIASES = ("你好", "明白", "你好明白", "你老来", "你说你咋")
+WAKE_ASR_ALIASES = ("你好", "明白", "你好明白", "你老来", "你说你咋", "你等会儿")
 WAKE_PREFIX_ALIASES = ("你把",)
 WAKE_SUFFIX_BY_PREFIX = {
     "你把": ("行",),

@@ -1312,3 +1312,30 @@ Symptom: after wake, user said "今天深圳的天气怎么样", but QWEN answer
 Evidence: logs showed QWEN ASR recognized the utterance as only "天气。". Local spoken weather routing saw no city after cleanup, returned no match, and the query fell through to the main model.
 
 Change: if spoken control contains "天气" but no city remains after cleanup, default the local weather route to 深圳. This keeps ASR-truncated weather requests on the deterministic Hermes exact-TTS path instead of asking QWEN to infer intent.
+
+
+## 2026-08-13 12:45 - Add latest strict QWEN wake alias
+
+Symptom: after accepting exact "你好" as a wake alias, another spoken "你好小白" attempt still did not wake.
+
+Evidence: QWEN ASR recognized recent wake attempts as "哎，等会儿。", "对。", "你等会儿。", or empty text. "哎，等会儿" is too broad for wake, but "你等会儿" is a repeated close misrecognition of the wake phrase.
+
+Change: added exact compact "你等会儿" as a wake alias. Also clear stale QWEN `last_error` when the realtime WebSocket reports `connected`, so recovered idle reconnects do not remain visible as current Dashboard errors.
+
+
+## 2026-08-13 13:00 - Keep vision out of pre-wake ASR
+
+Symptom: user observed that QWEN wake was normal earlier, but degraded after vision recognition was added.
+
+Evidence: git comparison against the pre-vision stable baseline showed commit `8b4733e` began calling `_drain_camera()` from both the active and pre-wake audio upload branches; later face recognition also called `_drain_face()` and could re-emit `session.update` from the same paths. Current runtime had `YROBOT_SEND_VIDEO=1`. Logs also showed weather questions falling through to visual answers after ASR truncation.
+
+Change: keep QWEN vision input and face-based session updates out of the pre-wake branch. The robot now sends only audio before wake; camera frames and face prompts are sent only after WakeGate is active. This preserves vision after wake while reducing interference with wake ASR.
+
+
+## 2026-08-13 13:08 - Debounce QWEN face speaker updates
+
+Symptom: after wake recovered, ASR and replies were still unstable in normal conversation.
+
+Evidence: logs showed repeated `QWEN session.update re-emitted` events toggling between speaker `阿皮` and `None` during one active wake window. This can perturb the realtime session while the user is speaking. Logs also showed `天气吧。` was routed as city `吧`.
+
+Change: face speaker session updates now require the same recognition result to remain stable for 3 seconds before re-emitting `session.update`. The spoken weather cleaner now removes trailing `吧`, so ASR-truncated `天气吧` defaults to 深圳 instead of querying city `吧`.
