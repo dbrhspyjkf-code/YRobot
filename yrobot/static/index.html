@@ -141,6 +141,19 @@
         </div>
         <div id="motion-grid" class="motion-grid"><p class="muted">加载中…</p></div>
       </section>
+      <section id="face-panel" class="panel face-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">LOCAL FACE</p><h2>人脸识别</h2></div>
+          <button id="face-refresh" class="icon-button" type="button">刷新</button>
+        </div>
+        <p class="hint">人脸样本仅保存在 Reachy 本地；登记时请正对镜头并缓慢转头约 2 秒。</p>
+        <div class="face-register-row">
+          <input id="face-name" type="text" maxlength="32" placeholder="姓名，例如：阿皮" autocomplete="off" />
+          <button id="face-register" type="button">添加当前人脸</button>
+        </div>
+        <p id="face-note" class="hint"></p>
+        <div id="face-list" class="face-list"><p class="muted">加载中…</p></div>
+      </section>
             <section class="panel backend-panel">
         <div class="panel-heading compact">
           <div><p class="step">CONVERSATION</p><h2>对话后端</h2></div>

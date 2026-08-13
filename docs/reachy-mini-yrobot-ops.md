@@ -1469,3 +1469,18 @@ YRobot/QWEN session.
 
 No additional image is sent to QWEN by this monitor. It uses only the local
 `FaceDB`; normal image upload remains limited to explicit visual questions.
+
+
+## 2026-08-13 15:20 - Dashboard local face management
+
+Dashboard now includes a “人脸识别” panel. It lists local profiles with sample
+counts and last-recognized time, captures a new named profile over about two
+seconds, and requires confirmation before deletion. Names and samples remain
+in `~/.config/yrobot/faces.json` on Reachy; the panel never sends face data to
+QWEN.
+
+Face registration now reads the Dashboard's existing `CameraStreamer` cache
+instead of calling `media.get_frame()` directly, preserving the single camera
+owner required for stable ASR and vision scheduling. Static-panel test,
+JavaScript syntax check, Python compilation, and live `/api/face` route check
+passed. Post-restart official daemon and QWEN remained connected.

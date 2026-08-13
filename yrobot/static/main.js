@@ -41,6 +41,11 @@ const cameraImage = document.getElementById("camera-image");
 const cameraPlaceholder = document.getElementById("camera-placeholder");
 const cameraStatus = document.getElementById("camera-status");
 const cameraMeta = document.getElementById("camera-meta");
+const faceName = document.getElementById("face-name");
+const faceRegister = document.getElementById("face-register");
+const faceRefresh = document.getElementById("face-refresh");
+const faceNote = document.getElementById("face-note");
+const faceList = document.getElementById("face-list");
 
 const logList = document.getElementById("log-list");
 const powerReboot = document.getElementById("power-reboot");
@@ -976,6 +981,73 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// ── Local face registry ─────────────────────────────────────────────────────
+function faceSeenLabel(lastSeen) {
+  if (!lastSeen) return "尚未识别";
+  const seconds = Math.max(0, Math.round(Date.now() / 1000 - lastSeen));
+  return seconds < 60 ? "刚刚识别" : `${Math.floor(seconds / 60)} 分钟前识别`;
+}
+
+async function loadFaces() {
+  try {
+    const response = await fetch("/api/face", { cache: "no-store" });
+    if (!response.ok) throw new Error("读取失败");
+    const data = await response.json();
+    const faces = data.faces || [];
+    faceList.innerHTML = faces.length ? faces.map((face) => `
+      <div class="face-item">
+        <div><b>${escapeHtml(face.name)}</b><small>${face.sample_count} 张样本 · ${faceSeenLabel(face.last_seen)}</small></div>
+        <button class="face-delete" type="button" data-name="${escapeHtml(face.name)}">删除</button>
+      </div>`).join("") : '<p class="muted">尚未登记人脸</p>';
+    faceList.querySelectorAll(".face-delete").forEach((button) => {
+      button.addEventListener("click", () => deleteFace(button.dataset.name));
+    });
+  } catch (error) {
+    faceList.innerHTML = `<p class="muted">无法读取人脸：${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function registerFace() {
+  const name = faceName.value.trim();
+  if (!name) { faceNote.textContent = "请先输入姓名。"; return; }
+  faceRegister.disabled = true;
+  faceNote.textContent = "正在采集约 2 秒，请面向镜头缓慢转头…";
+  try {
+    const response = await fetch("/api/face", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "登记失败");
+    faceName.value = "";
+    faceNote.textContent = `已登记 ${data.name}，共有 ${data.samples} 张样本。`;
+    await loadFaces();
+  } catch (error) {
+    faceNote.textContent = `登记失败：${error.message}`;
+  } finally {
+    faceRegister.disabled = false;
+  }
+}
+
+async function deleteFace(name) {
+  if (!name || !confirm(`删除“${name}”的人脸样本？`)) return;
+  faceNote.textContent = "正在删除…";
+  try {
+    const response = await fetch(`/api/face/${encodeURIComponent(name)}`, { method: "DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "删除失败");
+    faceNote.textContent = `已删除 ${name}。`;
+    await loadFaces();
+  } catch (error) {
+    faceNote.textContent = `删除失败：${error.message}`;
+  }
+}
+
+faceRegister.addEventListener("click", registerFace);
+faceRefresh.addEventListener("click", loadFaces);
+loadFaces();
 
 // ── Motion panel ────────────────────────────────────────────────────────────
 const MOTION_BASIC = new Set(["shake", "nod", "tilt", "surprise", "think", "yawn", "sad", "angry"]);

@@ -1151,20 +1151,17 @@ def register_settings_routes(
         name = (document or {}).get("name")
         if not isinstance(name, str) or not name.strip():
             raise HTTPException(status_code=422, detail="'name' must be a non-empty string")
-        media_obj = media_holder.media if media_holder is not None else None
-        if media_obj is None or not hasattr(media_obj, "get_frame"):
-            raise HTTPException(
-                status_code=503,
-                detail="camera is not initialised yet; try again after boot",
-            )
+        camera.set_running(True)
         # Capture 10 frames spaced 200 ms apart so the user can
         # slowly turn their head and we get enough variety for
         # template matching.
         frames: list[np.ndarray] = []
         for _ in range(10):
-            frame = media_obj.get_frame()
-            if frame is not None:
-                frames.append(frame)
+            jpeg = camera.latest()
+            if jpeg is not None:
+                frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+                if frame is not None:
+                    frames.append(frame)
             await asyncio.sleep(0.2)
         if not frames:
             raise HTTPException(
