@@ -19,9 +19,22 @@ from yrobot.config import Settings
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_OUTPUT_BYTES = 4096
+# 190 KB decoded image == ~253 KB base64. Warn before the server rejects.
+_IMAGE_B64_WARN_BYTES = 200 * 1024
 DEFAULT_INSTRUCTIONS = (
     "你是 Reachy Mini 桌面机器人。使用用户当前使用的语言自然、简短地回答；"
     "用户切换语言时立即跟随。只有工具实际返回成功时，才能确认操作成功。"
+)
+# Appended to the system prompt only when settings.send_video is on. The
+# model buffers the most recent ~120 s of frames; this prompt tells it
+# that the buffer is real camera input (not a single snapshot) and asks
+# it to ground visual answers in what it actually sees rather than
+# guessing.
+VISION_POLICY = (
+    "你正在通过用户的摄像头看到实时画面（约 1 fps 抽帧，模型保留最近约 120 秒）。"
+    "当用户问及“看到什么/看见/描述/画面/前面/那边/这是什么/手里拿的”等视觉相关问题时，"
+    "请基于你看到的真实画面内容回答，不要用“作为语言模型我看不到画面”等套话回避。"
+    "如果图像看不清，诚实说看不清。"
 )
 
 
@@ -55,7 +68,10 @@ class QwenRealtimeClient:
     ) -> None:
         self.settings = settings
         self.tools = tools
-        self.instructions = f"{DEFAULT_INSTRUCTIONS}\n{settings.effective_system_prompt}"
+        vision_prompt = f"\n\n{VISION_POLICY}" if settings.send_video else ""
+        self.instructions = (
+            f"{DEFAULT_INSTRUCTIONS}\n{settings.effective_system_prompt}{vision_prompt}"
+        )
         self.url = _model_url(settings.qwen_url, settings.qwen_model)
         self.websocket_factory = websockets.connect
         self.websocket: Any | None = None
@@ -123,6 +139,33 @@ class QwenRealtimeClient:
             {
                 "type": "input_audio_buffer.append",
                 "audio": base64.b64encode(pcm).decode("ascii"),
+            }
+        )
+
+    async def append_image(self, image_b64: str) -> None:
+        """Append a base64 JPEG to the model's rolling visual buffer.
+
+        DashScope Qwen-Omni-Flash-Realtime maintains a ~120s rolling buffer
+        of recent frames (50 video turns); older frames are auto-discarded.
+        Per the official Qwen-Omni-Realtime API:
+          * the base64 string must contain no whitespace or newlines,
+          * the decoded image should stay under 190 KB,
+          * audio must already have been sent in this session at least once,
+          * ~1 fps is the recommended cadence.
+        The caller (main.py) is responsible for both the audio-first ordering
+        and the 1 fps rate.
+        """
+        if any(ch.isspace() for ch in image_b64):
+            raise ValueError("image base64 must not contain whitespace or newlines")
+        if len(image_b64) > _IMAGE_B64_WARN_BYTES:
+            logger.warning(
+                "input_image_buffer.append payload %d bytes; QWEN 190 KB target",
+                len(image_b64),
+            )
+        await self._send(
+            {
+                "type": "input_image_buffer.append",
+                "image": image_b64,
             }
         )
 

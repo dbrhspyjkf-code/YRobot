@@ -8,6 +8,7 @@ MiniCPM-o 4.5 realtime API (https://minicpmo45.modelbest.cn/docs/en/realtime-api
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -59,6 +60,8 @@ DEFAULT_REALTIME_URL = "wss://minicpmo45.modelbest.cn/v1/realtime?mode=video"
 SUPPORTED_CONVERSATION_BACKENDS = frozenset({"xiaozhi", "qwen"})
 QWEN_REALTIME_MODEL = "qwen3.5-omni-flash-realtime"
 QWEN_REALTIME_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+
+logger = logging.getLogger(__name__)
 
 # Voices for the DashScope Qwen-Omni Realtime WebSocket API.
 # DashScope `qwen3.5-omni-flash-realtime` WebSocket endpoint verified 2026-08-10
@@ -214,8 +217,19 @@ class Settings:
             raise ValueError("YROBOT_CONVERSATION_BACKEND must be 'xiaozhi' or 'qwen'")
         if self.chunk_ms != 1000:
             raise ValueError("YROBOT_CHUNK_MS must be 1000 for MiniCPM-o 4.5 duplex")
+        # Vision is an event-level input extension, not a new session mode.
+        # Qwen-Omni-Flash-Realtime accepts input_image_buffer.append alongside
+        # input_audio_buffer.append regardless of the modalities array
+        # (modalities only controls output). We only warn so an operator who
+        # flips YROBOT_SEND_VIDEO on while YROBOT_QWEN_REALTIME_MODE is still
+        # 'audio' gets a hint in the log instead of a hard start failure.
         if self.send_video and self.realtime_mode != "video":
-            raise ValueError("YROBOT_SEND_VIDEO requires realtime mode=video")
+            logger.warning(
+                "YROBOT_SEND_VIDEO enabled with realtime_mode=%s; image frames "
+                "will be sent as input_image_buffer.append events (modalities "
+                "only controls output, not input)",
+                self.realtime_mode,
+            )
         if not 0.0 <= self.barge_echo_similarity <= 1.0:
             raise ValueError("YROBOT_BARGE_ECHO_SIMILARITY must be between 0 and 1")
         if not -120.0 <= self.barge_unexplained_db <= 0.0:

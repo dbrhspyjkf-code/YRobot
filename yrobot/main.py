@@ -9,6 +9,7 @@ Thread map:
 
 from __future__ import annotations
 
+import base64
 import logging
 import math
 import wave
@@ -33,6 +34,7 @@ from yrobot.app_config import (
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
+from yrobot.vision import LatestCamera
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
 try:
@@ -454,6 +456,44 @@ class Yrobot(ReachyMiniApp):
             asr_debug_dir = Path("/tmp/yrobot-asr-debug")
             asr_debug_max_bytes = 16000 * 2 * 8  # 8 seconds of 16 kHz int16 mono
 
+            # LatestCamera owns a 1 fps JPEG puller; ``active_fn`` keeps
+            # it on the active cadence while the user is talking or the
+            # robot is still playing buffered audio, and falls back to
+            # the slower idle heartbeat otherwise. The helper is a no-op
+            # when send_video is off so the audio loop below doesn't need
+            # to special-case the disabled path.
+            camera: LatestCamera | None = None
+            _last_jpeg_len = 0
+
+            async def _drain_camera() -> None:
+                return None
+
+            if settings.send_video:
+
+                def _vision_active(_now: float) -> bool:
+                    return gate.active or playback.pending > 0
+
+                camera = LatestCamera(
+                    reachy_mini.media,
+                    active_fn=_vision_active,
+                    capture_period_s=settings.frame_period_active_s,
+                    idle_heartbeat_s=settings.frame_period_idle_s,
+                    scene_change_threshold=settings.scene_change_threshold,
+                )
+                camera.start()
+
+                async def _drain_camera() -> None:  # noqa: F811 — shadows no-op above
+                    nonlocal _last_jpeg_len
+                    jpeg = camera.take_latest()
+                    if jpeg is None or len(jpeg) == _last_jpeg_len:
+                        return
+                    _last_jpeg_len = len(jpeg)
+                    try:
+                        await client.append_image(base64.b64encode(jpeg).decode("ascii"))
+                        camera.mark_sent()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("append_image failed: %s", exc)
+
             def save_asr_debug_wav(transcript: str) -> None:
                 nonlocal asr_capture, asr_capturing
                 if not asr_capture:
@@ -759,6 +799,7 @@ class Yrobot(ReachyMiniApp):
                         if asr_capturing and len(asr_capture) < asr_debug_max_bytes:
                             asr_capture.extend(pcm)
                         await client.append_pcm(pcm)
+                        await _drain_camera()
                         turn_frames += 1
                         if silence_frames >= 16 or turn_frames >= 167:
                             await client.commit_turn()
@@ -781,6 +822,7 @@ class Yrobot(ReachyMiniApp):
                         continue
 
                     await client.append_pcm(pcm)
+                    await _drain_camera()
                     turn_frames += 1
                     if silence_frames >= 8 or turn_frames >= 167:
                         await client.commit_turn()
@@ -788,6 +830,8 @@ class Yrobot(ReachyMiniApp):
                         silence_frames = 0
                         turn_frames = 0
             finally:
+                if camera is not None:
+                    camera.close()
                 ready_task.cancel()
                 cloud_task.cancel()
                 for task in (ready_task, cloud_task):

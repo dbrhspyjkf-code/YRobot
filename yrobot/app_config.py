@@ -994,10 +994,20 @@ def build_status(
         "runtime": runtime,
         "conversation": {
             "gateway_url": gateway_url,
-            "realtime_mode": "audio",
+            "realtime_mode": settings.realtime_mode,
             "tls_verify": tls_verify,
-            "video_enabled": False,
-            "proactive_enabled": False,
+            "video_enabled": settings.send_video,
+            "video_interval_ms": (
+                int(settings.frame_period_active_s * 1000)
+                if settings.send_video and settings.frame_period_active_s > 0
+                else None
+            ),
+            "video_fps": (
+                round(1.0 / settings.frame_period_active_s, 2)
+                if settings.send_video and settings.frame_period_active_s > 0
+                else None
+            ),
+            "proactive_enabled": settings.proactive_enabled,
             "configured_backend": configured_backend,
             "backend": running_backend,
         },
@@ -1097,6 +1107,33 @@ def register_settings_routes(
             ) from exc
         configured_voice = voice
         return {"configured_voice": voice, "restart_required": True}
+
+    @app.get("/api/conversation/video")
+    def get_conversation_video() -> dict[str, Any]:
+        video_settings = Settings.from_env(os.environ)
+        return {
+            "video_enabled": video_settings.send_video,
+            "frame_period_active_s": video_settings.frame_period_active_s,
+            "frame_period_idle_s": video_settings.frame_period_idle_s,
+            "scene_change_threshold": video_settings.scene_change_threshold,
+        }
+
+    @app.put("/api/conversation/video")
+    def put_conversation_video(document: dict[str, Any]) -> dict[str, Any]:
+        enabled = document.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(
+                status_code=422, detail="'enabled' must be a boolean"
+            )
+        try:
+            update_env_value(
+                vad_env_path, "YROBOT_SEND_VIDEO", "1" if enabled else "0"
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"could not save video env: {exc}"
+            ) from exc
+        return {"video_enabled": enabled, "restart_required": True}
 
     @app.post("/api/conversation/voice/preview")
     async def post_voice_preview(voice: str) -> dict[str, Any]:
