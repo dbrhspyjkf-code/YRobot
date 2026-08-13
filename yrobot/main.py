@@ -35,6 +35,7 @@ from yrobot.app_config import (
 from yrobot.audio import apply_audio_startup_config
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
+from yrobot.qwen_emotion import requested_emotion
 from yrobot.faces import FaceDB
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
@@ -500,6 +501,7 @@ class Yrobot(ReachyMiniApp):
 
         async def run_qwen() -> None:
             response_started = False
+            pending_qwen_emotion: list[str | None] = [None]
             client: QwenRealtimeClient
             last_sonos_fragment = ""
             last_sonos_fragment_at = 0.0
@@ -601,6 +603,9 @@ class Yrobot(ReachyMiniApp):
                     response_started = True
                     choreo.set_mode(SPEAK)
                     choreo.release_still()
+                    if pending_qwen_emotion[0] is not None:
+                        play_qwen_emotion(pending_qwen_emotion[0])
+                        pending_qwen_emotion[0] = None
                     RUNTIME_HEALTH.update(tts_active=True)
                 playback.put(pcm)
                 RUNTIME_HEALTH.update(
@@ -789,6 +794,8 @@ class Yrobot(ReachyMiniApp):
                     logger.info("QWEN wake word detected")
                     choreo.play_move("nod")
                     asyncio.create_task(activate_from_wake())
+                if gate.active:
+                    pending_qwen_emotion[0] = requested_emotion(transcript)
                 if gate.active and candidates:
 
                     async def _run_spoken_control() -> None:

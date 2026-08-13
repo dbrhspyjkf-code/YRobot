@@ -1436,3 +1436,10 @@ compilation passed, and Reachy restarted only `yrobot.service`. Post-restart
 status reported daemon running, motors enabled, motion worker alive at about
 51 Hz, QWEN WebSocket connected, and no runtime error. Final acceptance is a
 spoken conversation that naturally produces one of the permitted gestures.
+
+Follow-up: QWEN did not consistently choose the optional function call during
+the initial live test. Explicit conversational requests are therefore matched
+locally before the response begins: “给我一个惊喜”, “开心的笑话”, and “想一想”
+queue `surprised`, `happy`, and `thinking` respectively. Device control and
+status/query wording are excluded. The queued gesture plays on the first QWEN
+audio packet, so it accompanies rather than follows the spoken response.
