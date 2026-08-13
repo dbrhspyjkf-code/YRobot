@@ -32,6 +32,7 @@ class _RuntimeHealth:
             "audio_dropped": 0,
             "last_rx_at": None,
             "last_tts_packet_at": None,
+            "wake_active": False,
         }
 
     def update(self, **values: Any) -> None:

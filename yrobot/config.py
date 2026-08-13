@@ -34,9 +34,9 @@ HA_CONTROL_POLICY = (
     "调工具后直接告诉用户结果（如“已打开”、“已关闭”），"
     "不要重复说“我交给本地控制”、“好的，交给本地控制”或类似的中间话术——"
     "用户已经知道是本地执行的，只需要听结果。"
-"如果工具调用未返回成功或用户意图不明确，"
-"必须如实告诉用户（“我没听清”、“请再说一遍”、“这个设备不在白名单”），"
-"不要假装成功。"
+    "如果工具调用未返回成功或用户意图不明确，"
+    "必须如实告诉用户（“我没听清”、“请再说一遍”、“这个设备不在白名单”），"
+    "不要假装成功。"
 )
 HERMES_TOOLS_POLICY = (
     "外部工具：以下查询直接交给后端处理，回复中必须包含触发词，否则后端无法识别：\n"
@@ -81,21 +81,21 @@ logger = logging.getLogger(__name__)
 # The preview endpoint is the ground truth.
 QWEN_VOICES: tuple[str, ...] = (
     # Multilingual / Mandarin
-    "Ethan",    # Male, bright upbeat, warm approachable vibe. DashScope default.
-    "Serena",   # Female, gentle young woman.
-    "Tina",     # (DashScope Qwen3.5-Omni blog default)
-    "Cindy",    # (added by user; works)
+    "Ethan",  # Male, bright upbeat, warm approachable vibe. DashScope default.
+    "Serena",  # Female, gentle young woman.
+    "Tina",  # (DashScope Qwen3.5-Omni blog default)
+    "Cindy",  # (added by user; works)
     "Raymond",  # (added by user; works)
-    "Mia",      # (added by user; works)
-    "Kiki",     # (added by user; works)
-    "Aiden",    # Male, warm laid-back American, gentle boyish charm.
+    "Mia",  # (added by user; works)
+    "Kiki",  # (added by user; works)
+    "Aiden",  # Male, warm laid-back American, gentle boyish charm.
     # Mandarin regional dialects
-    "Sunny",    # Sichuanese dialect.
-    "Dylan",    # Beijing Mandarin dialect.
-    "Peter",    # Tianjin dialect.
-    "Eric",     # Sichuanese dialect.
-    "Marcus",   # Shaanxi dialect.
-    "Li",       # Nanjing dialect.
+    "Sunny",  # Sichuanese dialect.
+    "Dylan",  # Beijing Mandarin dialect.
+    "Peter",  # Tianjin dialect.
+    "Eric",  # Sichuanese dialect.
+    "Marcus",  # Shaanxi dialect.
+    "Li",  # Nanjing dialect.
 )
 
 
@@ -168,6 +168,17 @@ class Settings:
     frame_period_active_s: float = 1.0
     frame_period_idle_s: float = 3.0
     scene_change_threshold: float = 0.04
+
+    # Local wake-word gate. When wake_enabled is true, audio chunks are
+    # only forwarded to the realtime backend after the user has said
+    # the wake phrase (default: "你好小白"). The phrase is configurable
+    # via YROBOT_WAKE_PHRASE so operators can re-train users to a
+    # different trigger without code changes.
+    wake_enabled: bool = True
+    wake_phrase: str = "你好小白"
+    wake_model_path: str = "/home/pollen/stt-models/faster-whisper-medium"
+    wake_window_s: float = 1.5
+    wake_detect_period_s: float = 4.0
 
     # Session rotation: video defaults below its 300 s public cap; audio mode
     # selects 550 s below its 600 s cap. KV pressure can rotate either sooner.
@@ -305,6 +316,14 @@ class Settings:
             frame_period_active_s=_num("YROBOT_FRAME_CAPTURE_PERIOD_S", 1.0, env),
             frame_period_idle_s=_num("YROBOT_FRAME_IDLE_HEARTBEAT_S", 3.0, env),
             scene_change_threshold=_num("YROBOT_SCENE_CHANGE_THRESHOLD", 0.04, env),
+            wake_enabled=_flag("YROBOT_WAKE_ENABLED", True, env),
+            wake_phrase=env.get("YROBOT_WAKE_PHRASE", "你好小白").strip() or "你好小白",
+            wake_model_path=env.get(
+                "YROBOT_WAKE_MODEL_PATH",
+                "/home/pollen/stt-models/faster-whisper-medium",
+            ),
+            wake_window_s=_num("YROBOT_WAKE_WINDOW_S", 1.5, env),
+            wake_detect_period_s=_num("YROBOT_WAKE_DETECT_PERIOD_S", 4.0, env),
             session_budget_s=_num("YROBOT_SESSION_BUDGET_S", default_session_budget, env),
             kv_budget_tokens=_num("YROBOT_KV_BUDGET", 7200.0, env),
             reconnect_delay_s=_num("YROBOT_RECONNECT_DELAY_S", 2.5, env),
@@ -346,7 +365,7 @@ class Settings:
             qwen_url=(env.get("YROBOT_QWEN_URL") or QWEN_REALTIME_URL).strip(),
             qwen_voice=(env.get("YROBOT_QWEN_VOICE") or "Ethan").strip(),
             command_recognizer_enabled=_flag("YROBOT_COMMAND_RECOGNIZER_ENABLED", False, env),
-            command_recognizer_url=(
-                env.get("YROBOT_COMMAND_RECOGNIZER_URL") or ""
-            ).strip().rstrip("/"),
+            command_recognizer_url=(env.get("YROBOT_COMMAND_RECOGNIZER_URL") or "")
+            .strip()
+            .rstrip("/"),
         )

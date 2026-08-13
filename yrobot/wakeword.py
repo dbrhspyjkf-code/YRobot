@@ -1,14 +1,16 @@
 """Lightweight wake-word detector using local faster-whisper-medium.
 
 Keeps a rolling 3-second mic buffer; every 2.5 seconds the buffer is
-transcribed and checked for the phrase "你好大白". Detection is best-effort
-and runs on the same CPU as the rest of YRobot, so a miss or slow load does
+transcribed and checked for the phrase "你好小白" (configurable
+via ``YROBOT_WAKE_PHRASE``). Detection is best-effort and runs on
+the same CPU as the rest of YRobot, so a miss or slow load does
 not crash the conversation loop.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -20,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-WAKE_PHRASE = "你好大白"
+WAKE_PHRASE = os.environ.get("YROBOT_WAKE_PHRASE", "你好小白")
 MODEL_PATH = "/home/pollen/stt-models/faster-whisper-medium"
 WINDOW_S = 1.5
 DETECT_PERIOD_S = 4.0
@@ -35,9 +37,7 @@ class WakeWordDetector:
     returns False quickly.
     """
 
-    def __init__(
-        self, model_path: str = MODEL_PATH, wake_phrase: str = WAKE_PHRASE
-    ) -> None:
+    def __init__(self, model_path: str = MODEL_PATH, wake_phrase: str = WAKE_PHRASE) -> None:
         self._model_path = model_path
         self._wake_phrase = wake_phrase
         self._model: WhisperModel | None = None
@@ -46,21 +46,15 @@ class WakeWordDetector:
         self._buf: list[np.ndarray] = []
         self._last_detect_at = -1e9
         # Load the heavy model in the background so the mic loop stays live.
-        threading.Thread(
-            target=self._load_model, name="yrobot-ww-load", daemon=True
-        ).start()
+        threading.Thread(target=self._load_model, name="yrobot-ww-load", daemon=True).start()
 
     def _load_model(self) -> None:
         try:
             from faster_whisper import WhisperModel
 
             t0 = time.monotonic()
-            self._model = WhisperModel(
-                self._model_path, device="cpu", compute_type="int8"
-            )
-            logger.info(
-                "wake-word whisper model loaded in %.1f s", time.monotonic() - t0
-            )
+            self._model = WhisperModel(self._model_path, device="cpu", compute_type="int8")
+            logger.info("wake-word whisper model loaded in %.1f s", time.monotonic() - t0)
             self._model_ready.set()
         except Exception as exc:
             self._model_error = str(exc)
@@ -84,7 +78,11 @@ class WakeWordDetector:
             return False
         if len(self._buf) < 30:  # need at least ~0.6 s
             return False
-        logger.info("wake-word: running detection (buf=%d frames, %.1fs since last)", len(self._buf), now - self._last_detect_at)
+        logger.info(
+            "wake-word: running detection (buf=%d frames, %.1fs since last)",
+            len(self._buf),
+            now - self._last_detect_at,
+        )
         self._last_detect_at = now
         if not self._model_ready.is_set():
             return False  # model still loading in background
@@ -106,9 +104,7 @@ class WakeWordDetector:
                 # debug: log the transcription so we can tune sensitivity
                 logger.info("wake-word whisper: raw=%r", seg.text[:60])
                 if self._wake_phrase in text:
-                    logger.info(
-                        "WAKE PHRASE DETECTED: %r", text
-                    )
+                    logger.info("WAKE PHRASE DETECTED: %r", text)
                     self._buf.clear()
                     return True
         except Exception as exc:

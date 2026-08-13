@@ -10,16 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import os
 import re
 import subprocess
-import tempfile
 import threading
 import time
 import urllib.request
-from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +26,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Response
 
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
-from yrobot.config import SUPPORTED_CONVERSATION_BACKENDS, QWEN_VOICES, Settings
+from yrobot.config import QWEN_VOICES, SUPPORTED_CONVERSATION_BACKENDS, Settings
 from yrobot.env_store import update_env_value
 from yrobot.qwen_realtime import _model_url
 from yrobot.state import RUNTIME_HEALTH
@@ -42,7 +40,7 @@ STARTED_AT = time.monotonic()
 # any particular request handler so the volume singleton survives reloads.
 _volume_controller_instance: VolumeController | None = None
 _audio_input_controller_instance: AudioInputController | None = None
-_motion_controller_instance: "MotionController | None" = None
+_motion_controller_instance: MotionController | None = None
 
 
 def volume_controller_singleton() -> VolumeController:
@@ -111,6 +109,7 @@ class MotionController:
 
     def list_moves(self) -> list[str]:
         from yrobot.motion import MOVES
+
         names = list(MOVES)
         provider = self._recorded_provider
         recorded = provider() if callable(provider) else None
@@ -121,6 +120,7 @@ class MotionController:
                 pass
         try:
             from reachy_mini_dances_library.collection.dance import AVAILABLE_MOVES
+
             names.extend(sorted(AVAILABLE_MOVES.keys()))
         except Exception:
             pass
@@ -194,14 +194,10 @@ class VolumeController:
             check=False,
         )
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"amixer sget failed (rc={proc.returncode}): {proc.stderr.strip()}"
-            )
+            raise RuntimeError(f"amixer sget failed (rc={proc.returncode}): {proc.stderr.strip()}")
         match = re.search(r"Limits:\s*Playback\s+(\d+)\s*-\s*(\d+)", proc.stdout)
         if match is None:
-            raise RuntimeError(
-                f"could not parse amixer limits from output:\n{proc.stdout}"
-            )
+            raise RuntimeError(f"could not parse amixer limits from output:\n{proc.stdout}")
         return int(match.group(1)), int(match.group(2))
 
     def _clamp(self, percent: int) -> int:
@@ -224,9 +220,7 @@ class VolumeController:
             # matched by a naive ``Playback <digits>`` search.
             match = re.search(r"Playback\s+\d+\s+\[(\d+)%\]", proc.stdout)
             if match is None:
-                raise RuntimeError(
-                    f"could not parse amixer level from output:\n{proc.stdout}"
-                )
+                raise RuntimeError(f"could not parse amixer level from output:\n{proc.stdout}")
             return int(match.group(1))
 
     def write_percent(self, percent: int) -> int:
@@ -649,7 +643,7 @@ def _format_timestamp(timestamp_us: int) -> str:
     if timestamp_us <= 0:
         return ""
     seconds = timestamp_us / 1_000_000
-    return datetime.fromtimestamp(seconds, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(seconds, tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 class LogReader:
@@ -775,7 +769,9 @@ class LogReader:
         chat_markers: tuple[str, ...],
     ) -> tuple[list[dict[str, Any]], str | None]:
         try:
-            recent = self._log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+            recent = self._log_path.read_text(encoding="utf-8", errors="replace").splitlines()[
+                -lines:
+            ]
         except OSError as exc:
             return [], str(exc)
         entries: list[dict[str, Any]] = []
@@ -791,10 +787,10 @@ class LogReader:
             if match:
                 stamp, millis, level_letter, logger_name, message = match.groups()
                 try:
-                    timestamp_us = int(
-                        datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").timestamp()
-                        * 1_000_000
-                    ) + int(millis) * 1000
+                    timestamp_us = (
+                        int(datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").timestamp() * 1_000_000)
+                        + int(millis) * 1000
+                    )
                 except ValueError:
                     timestamp_us = index
                 logger_value = logger_name
@@ -889,8 +885,7 @@ def _read_system_metrics() -> dict[str, Any]:
         disk_pct = 0.0
     temp_c = 0.0
     try:
-        for p in ["/sys/class/thermal/thermal_zone0/temp",
-                  "/sys/class/thermal/thermal_zone1/temp"]:
+        for p in ["/sys/class/thermal/thermal_zone0/temp", "/sys/class/thermal/thermal_zone1/temp"]:
             try:
                 with open(p) as f:
                     temp_c = float(f.read().strip()) / 1000.0
@@ -951,6 +946,7 @@ def _read_pi_power_state() -> dict[str, Any]:
     )
     return state
 
+
 def build_status(
     environ: Mapping[str, str],
     audio_input_controller: AudioInputController | None = None,
@@ -968,6 +964,15 @@ def build_status(
     mic_state = dashboard_mic_signal()
     mic_state["available"] = mic_state.get("updated_at", 0.0) > 0.0
     runtime = RUNTIME_HEALTH.snapshot()
+    # The dashboard also surfaces the wake-word config so the
+    # operator can confirm at a glance whether the local gate is
+    # armed and what phrase the user is supposed to say. The
+    # `wake_active` flag itself is updated by main.py via
+    # RUNTIME_HEALTH.update(wake_active=...) on every detection.
+    settings_for_runtime = Settings.from_env(environ)
+    runtime.setdefault("wake_enabled", settings_for_runtime.wake_enabled)
+    runtime.setdefault("wake_phrase", settings_for_runtime.wake_phrase)
+    runtime.setdefault("wake_active", False)
     configured_backend = Settings.from_env(environ).conversation_backend
     running_backend = runtime.get("backend", configured_backend)
     if running_backend == "qwen":
@@ -978,9 +983,7 @@ def build_status(
         gateway_url = qwen_url
         tls_verify = qwen_url.startswith("wss://")
     else:
-        gateway_url = os.environ.get(
-            "XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/"
-        )
+        gateway_url = os.environ.get("XIAOZHI_CONV_URL", "wss://api.tenclass.net/xiaozhi/v1/")
         tls_verify = gateway_url.startswith("wss://")
     return {
         "service": {
@@ -1103,9 +1106,7 @@ def register_settings_routes(
         try:
             update_env_value(vad_env_path, "YROBOT_QWEN_VOICE", voice)
         except (OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=503, detail=f"could not save voice env: {exc}"
-            ) from exc
+            raise HTTPException(status_code=503, detail=f"could not save voice env: {exc}") from exc
         configured_voice = voice
         return {"configured_voice": voice, "restart_required": True}
 
@@ -1123,17 +1124,11 @@ def register_settings_routes(
     def put_conversation_video(document: dict[str, Any]) -> dict[str, Any]:
         enabled = document.get("enabled")
         if not isinstance(enabled, bool):
-            raise HTTPException(
-                status_code=422, detail="'enabled' must be a boolean"
-            )
+            raise HTTPException(status_code=422, detail="'enabled' must be a boolean")
         try:
-            update_env_value(
-                vad_env_path, "YROBOT_SEND_VIDEO", "1" if enabled else "0"
-            )
+            update_env_value(vad_env_path, "YROBOT_SEND_VIDEO", "1" if enabled else "0")
         except (OSError, ValueError) as exc:
-            raise HTTPException(
-                status_code=503, detail=f"could not save video env: {exc}"
-            ) from exc
+            raise HTTPException(status_code=503, detail=f"could not save video env: {exc}") from exc
         return {"video_enabled": enabled, "restart_required": True}
 
     # ── Face registry routes ─────────────────────────────────────────
@@ -1153,9 +1148,7 @@ def register_settings_routes(
     async def post_face(document: dict[str, Any]) -> dict[str, Any]:
         name = (document or {}).get("name")
         if not isinstance(name, str) or not name.strip():
-            raise HTTPException(
-                status_code=422, detail="'name' must be a non-empty string"
-            )
+            raise HTTPException(status_code=422, detail="'name' must be a non-empty string")
         media_obj = media_holder.media if media_holder is not None else None
         if media_obj is None or not hasattr(media_obj, "get_frame"):
             raise HTTPException(
@@ -1186,9 +1179,7 @@ def register_settings_routes(
     def delete_face(name: str) -> dict[str, Any]:
         deleted = face_db.delete(name)
         if not deleted:
-            raise HTTPException(
-                status_code=404, detail=f"no face profile named {name!r}"
-            )
+            raise HTTPException(status_code=404, detail=f"no face profile named {name!r}")
         return {"deleted": True, "name": name}
 
     @app.post("/api/conversation/voice/preview")
@@ -1209,8 +1200,9 @@ def register_settings_routes(
         if not settings.qwen_api_key:
             raise HTTPException(status_code=503, detail="DASHSCOPE_API_KEY not configured")
         try:
-            import websockets  # type: ignore[import-not-found]
             import base64 as _b64
+
+            import websockets  # type: ignore[import-not-found]
         except ImportError as exc:
             raise HTTPException(status_code=503, detail=f"websockets not installed: {exc}") from exc
         sample_text = "你好，这是一段试听。"
@@ -1233,14 +1225,18 @@ def register_settings_routes(
                 max_size=10_000_000,
             ) as ws:
                 await ws.send(json.dumps(session_payload))
-                await ws.send(json.dumps({
-                    "type": "conversation.item.create",
-                    "item": {
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": sample_text}],
-                    },
-                }))
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": sample_text}],
+                            },
+                        }
+                    )
+                )
                 await ws.send(json.dumps({"type": "response.create"}))
                 audio_chunks: list[bytes] = []
                 while True:
@@ -1323,7 +1319,9 @@ def register_settings_routes(
     def post_reachy_daemon_action(document: dict[str, Any]) -> dict[str, Any]:
         action = str(document.get("action") or "")
         if action not in REACHY_DAEMON_ACTIONS:
-            raise HTTPException(status_code=422, detail="action must be 'wake', 'sleep', or 'restart'")
+            raise HTTPException(
+                status_code=422, detail="action must be 'wake', 'sleep', or 'restart'"
+            )
         try:
             return reachy_daemon_controller.action(action)
         except Exception as exc:  # noqa: BLE001 — surface daemon action failures
