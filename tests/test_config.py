@@ -52,6 +52,11 @@ def test_command_recognizer_defaults_disabled():
     assert settings.command_recognizer_url == ""
 
 
+def test_local_kws_wake_defaults_disabled_but_can_be_enabled():
+    assert Settings().wake_enabled is False
+    assert Settings.from_env({"YROBOT_WAKE_ENABLED": "1"}).wake_enabled is True
+
+
 def test_command_recognizer_env_overrides(monkeypatch):
     monkeypatch.setenv("YROBOT_COMMAND_RECOGNIZER_ENABLED", "1")
     monkeypatch.setenv("YROBOT_COMMAND_RECOGNIZER_URL", "http://192.168.1.200:8910/recognize")

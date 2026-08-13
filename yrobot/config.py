@@ -169,13 +169,12 @@ class Settings:
     frame_period_idle_s: float = 3.0
     scene_change_threshold: float = 0.04
 
-    # Local keyword wake-word gate via sherpa-onnx KWS. The QWEN
-    # cloud ASR (fixed qwen3-asr-flash-realtime) transcribes short
-    # Chinese wake phrases unreliably, so a ~3.3 MB local Zipformer
-    # transducer detects the keyword at realtime speed and opens the
-    # 60 s uplink window on a hit. wake_phrase is the display/trigger
-    # name (the matching keyword is baked into keywords.txt).
-    wake_enabled: bool = True
+    # Experimental local keyword wake-word gate via sherpa-onnx KWS.
+    # Keep it opt-in: the deployed stable QWEN path uses cloud ASR audio
+    # upload plus WakeGate transcript matching, with a low VAD threshold,
+    # because the KWS path has not produced reliable runtime wake hits on
+    # this robot. wake_phrase is the display/trigger name.
+    wake_enabled: bool = False
     wake_phrase: str = "你好小白"
     kws_model_dir: str = (
         "/home/pollen/stt-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
@@ -317,7 +316,7 @@ class Settings:
             frame_period_active_s=_num("YROBOT_FRAME_CAPTURE_PERIOD_S", 1.0, env),
             frame_period_idle_s=_num("YROBOT_FRAME_IDLE_HEARTBEAT_S", 3.0, env),
             scene_change_threshold=_num("YROBOT_SCENE_CHANGE_THRESHOLD", 0.04, env),
-            wake_enabled=_flag("YROBOT_WAKE_ENABLED", True, env),
+            wake_enabled=_flag("YROBOT_WAKE_ENABLED", False, env),
             wake_phrase=env.get("YROBOT_WAKE_PHRASE", "你好小白").strip() or "你好小白",
             kws_model_dir=env.get(
                 "YROBOT_KWS_MODEL_DIR",

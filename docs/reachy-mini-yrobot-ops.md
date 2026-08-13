@@ -1229,3 +1229,14 @@ Symptom: after changing the default persona to XiaoBai, QWEN could still introdu
 Change: build_system_prompt now narrowly migrates old persona text from "你是 Reachy"/"你是Reachy" to "你是小白" for all persona sources. The robot-local .env and /home/pollen/.config/yrobot/settings.json were also updated in place so the current runtime source no longer contains the old identity.
 
 Verification: added test_env_persona_migrates_old_reachy_identity_to_xiaobai; py_compile passed for yrobot/config.py and yrobot/main.py; focused persona/QWEN session tests passed; dotenv-based prompt check shows XiaoBai true and Reachy identity false.
+
+
+## 2026-08-13 11:45 - Restore QWEN wake to cloud-ASR baseline
+
+Symptom: in QWEN mode, saying "你好小白" no longer reliably woke the robot. Logs showed repeated empty QWEN ASR transcripts and no "QWEN wake word detected" entries after the local sherpa-onnx KWS wake gate was enabled by default.
+
+Root cause: the new experimental local KWS path was enabled by default, but it did not produce runtime wake hits on the deployed robot. The previous stable path relied on QWEN ASR audio upload with a low VAD threshold and WakeGate transcript matching.
+
+Change: disabled local KWS by default again; it remains opt-in via YROBOT_WAKE_ENABLED=1. Current robot config keeps YROBOT_VAD_RMS_MIN at 0.015 so normal speech uploads to QWEN for cloud-ASR wake matching.
+
+Verification: py_compile passed for yrobot/config.py, yrobot/main.py, and yrobot/audio_runtime.py; focused wake/config tests passed. Runtime config check showed wake_enabled False, wake_phrase "你好小白", vad_rms_min 0.015, backend qwen.
