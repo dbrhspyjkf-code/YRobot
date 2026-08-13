@@ -1380,3 +1380,25 @@ correct scene description. User confirmed all spoken tests and Dashboard
 preview were OK. Roll back only if a future pure-voice regression appears:
 set `YROBOT_SEND_VIDEO=0` in both runtime env files and restart YRobot (never
 the official daemon).
+
+
+## 2026-08-13 13:46 - Restore Dashboard runtime log and recent conversation
+
+Symptom: Dashboard "运行 Log" showed stale `yrobot.service` entries and
+"最近对话" stayed empty even while QWEN was speaking.
+
+Evidence: the detached YRobot process writes `/tmp/yrobot-run/yrobot.log`, but
+`LogReader` still read `/tmp/yrobot-main.log`, which did not exist. After the
+path correction, the chat endpoint still returned no entries because camera
+preview generated more than 200 log lines and the reader filtered only that
+tail window.
+
+Change: set `CURRENT_PROCESS_LOG_PATH` to `/tmp/yrobot-run/yrobot.log`. For a
+`filter=chat` request, `LogReader` scans its bounded 2,000-line window before
+filtering QWEN/XIAOZHI transcript markers. This preserves recent dialogue
+through high-frequency camera-preview traffic without creating unbounded log
+reads.
+
+Acceptance: `GET /api/logs?filter=chat&limit=200` returned 33 real historical
+dialogue records after restart; `/api/status` reported active QWEN,
+`video_enabled=true`, WebSocket `connected`, and no runtime error.

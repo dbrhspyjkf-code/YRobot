@@ -625,7 +625,7 @@ class CameraStreamer:
 
 
 JOURNAL_UNIT = "yrobot.service"
-CURRENT_PROCESS_LOG_PATH = Path("/tmp/yrobot-main.log")
+CURRENT_PROCESS_LOG_PATH = Path("/tmp/yrobot-run/yrobot.log")
 JOURNAL_LEVELS: tuple[tuple[str, int], ...] = (
     ("emerg", 0),
     ("alert", 1),
@@ -694,6 +694,8 @@ class LogReader:
         filter_kind: str = "",
     ) -> tuple[list[dict[str, Any]], str | None]:
         lines = max(1, min(self.MAX_LINES, int(lines)))
+        if filter_kind == "chat":
+            lines = self.MAX_LINES
         min_priority = self._priority_for(min_level)
         # "chat" filter: keep only user STT and bot reply lines, for any backend.
         # Each backend writes its own logger lines; we list their markers here.
