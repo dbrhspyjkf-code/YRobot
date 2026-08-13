@@ -20,7 +20,7 @@ from yrobot.main import (
     _qwen_should_request_response_after_local_control,
     _qwen_should_reconnect,
     _qwen_should_resume_wake_after_reconnect,
-    _qwen_should_send_vision,
+    _qwen_wants_visual_snapshot,
 )
 
 
@@ -186,9 +186,11 @@ def test_qwen_wake_resumes_after_reconnect_when_gate_is_active():
     assert _qwen_should_resume_wake_after_reconnect(gate) is False
 
 
-def test_qwen_vision_is_sent_only_after_wake_gate_is_active():
-    assert _qwen_should_send_vision(False) is False
-    assert _qwen_should_send_vision(True) is True
+def test_qwen_visual_snapshot_intent_is_narrow():
+    assert _qwen_wants_visual_snapshot("小白，你看到什么？") is True
+    assert _qwen_wants_visual_snapshot("这是什么？") is True
+    assert _qwen_wants_visual_snapshot("今天深圳天气怎么样？") is False
+    assert _qwen_wants_visual_snapshot("打开吸顶灯") is False
 
 
 def test_qwen_face_speaker_update_requires_stable_detection_window():

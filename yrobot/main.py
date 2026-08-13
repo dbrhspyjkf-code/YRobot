@@ -32,11 +32,11 @@ from yrobot.app_config import (
     register_settings_routes,
     volume_controller_singleton,
 )
+from yrobot.audio import apply_audio_startup_config
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.faces import FaceDB
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
-from yrobot.vision import LatestCamera
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
 try:
@@ -253,8 +253,12 @@ def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
     return gate.active
 
 
-def _qwen_should_send_vision(gate_active: bool) -> bool:
-    return gate_active
+def _qwen_wants_visual_snapshot(transcript: str) -> bool:
+    text = transcript.replace(" ", "")
+    return any(
+        phrase in text
+        for phrase in ("看到", "看见", "看一下", "看看", "看这个", "这是什么", "描述", "画面", "前面", "手里")
+    )
 
 
 class _XiaozhiReconnect(Exception):
@@ -356,7 +360,9 @@ class Yrobot(ReachyMiniApp):
         super().__init__(running_on_wireless=running_on_wireless)
         self._media_holder = _MediaHolder()
         assert self.settings_app is not None
-        register_settings_routes(self.settings_app, media_holder=self._media_holder)
+        self._camera_streamer = register_settings_routes(
+            self.settings_app, media_holder=self._media_holder
+        )
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Run exactly one configured conversation backend."""
@@ -406,6 +412,8 @@ class Yrobot(ReachyMiniApp):
         from yrobot.qwen_tools import ToolExecutor
         from yrobot.kws import KeywordWakeDetector
 
+        camera_streamer = self._camera_streamer
+
         startup_head_pose = None
         startup_antennas = None
         try:
@@ -448,6 +456,7 @@ class Yrobot(ReachyMiniApp):
             reachy_mini,
             choreo,
             head_tracking_weight=settings.head_tracking_weight,
+            camera_streamer=camera_streamer,
         )
         tracker.start()
 
@@ -455,6 +464,11 @@ class Yrobot(ReachyMiniApp):
             reachy_mini.media.stop_playing()
         except Exception as exc:
             logger.warning("could not release SDK speaker for QWEN: %s", exc)
+        try:
+            applied_audio_profile = apply_audio_startup_config(reachy_mini.media)
+            logger.info("QWEN audio startup profile applied: %s", applied_audio_profile)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("QWEN audio startup profile failed: %s", exc)
 
         # Local keyword wake detector (sherpa-onnx KWS). When enabled,
         # the detector listens on the same mic frames the loop already
@@ -496,44 +510,6 @@ class Yrobot(ReachyMiniApp):
             asr_debug_dir = Path("/tmp/yrobot-asr-debug")
             asr_debug_max_bytes = 16000 * 2 * 8  # 8 seconds of 16 kHz int16 mono
 
-            # LatestCamera owns a 1 fps JPEG puller; ``active_fn`` keeps
-            # it on the active cadence while the user is talking or the
-            # robot is still playing buffered audio, and falls back to
-            # the slower idle heartbeat otherwise. The helper is a no-op
-            # when send_video is off so the audio loop below doesn't need
-            # to special-case the disabled path.
-            camera: LatestCamera | None = None
-            _last_jpeg_len = 0
-
-            async def _drain_camera() -> None:
-                return None
-
-            if settings.send_video:
-
-                def _vision_active(_now: float) -> bool:
-                    return gate.active or playback.pending > 0
-
-                camera = LatestCamera(
-                    reachy_mini.media,
-                    active_fn=_vision_active,
-                    capture_period_s=settings.frame_period_active_s,
-                    idle_heartbeat_s=settings.frame_period_idle_s,
-                    scene_change_threshold=settings.scene_change_threshold,
-                )
-                camera.start()
-
-                async def _drain_camera() -> None:  # noqa: F811 — shadows no-op above
-                    nonlocal _last_jpeg_len
-                    jpeg = camera.take_latest()
-                    if jpeg is None or len(jpeg) == _last_jpeg_len:
-                        return
-                    _last_jpeg_len = len(jpeg)
-                    try:
-                        await client.append_image(base64.b64encode(jpeg).decode("ascii"))
-                        camera.mark_sent()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug("append_image failed: %s", exc)
-
             # ── Face recognition ─────────────────────────────────────────
             # FaceDB is opened once per QWEN session; on-disk state
             # survives restarts. Recognition runs after every audio
@@ -546,9 +522,7 @@ class Yrobot(ReachyMiniApp):
             _candidate_speaker_since = [0.0]
 
             async def _drain_face() -> None:
-                if camera is None:
-                    return
-                jpeg = camera.take_latest()
+                jpeg = camera_streamer.latest()
                 if jpeg is None:
                     return
                 arr = np.frombuffer(jpeg, np.uint8)
@@ -578,6 +552,19 @@ class Yrobot(ReachyMiniApp):
                     logger.info("QWEN session.update re-emitted: speaker=%r", name or None)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("session.update on speaker change failed: %s", exc)
+
+            async def _append_visual_snapshot(transcript: str) -> None:
+                if not settings.send_video or not _qwen_wants_visual_snapshot(transcript):
+                    return
+                jpeg = camera_streamer.latest()
+                if jpeg is None:
+                    logger.info("QWEN visual snapshot skipped: no cached camera frame")
+                    return
+                try:
+                    await client.append_image(base64.b64encode(jpeg).decode("ascii"))
+                    logger.info("QWEN visual snapshot appended after transcript")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("QWEN visual snapshot append failed: %s", exc)
 
             def save_asr_debug_wav(transcript: str) -> None:
                 nonlocal asr_capture, asr_capturing
@@ -805,6 +792,8 @@ class Yrobot(ReachyMiniApp):
                 if gate.active and candidates:
 
                     async def _run_spoken_control() -> None:
+                        await _drain_face()
+                        await _append_visual_snapshot(transcript)
                         matched = await execute_local_spoken_control(candidates)
                         command_matched = False
                         if not matched and wav_bytes:
@@ -917,9 +906,6 @@ class Yrobot(ReachyMiniApp):
                         if asr_capturing and len(asr_capture) < asr_debug_max_bytes:
                             asr_capture.extend(pcm)
                         await client.append_pcm(pcm)
-                        if _qwen_should_send_vision(gate.active):
-                            await _drain_camera()
-                            await _drain_face()
                         turn_frames += 1
                         if (
                             silence_frames >= _QWEN_ACTIVE_SILENCE_FRAMES
@@ -955,8 +941,6 @@ class Yrobot(ReachyMiniApp):
                         silence_frames = 0
                         turn_frames = 0
             finally:
-                if camera is not None:
-                    camera.close()
                 ready_task.cancel()
                 cloud_task.cancel()
                 for task in (ready_task, cloud_task):
@@ -1008,6 +992,7 @@ class Yrobot(ReachyMiniApp):
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
 
         settings = Settings.from_env()
+        camera_streamer = self._camera_streamer
 
         # ── Safe motor startup with slow Choreographer rise ───────
         # Snapshot the real pose before our 50 Hz writer starts. The first
@@ -1088,6 +1073,7 @@ class Yrobot(ReachyMiniApp):
             reachy_mini,
             choreo,
             head_tracking_weight=settings.head_tracking_weight,
+            camera_streamer=camera_streamer,
         )
         tracker.start()
         # Backward-compat alias so the existing _user_speaking[0] = True/False

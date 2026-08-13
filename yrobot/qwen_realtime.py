@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_OUTPUT_BYTES = 4096
 # 190 KB decoded image == ~253 KB base64. Warn before the server rejects.
 _IMAGE_B64_WARN_BYTES = 200 * 1024
+_MIN_AUDIO_APPENDS_BEFORE_IMAGE = 3
 DEFAULT_INSTRUCTIONS = (
     "你是 Reachy Mini 桌面机器人。使用用户当前使用的语言自然、简短地回答；"
     "用户切换语言时立即跟随。只有工具实际返回成功时，才能确认操作成功。"
@@ -90,6 +91,7 @@ class QwenRealtimeClient:
         self._pending_tool_response_create = False
         self._reported_error = False
         self._speech_started_at: float | None = None
+        self._audio_appends_since_connect = 0
 
     def session_update(self) -> dict[str, Any]:
         return {
@@ -121,6 +123,7 @@ class QwenRealtimeClient:
                 },
             ) as websocket:
                 self.websocket = websocket
+                self._audio_appends_since_connect = 0
                 self._on_state("connected")
                 while not stop_event.is_set():
                     try:
@@ -144,6 +147,7 @@ class QwenRealtimeClient:
                 "audio": base64.b64encode(pcm).decode("ascii"),
             }
         )
+        self._audio_appends_since_connect += 1
 
     async def append_image(self, image_b64: str) -> None:
         """Append a base64 JPEG to the model's rolling visual buffer.
@@ -158,6 +162,12 @@ class QwenRealtimeClient:
         The caller (main.py) is responsible for both the audio-first ordering
         and the 1 fps rate.
         """
+        if self._audio_appends_since_connect < _MIN_AUDIO_APPENDS_BEFORE_IMAGE:
+            logger.debug(
+                "skip image before QWEN audio is established: audio_appends=%d",
+                self._audio_appends_since_connect,
+            )
+            return
         if any(ch.isspace() for ch in image_b64):
             raise ValueError("image base64 must not contain whitespace or newlines")
         if len(image_b64) > _IMAGE_B64_WARN_BYTES:
@@ -332,6 +342,9 @@ class QwenRealtimeClient:
         elif event_type == "error":
             error = event.get("error") or {}
             message = str(error.get("message") or event.get("message") or "QWEN realtime error")
+            if "append image before append audio" in message.casefold():
+                logger.warning("QWEN ignored recoverable vision ordering error: %s", message)
+                return
             self._report_error(message)
             raise RuntimeError(message)
 

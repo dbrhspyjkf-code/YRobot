@@ -60,10 +60,12 @@ class SpeakerTracker:
         choreo: Any,
         *,
         head_tracking_weight: float = 0.7,
+        camera_streamer: Any | None = None,
     ) -> None:
         self.reachy_mini = reachy_mini
         self.choreo = choreo
         self.head_tracking_weight = float(head_tracking_weight)
+        self._camera_streamer = camera_streamer
         # Use lists as mutable single-cell containers so closures can update them.
         self._user_speaking: list[bool] = [False]
         self._visual_gaze: list[Optional[tuple[float, float]]] = [None]
@@ -145,8 +147,6 @@ class SpeakerTracker:
         try:
             import cv2
             import numpy as np
-            import json as _json
-            import urllib.request as _ur
         except ImportError:
             logger.warning("face tracker deps missing, skipping visual gaze")
             return
@@ -156,32 +156,16 @@ class SpeakerTracker:
                 cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             )
 
-        frame_url = "http://127.0.0.1:8042/api/camera/frame"
-        state_url = "http://127.0.0.1:8042/api/camera/state"
-        last_cam_check = [0.0]
-
-        def _ensure_camera() -> None:
-            now = time.time()
-            if now - last_cam_check[0] < 30:
-                return
-            last_cam_check[0] = now
-            try:
-                req = _ur.Request(
-                    state_url,
-                    method="PUT",
-                    data=_json.dumps({"running": True}).encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-                _ur.urlopen(req, timeout=3)
-            except Exception:
-                pass
-
         while not self._face_stop.is_set():
-            _ensure_camera()
             try:
-                req = _ur.Request(frame_url)
-                with _ur.urlopen(req, timeout=3) as resp:
-                    jpeg = resp.read()
+                if self._camera_streamer is None:
+                    self._face_stop.wait(0.5)
+                    continue
+                self._camera_streamer.set_running(True)
+                jpeg = self._camera_streamer.latest()
+                if jpeg is None:
+                    self._face_stop.wait(0.5)
+                    continue
                 arr = np.frombuffer(jpeg, dtype=np.uint8)
                 bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if bgr is None:

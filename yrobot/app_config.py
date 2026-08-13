@@ -1051,7 +1051,7 @@ def register_settings_routes(
     media_holder: _MediaHolder | None = None,
     audio_input_controller: AudioInputController | None = None,
     vad_env_path: Path = DEFAULT_ENV_PATH,
-) -> None:
+) -> CameraStreamer:
     """Attach dashboard API routes consumed by ``yrobot/static``."""
 
     camera = CameraStreamer(media_holder or _MediaHolder())
@@ -1468,3 +1468,5 @@ def register_settings_routes(
                 for entry in entries
             ],
         }
+
+    return camera

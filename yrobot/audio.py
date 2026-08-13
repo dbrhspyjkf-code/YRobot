@@ -53,6 +53,8 @@ def dashboard_mic_signal() -> dict[str, float | bool]:
     """
     with _dashboard_mic_lock:
         return dict(_dashboard_mic_signal)
+
+
 WRITE_SETTLE_SECONDS = 0.1
 
 # Pollen's Reachy Mini conversation app applies this exact profile before
@@ -68,6 +70,27 @@ AUDIO_STARTUP_CONFIG: tuple[tuple[str, tuple[float | int, ...]], ...] = (
     ("PP_NLATTENONOFF", (0,)),
     ("PP_MGSCALE", (4.0, 1.0, 1.0)),
 )
+
+
+def apply_audio_startup_config(media: object, *, write_settle_seconds: float = WRITE_SETTLE_SECONDS) -> bool:
+    """Apply the verified Reachy Mini audio preprocessing profile.
+
+    The SDK exposes this on ``reachy_mini.media.audio``. Keep this best-effort:
+    older SDKs or test doubles may not have the API, and audio should still
+    start instead of crashing the conversation backend.
+    """
+
+    audio = getattr(media, "audio", None)
+    apply_audio_config = getattr(audio, "apply_audio_config", None)
+    if not callable(apply_audio_config):
+        return False
+    return bool(
+        apply_audio_config(
+            AUDIO_STARTUP_CONFIG,
+            verify=True,
+            write_settle_seconds=write_settle_seconds,
+        )
+    )
 
 
 def get_vad_rms_min() -> float:

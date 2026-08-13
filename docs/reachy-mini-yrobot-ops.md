@@ -1339,3 +1339,44 @@ Symptom: after wake recovered, ASR and replies were still unstable in normal con
 Evidence: logs showed repeated `QWEN session.update re-emitted` events toggling between speaker `阿皮` and `None` during one active wake window. This can perturb the realtime session while the user is speaking. Logs also showed `天气吧。` was routed as city `吧`.
 
 Change: face speaker session updates now require the same recognition result to remain stable for 3 seconds before re-emitting `session.update`. The spoken weather cleaner now removes trailing `吧`, so ASR-truncated `天气吧` defaults to 深圳 instead of querying city `吧`.
+
+
+## 2026-08-13 13:18 - Guard QWEN image ordering
+
+Symptom: user asked "你看到了什么" and the visual answer was inaccurate; shortly after, YRobot entered safe mode.
+
+Evidence: runtime status showed `safe_mode` with `last_error=Error append image before append audio.` QWEN requires audio to be established in a realtime session before `input_image_buffer.append`; the service can still return this ordering error asynchronously even when local code sends PCM before an image.
+
+Change: QwenRealtimeClient now waits for at least three audio appends in the current WebSocket session before sending any image. If QWEN still emits `append image before append audio`, the client treats it as a recoverable vision-ordering warning instead of crashing YRobot into safe mode.
+
+
+## 2026-08-13 13:25 - Prioritize ASR stability over QWEN vision
+
+Symptom: after vision recognition was added, user repeatedly asked "今天深圳天气怎么样" / "广州天气怎么样", but QWEN ASR returned unrelated short transcripts such as "现在走", "谢谢你们", or "这里", and QWEN then answered visual scene questions instead of weather.
+
+Evidence: post-audio-profile logs showed fresh ASR debug wavs of about 3.2 seconds each, so YRobot was capturing and committing speech, but the cloud ASR transcript was wrong. Temporarily restarting QWEN with `YROBOT_SEND_VIDEO=0` immediately restored accurate recognition and answers for both Shenzhen and Guangzhou weather questions.
+
+Change: persist `YROBOT_SEND_VIDEO=0` in Reachy runtime env files. Current stable operating mode is QWEN voice-first with video disabled by default. Re-enable vision only after a separate performance/audio-isolation fix proves it does not degrade ASR.
+
+
+## 2026-08-13 13:41 - Restore QWEN vision with voice-priority scheduling
+
+Symptom: continuous QWEN image upload and duplicate camera consumers degraded
+ASR. Disabling all QWEN video restored speech recognition, but removed an
+important robot capability.
+
+Change: Dashboard `CameraStreamer` is now the sole `media.get_frame()` owner.
+Dashboard preview, visual gaze, face recognition, and QWEN vision read its
+latest cached JPEG. The old `LatestCamera` worker and continuous per-speech
+image upload were removed. QWEN sends exactly one image only after a completed
+transcript matches a narrow visual request such as "你看到了什么". During
+active microphone input there is no image append or face recognition.
+
+Acceptance: with `YROBOT_SEND_VIDEO=1`, QWEN remained connected without safe
+mode or runtime error. Logs recorded a weather request and light control with
+no `QWEN visual snapshot` event; the completed visual request "你看到了什么？"
+then logged one `QWEN visual snapshot appended after transcript` and returned a
+correct scene description. User confirmed all spoken tests and Dashboard
+preview were OK. Roll back only if a future pure-voice regression appears:
+set `YROBOT_SEND_VIDEO=0` in both runtime env files and restart YRobot (never
+the official daemon).

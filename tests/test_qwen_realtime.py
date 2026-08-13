@@ -457,3 +457,36 @@ def test_audio_input_commands_use_pcm_base64_and_manual_turn_events():
         {"type": "input_audio_buffer.commit"},
         {"type": "response.create"},
     ]
+
+
+def test_image_append_waits_until_audio_is_established():
+    client, _ = make_client()
+
+    asyncio.run(client.append_image(base64.b64encode(b"jpeg").decode()))
+    asyncio.run(client.append_pcm(b"1"))
+    asyncio.run(client.append_pcm(b"2"))
+    asyncio.run(client.append_image(base64.b64encode(b"jpeg").decode()))
+    asyncio.run(client.append_pcm(b"3"))
+    asyncio.run(client.append_image(base64.b64encode(b"jpeg").decode()))
+
+    assert [item["type"] for item in client.websocket.sent] == [
+        "input_audio_buffer.append",
+        "input_audio_buffer.append",
+        "input_audio_buffer.append",
+        "input_image_buffer.append",
+    ]
+
+
+def test_append_image_before_audio_error_is_recoverable():
+    client, _ = make_client()
+
+    asyncio.run(
+        client.handle_event(
+            {
+                "type": "error",
+                "error": {"message": "Error append image before append audio."},
+            }
+        )
+    )
+
+    assert client.websocket.sent == []
