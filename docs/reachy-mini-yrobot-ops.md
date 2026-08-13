@@ -1484,3 +1484,19 @@ instead of calling `media.get_frame()` directly, preserving the single camera
 owner required for stable ASR and vision scheduling. Static-panel test,
 JavaScript syntax check, Python compilation, and live `/api/face` route check
 passed. Post-restart official daemon and QWEN remained connected.
+
+
+## 2026-08-13 15:30 - Face registry hot reload and match diagnostics
+
+The Dashboard FaceDB and QWEN FaceDB are separate in-process readers of the
+same local `faces.json`. FaceDB now watches the registry file modification time
+and refreshes before every recognition attempt, so a Dashboard add/delete is
+visible to QWEN without another restart. Recognition now also exposes the
+latest accepted name and template-match score through `GET /api/face`; the
+Dashboard panel displays either the current local identity or the latest
+unmatched score.
+
+This does not relax the recognition threshold. It makes sample quality visible
+and ensures a newly registered face can be tested immediately. Focused
+hot-reload and Dashboard tests passed, along with front-end syntax and Python
+compilation; only YRobot was restarted and QWEN reconnected successfully.

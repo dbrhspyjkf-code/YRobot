@@ -995,6 +995,12 @@ async function loadFaces() {
     if (!response.ok) throw new Error("读取失败");
     const data = await response.json();
     const faces = data.faces || [];
+    const recognition = data.recognition || {};
+    if (recognition.name) {
+      faceNote.textContent = `当前识别：${recognition.name}（匹配分数 ${recognition.score ?? "--"}）`;
+    } else if (recognition.score !== undefined && recognition.score !== null) {
+      faceNote.textContent = `当前未匹配登记人脸（最高分 ${recognition.score}）。`;
+    }
     faceList.innerHTML = faces.length ? faces.map((face) => `
       <div class="face-item">
         <div><b>${escapeHtml(face.name)}</b><small>${face.sample_count} 张样本 · ${faceSeenLabel(face.last_seen)}</small></div>

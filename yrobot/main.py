@@ -532,7 +532,13 @@ class Yrobot(ReachyMiniApp):
                 frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if frame is None:
                     return
-                name = face_db.recognize(frame) or ""
+                name, face_score = face_db.recognize_with_score(frame)
+                name = name or ""
+                RUNTIME_HEALTH.update(
+                    face_recognition_name=name or None,
+                    face_recognition_score=round(face_score, 3),
+                    face_recognition_at=time.time(),
+                )
                 now = time.monotonic()
                 confirmed_name = speaker_identity.observe(name, now=now)
                 if confirmed_name is None:

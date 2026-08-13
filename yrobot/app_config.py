@@ -1144,7 +1144,15 @@ def register_settings_routes(
 
     @app.get("/api/face")
     def get_faces() -> dict[str, Any]:
-        return {"faces": face_db.list_profiles()}
+        runtime = RUNTIME_HEALTH.snapshot()
+        return {
+            "faces": face_db.list_profiles(),
+            "recognition": {
+                "name": runtime.get("face_recognition_name"),
+                "score": runtime.get("face_recognition_score"),
+                "at": runtime.get("face_recognition_at"),
+            },
+        }
 
     @app.post("/api/face")
     async def post_face(document: dict[str, Any]) -> dict[str, Any]:
