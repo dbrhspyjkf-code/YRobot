@@ -235,6 +235,8 @@ class FaceRecognizer:
 
     @staticmethod
     def _prepare(face_img: np.ndarray) -> np.ndarray:
+        if face_img is None or face_img.size == 0:
+            raise ValueError("face crop is empty; cannot prepare for recognition")
         if face_img.ndim == 2:
             gray = face_img
         else:
@@ -327,6 +329,13 @@ class FaceDB:
         # are present and only the speaker matters.
         primary = max(boxes, key=lambda b: b.w * b.h)
         face_crop = primary.crop(frame)
+        # YuNet occasionally returns a bounding box that extends past
+        # the frame edge (or an upstream imdecode gives back an
+        # empty array); an empty crop must not reach cv2.cvtColor or
+        # it raises -215 Assertion failed and crashes the audio
+        # loop, which is what bit us in production at 10:13 today.
+        if face_crop is None or face_crop.size == 0:
+            return None
         name, _ = self._recognizer.predict(face_crop)
         if name is not None:
             with self._lock:
