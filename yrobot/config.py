@@ -169,15 +169,17 @@ class Settings:
     frame_period_idle_s: float = 3.0
     scene_change_threshold: float = 0.04
 
-    # Local wake-word gate (deprecated — QWEN relies on the cloud
-    # ASR transcript matching via WakeGate.observe_transcript, not on
-    # this local faster-whisper detector which proved far too slow on
-    # the Pi 5 CPU). Kept as False so no code path re-instantiates it.
-    wake_enabled: bool = False
+    # Local keyword wake-word gate via sherpa-onnx KWS. The QWEN
+    # cloud ASR (fixed qwen3-asr-flash-realtime) transcribes short
+    # Chinese wake phrases unreliably, so a ~3.3 MB local Zipformer
+    # transducer detects the keyword at realtime speed and opens the
+    # 60 s uplink window on a hit. wake_phrase is the display/trigger
+    # name (the matching keyword is baked into keywords.txt).
+    wake_enabled: bool = True
     wake_phrase: str = "你好小白"
-    wake_model_path: str = "/home/pollen/stt-models/faster-whisper-medium"
-    wake_window_s: float = 1.5
-    wake_detect_period_s: float = 4.0
+    kws_model_dir: str = (
+        "/home/pollen/stt-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+    )
 
     # Session rotation: video defaults below its 300 s public cap; audio mode
     # selects 550 s below its 600 s cap. KV pressure can rotate either sooner.
@@ -317,12 +319,10 @@ class Settings:
             scene_change_threshold=_num("YROBOT_SCENE_CHANGE_THRESHOLD", 0.04, env),
             wake_enabled=_flag("YROBOT_WAKE_ENABLED", True, env),
             wake_phrase=env.get("YROBOT_WAKE_PHRASE", "你好小白").strip() or "你好小白",
-            wake_model_path=env.get(
-                "YROBOT_WAKE_MODEL_PATH",
-                "/home/pollen/stt-models/faster-whisper-medium",
+            kws_model_dir=env.get(
+                "YROBOT_KWS_MODEL_DIR",
+                "/home/pollen/stt-models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
             ),
-            wake_window_s=_num("YROBOT_WAKE_WINDOW_S", 1.5, env),
-            wake_detect_period_s=_num("YROBOT_WAKE_DETECT_PERIOD_S", 4.0, env),
             session_budget_s=_num("YROBOT_SESSION_BUDGET_S", default_session_budget, env),
             kv_budget_tokens=_num("YROBOT_KV_BUDGET", 7200.0, env),
             reconnect_delay_s=_num("YROBOT_RECONNECT_DELAY_S", 2.5, env),

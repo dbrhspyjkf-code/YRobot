@@ -396,6 +396,7 @@ class Yrobot(ReachyMiniApp):
             _model_url,
         )
         from yrobot.qwen_tools import ToolExecutor
+        from yrobot.kws import KeywordWakeDetector
 
         startup_head_pose = None
         startup_antennas = None
@@ -446,6 +447,21 @@ class Yrobot(ReachyMiniApp):
             reachy_mini.media.stop_playing()
         except Exception as exc:
             logger.warning("could not release SDK speaker for QWEN: %s", exc)
+
+        # Local keyword wake detector (sherpa-onnx KWS). When enabled,
+        # the detector listens on the same mic frames the loop already
+        # reads; a hit on the configured keyword ("你好小白") opens the
+        # WakeGate window via observe_transcript so the audio uplink
+        # starts forwarding to QWEN. This is the local replacement for
+        # the cloud ASR wake match, which is unreliable on short Chinese
+        # phrases.
+        kws_detector: KeywordWakeDetector | None = None
+        if settings.wake_enabled:
+            try:
+                kws_detector = KeywordWakeDetector(model_dir=Path(settings.kws_model_dir))
+                logger.info("KWS wake armed: phrase=%r", settings.wake_phrase)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("KWS wake init failed (falling back to cloud ASR): %s", exc)
 
         mic_stream = sd.InputStream(
             device="reachymini_audio_src",
@@ -833,6 +849,19 @@ class Yrobot(ReachyMiniApp):
                     frame, _ = await asyncio.to_thread(mic_stream.read, 960)
                     pcm_int16 = frame.astype("<i2", copy=False)
                     pcm = pcm_int16.tobytes()
+                    # Local KWS wake: drain the sherpa-onnx stream on the
+                    # same mic chunk. On a hit, open the WakeGate window
+                    # (observe_transcript matches the WAKE_WORDS list) so
+                    # the audio uplink below starts forwarding to QWEN.
+                    if kws_detector is not None and not gate.active:
+                        try:
+                            hit = kws_detector.feed(pcm_int16)
+                            if hit:
+                                gate.observe_transcript(hit)
+                                RUNTIME_HEALTH.update(wake_active=True)
+                                logger.info("KWS wake detected: %r", hit)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("kws wake feed failed: %s", exc)
                     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
                     rms = float(np.sqrt(np.mean(np.square(samples))))
                     _publish_dashboard_mic(rms / 32768.0)
@@ -858,6 +887,7 @@ class Yrobot(ReachyMiniApp):
                             silence_frames += 1
                         else:
                             if gate.expire():
+                                RUNTIME_HEALTH.update(wake_active=False)
                                 await client.set_turn_detection(None)
                                 playback.flush()
                                 choreo.set_mode(IDLE)
