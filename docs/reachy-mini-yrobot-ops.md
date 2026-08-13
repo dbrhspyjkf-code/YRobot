@@ -1500,3 +1500,18 @@ This does not relax the recognition threshold. It makes sample quality visible
 and ensures a newly registered face can be tested immediately. Focused
 hot-reload and Dashboard tests passed, along with front-end syntax and Python
 compilation; only YRobot was restarted and QWEN reconnected successfully.
+
+
+## 2026-08-13 21:15 - One local face greeting per voice wake
+
+The local face greeting is now scoped to an explicit QWEN wake window, rather
+than to a single WebSocket connection. Each new “你好小白” wake clears the
+greeting gate; after the local face has remained stable for three seconds,
+that person is greeted once. Repeated face matches and a QWEN WebSocket
+reconnect during the same 60-second conversation window cannot produce another
+greeting.
+
+This remains entirely local and continues to read only the Dashboard camera
+cache; it does not send any additional image to QWEN. Verification: focused
+greeting-gate tests, Python compilation, and diff whitespace checks passed
+before deployment.

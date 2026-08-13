@@ -35,7 +35,12 @@ from yrobot.app_config import (
 from yrobot.audio import apply_audio_startup_config
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
-from yrobot.qwen_emotion import IdentityStabilizer, requested_dance, requested_emotion
+from yrobot.qwen_emotion import (
+    IdentityStabilizer,
+    WakeGreetingGate,
+    requested_dance,
+    requested_emotion,
+)
 from yrobot.faces import FaceDB
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
@@ -495,6 +500,7 @@ class Yrobot(ReachyMiniApp):
         )
         playback = PcmPlayback()
         gate = WakeGate()
+        wake_greetings = WakeGreetingGate()
         transcript_window = RecentTranscriptWindow()
         mic_stream.start()
         playback.start()
@@ -522,7 +528,6 @@ class Yrobot(ReachyMiniApp):
             speaker_identity = IdentityStabilizer(
                 stable_after_s=_QWEN_FACE_SPEAKER_STABLE_S
             )
-            greeted_speakers: set[str] = set()
 
             async def _drain_face() -> None:
                 jpeg = camera_streamer.latest()
@@ -553,8 +558,7 @@ class Yrobot(ReachyMiniApp):
                         extra = f"{extra}\n\n{VISION_POLICY}"
                     await client.resend_session_update_with(instructions_override=extra)
                     logger.info("QWEN local face confirmed: speaker=%r", confirmed_name)
-                    if not response_started and confirmed_name not in greeted_speakers:
-                        greeted_speakers.add(confirmed_name)
+                    if not response_started and wake_greetings.claim(confirmed_name):
                         asyncio.create_task(speak_exact_text(f"{confirmed_name}，你好！"))
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("session.update on speaker change failed: %s", exc)
@@ -802,6 +806,7 @@ class Yrobot(ReachyMiniApp):
                     candidates = [*candidates, contextual_command]
                 if gate.observe_transcript(transcript):
                     logger.info("QWEN wake word detected")
+                    wake_greetings.begin_wake()
                     choreo.play_move("nod")
                     asyncio.create_task(activate_from_wake())
                 if gate.active:
@@ -920,6 +925,7 @@ class Yrobot(ReachyMiniApp):
                             hit = kws_detector.feed(pcm_int16)
                             if hit:
                                 gate.observe_transcript(hit)
+                                wake_greetings.begin_wake()
                                 RUNTIME_HEALTH.update(wake_active=True)
                                 logger.info("KWS wake detected: %r", hit)
                         except Exception as exc:  # noqa: BLE001

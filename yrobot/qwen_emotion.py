@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def requested_emotion(transcript: str) -> str | None:
@@ -51,3 +51,19 @@ class IdentityStabilizer:
             return None
         self.current = name
         return name or None
+
+
+@dataclass
+class WakeGreetingGate:
+    """Allow one proactive identity greeting for each explicit wake window."""
+
+    greeted: set[str] = field(default_factory=set)
+
+    def begin_wake(self) -> None:
+        self.greeted.clear()
+
+    def claim(self, name: str) -> bool:
+        if not name or name in self.greeted:
+            return False
+        self.greeted.add(name)
+        return True
