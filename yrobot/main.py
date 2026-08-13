@@ -73,6 +73,9 @@ _QWEN_RECONNECT_MESSAGES = (
     "conversation has none active response",
     "timed out during opening handshake",
 )
+_QWEN_ACTIVE_SILENCE_FRAMES = 16
+_QWEN_PRE_WAKE_SILENCE_FRAMES = 24
+_QWEN_MAX_TURN_FRAMES = 167
 
 
 class RecentTranscriptWindow:
@@ -900,7 +903,10 @@ class Yrobot(ReachyMiniApp):
                         await _drain_camera()
                         await _drain_face()
                         turn_frames += 1
-                        if silence_frames >= 16 or turn_frames >= 167:
+                        if (
+                            silence_frames >= _QWEN_ACTIVE_SILENCE_FRAMES
+                            or turn_frames >= _QWEN_MAX_TURN_FRAMES
+                        ):
                             await client.commit_turn()
                             manual_speaking = False
                             silence_frames = 0
@@ -924,7 +930,10 @@ class Yrobot(ReachyMiniApp):
                     await _drain_camera()
                     await _drain_face()
                     turn_frames += 1
-                    if silence_frames >= 8 or turn_frames >= 167:
+                    if (
+                        silence_frames >= _QWEN_PRE_WAKE_SILENCE_FRAMES
+                        or turn_frames >= _QWEN_MAX_TURN_FRAMES
+                    ):
                         await client.commit_turn()
                         manual_speaking = False
                         silence_frames = 0

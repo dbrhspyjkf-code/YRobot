@@ -40,6 +40,7 @@ ROBOT_VOLUME_TARGET_PHRASES = (
 )
 SONOS_VOLUME_TARGET_PHRASES = ("音响", "音箱", "sonos")
 TV_VOLUME_TARGET_PHRASES = ("电视", "电视机")
+DEFAULT_SPOKEN_WEATHER_CITY = "深圳"
 VOLUME_UP_PHRASES = ("调大", "大一点", "大点", "加大", "加点", "提高", "高一点")
 VOLUME_DOWN_PHRASES = ("调小", "小一点", "小点", "减小", "降低", "低一点")
 VOLUME_SET_PHRASES = ("调到", "设到", "设置到", "到", "百分之")
@@ -342,7 +343,7 @@ class ToolExecutor:
             city = city.replace(token, "")
         city = city.strip()
         if not city:
-            return None
+            city = DEFAULT_SPOKEN_WEATHER_CITY
         result = self.execute("get_weather", {"city": city})
         if result.get("ok") is not True:
             return result

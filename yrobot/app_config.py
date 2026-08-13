@@ -1214,7 +1214,10 @@ def register_settings_routes(
                 "voice": voice,
                 "input_audio_format": "pcm",
                 "output_audio_format": "pcm",
-                "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"},
+                "input_audio_transcription": {
+                    "model": "qwen3-asr-flash-realtime",
+                    "language": "zh",
+                },
                 "turn_detection": None,
             },
         }

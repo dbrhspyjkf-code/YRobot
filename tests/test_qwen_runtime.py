@@ -14,6 +14,8 @@ from yrobot.main import (
     _qwen_unmatched_spoken_control_feedback,
     _qwen_spoken_control_result_feedback,
     _qwen_spoken_control_result_text,
+    _QWEN_ACTIVE_SILENCE_FRAMES,
+    _QWEN_PRE_WAKE_SILENCE_FRAMES,
     _qwen_should_request_response_after_local_control,
     _qwen_should_reconnect,
     _qwen_should_resume_wake_after_reconnect,
@@ -123,12 +125,37 @@ def test_qwen_wake_list_contains_nihao_xiaobai():
 
 
 def test_qwen_wake_accepts_observed_xiaobai_asr_aliases():
+    assert WakeGate().observe_transcript("你好。", now=100.0) is True
     assert WakeGate().observe_transcript("明白。", now=100.0) is True
     assert WakeGate().observe_transcript("你好明白", now=100.0) is True
+    assert WakeGate().observe_transcript("你老来。", now=100.0) is True
+    assert WakeGate().observe_transcript("你说，你咋？", now=100.0) is True
 
 
 def test_qwen_wake_asr_alias_does_not_match_inside_longer_sentence():
     assert WakeGate().observe_transcript("我明白了", now=100.0) is False
+
+
+def test_qwen_wake_accepts_observed_nihao_xiaobai_split_pair():
+    gate = WakeGate()
+
+    assert gate.observe_transcript("你把。", now=100.0) is False
+    assert gate.observe_transcript("行。", now=106.5) is True
+    assert gate.active is True
+
+
+def test_qwen_wake_suffix_does_not_match_wrong_prefix_or_alone():
+    assert WakeGate().observe_transcript("行。", now=100.0) is False
+    gate = WakeGate()
+    assert gate.observe_transcript("明白吗。", now=100.0) is False
+    assert gate.observe_transcript("行。", now=101.0) is False
+    assert gate.active is False
+
+
+def test_qwen_pre_wake_silence_window_is_wider_than_active_command_window():
+    assert _QWEN_ACTIVE_SILENCE_FRAMES == 16
+    assert _QWEN_PRE_WAKE_SILENCE_FRAMES == 24
+    assert _QWEN_PRE_WAKE_SILENCE_FRAMES > _QWEN_ACTIVE_SILENCE_FRAMES
 
 
 def test_qwen_wake_expires_after_sixty_seconds():

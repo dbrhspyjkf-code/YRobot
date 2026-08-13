@@ -99,7 +99,10 @@ class QwenRealtimeClient:
                 "voice": self.settings.qwen_voice,
                 "input_audio_format": "pcm",
                 "output_audio_format": "pcm",
-                "input_audio_transcription": {"model": "qwen3-asr-flash-realtime"},
+                "input_audio_transcription": {
+                    "model": "qwen3-asr-flash-realtime",
+                    "language": "zh",
+                },
                 "instructions": self.instructions,
                 "turn_detection": None,
                 "tools": self.tools.schemas(),
@@ -192,8 +195,11 @@ class QwenRealtimeClient:
         await self._send(payload)
 
     async def request_response(self, *, cancel_active: bool = True) -> None:
+        cancelled = False
         if cancel_active:
-            await self._cancel_active_response()
+            cancelled = await self._cancel_active_response()
+        if cancelled:
+            await asyncio.sleep(0.4)
         await self._send({"type": "response.create"})
 
     async def cancel_and_inject(self, text: str, *, role: str = "user") -> None:
@@ -334,9 +340,9 @@ class QwenRealtimeClient:
             raise RuntimeError("QWEN WebSocket is not connected")
         await self.websocket.send(json.dumps(document, ensure_ascii=False, separators=(",", ":")))
 
-    async def _cancel_active_response(self) -> None:
+    async def _cancel_active_response(self) -> bool:
         if self._active_response_id is None:
-            return
+            return False
         response_id = self._active_response_id
         self._active_response_id = None
         self._cancelled_response_ids.add(response_id)
@@ -344,8 +350,9 @@ class QwenRealtimeClient:
             await self._send({"type": "response.cancel"})
         except RuntimeError as exc:
             if "conversation has none active response" in str(exc).casefold():
-                return
+                return True
             raise
+        return True
 
     async def _complete_tool_call(self, event: dict[str, Any]) -> None:
         call_id = str(event.get("call_id") or "")

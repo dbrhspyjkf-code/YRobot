@@ -11,8 +11,13 @@ from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
-WAKE_ASR_ALIASES = ("明白", "你好明白")
+WAKE_ASR_ALIASES = ("你好", "明白", "你好明白", "你老来", "你说你咋")
+WAKE_PREFIX_ALIASES = ("你把",)
+WAKE_SUFFIX_BY_PREFIX = {
+    "你把": ("行",),
+}
 WAKE_TIMEOUT = 60.0
+WAKE_PREFIX_TIMEOUT = 8.0
 
 
 def _compact_wake_text(text: str) -> str:
@@ -20,6 +25,11 @@ def _compact_wake_text(text: str) -> str:
 
 
 WAKE_ASR_ALIAS_TEXTS = frozenset(_compact_wake_text(alias) for alias in WAKE_ASR_ALIASES)
+WAKE_PREFIX_TEXTS = frozenset(_compact_wake_text(alias) for alias in WAKE_PREFIX_ALIASES)
+WAKE_SUFFIX_TEXTS_BY_PREFIX = {
+    _compact_wake_text(prefix): frozenset(_compact_wake_text(alias) for alias in suffixes)
+    for prefix, suffixes in WAKE_SUFFIX_BY_PREFIX.items()
+}
 
 
 class BoundedLatestQueue(Generic[T]):
@@ -70,18 +80,36 @@ class WakeGate:
     timeout: float = WAKE_TIMEOUT
     active: bool = False
     deadline: float = 0.0
+    pending_prefix_deadline: float = 0.0
+    pending_prefix_text: str = ""
 
     def observe_transcript(self, transcript: str, now: float | None = None) -> bool:
         if self.active:
             return False
         text = transcript.casefold()
         compact_text = _compact_wake_text(transcript)
+        current = time.monotonic() if now is None else now
+        if compact_text in WAKE_PREFIX_TEXTS:
+            self.pending_prefix_deadline = current + WAKE_PREFIX_TIMEOUT
+            self.pending_prefix_text = compact_text
+            return False
+        suffix_texts = WAKE_SUFFIX_TEXTS_BY_PREFIX.get(self.pending_prefix_text, frozenset())
+        if compact_text in suffix_texts and current <= self.pending_prefix_deadline:
+            self.active = True
+            self.deadline = current + self.timeout
+            self.pending_prefix_deadline = 0.0
+            self.pending_prefix_text = ""
+            return True
+        if current > self.pending_prefix_deadline:
+            self.pending_prefix_deadline = 0.0
+            self.pending_prefix_text = ""
         alias_match = compact_text in WAKE_ASR_ALIAS_TEXTS
         if not alias_match and not any(phrase.casefold() in text for phrase in self.phrases):
             return False
-        current = time.monotonic() if now is None else now
         self.active = True
         self.deadline = current + self.timeout
+        self.pending_prefix_deadline = 0.0
+        self.pending_prefix_text = ""
         return True
 
     def note_speech(self, now: float | None = None) -> None:

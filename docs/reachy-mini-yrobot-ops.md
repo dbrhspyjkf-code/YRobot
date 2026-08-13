@@ -1249,3 +1249,66 @@ Symptom: after restoring cloud-ASR wake, a real spoken "你好小白" still did 
 Evidence: QWEN was connected and receiving audio, but recent ASR logs showed the wake utterance as "明白。" or empty text instead of "你好小白" / "小白".
 
 Change: added strict wake aliases "明白" and "你好明白" for the observed "小白" ASR confusion. These aliases are exact after punctuation/space cleanup; longer phrases such as "我明白了" do not wake the robot.
+
+
+## 2026-08-13 11:58 - Widen QWEN pre-wake end silence
+
+Symptom: after the strict alias patch, repeated "你好小白" still did not wake reliably.
+
+Evidence: post-patch logs showed QWEN receiving pre-wake audio but completing ASR as empty text, "Yes, sir.", or "你好。" instead of the full wake phrase. This points to pre-wake turn segmentation cutting the utterance before "小白" reached the ASR result.
+
+Change: widened only the pre-wake QWEN manual-turn end-silence window from 8 frames to 24 frames (about 160 ms to 480 ms). The active command window remains 16 frames. This avoids making plain "你好" a wake word while giving QWEN enough trailing audio to hear "小白".
+
+
+## 2026-08-13 12:05 - Pin QWEN ASR transcription language to Chinese
+
+Symptom: after widening the pre-wake audio window, repeated "你好小白" still did not wake.
+
+Evidence: QWEN was connected and receiving audio, but the post-fix ASR result for the wake attempt was "Up." or empty text. This indicates automatic language detection was still unstable for the short Chinese wake phrase.
+
+Change: set QWEN `input_audio_transcription` to `{"model": "qwen3-asr-flash-realtime", "language": "zh"}` for the main realtime session and dashboard voice-test session. This keeps the spoken wake phrase in the Chinese ASR path instead of letting short audio be misclassified as English.
+
+
+## 2026-08-13 12:10 - Add strict aliases for latest Chinese wake ASR errors
+
+Symptom: after pinning QWEN ASR to Chinese, "你好小白" still did not reliably wake.
+
+Evidence: new QWEN ASR logs no longer returned English, but still recognized the wake attempt as "喂。" or "你说，你咋？"; an earlier same-session attempt was "你老来。". The bare "喂" is too broad and must not be a wake word.
+
+Change: added exact compact aliases "你老来" and "你说你咋" to the WakeGate observed-ASR alias list. Kept "喂" excluded to avoid accidental wake from normal room speech.
+
+
+## 2026-08-13 12:15 - Two-stage QWEN wake for split ASR results
+
+Symptom: after adding strict aliases, the next wake attempts were still not accepted.
+
+Evidence: logs showed QWEN ASR splitting or misreading the wake phrase into separate short results: "你好。", then "好嘞。", then "对。". None alone is safe enough to become a wake word.
+
+Change: WakeGate now treats "你好" only as a short pending prefix, not a wake. If one of the observed XiaoBai tail/suffix confusions ("好嘞", "对", "明白", "你老来", "你说你咋") arrives within 3 seconds, the gate opens. A bare "你好", "好嘞", or "对" alone still does not wake the robot.
+
+
+## 2026-08-13 12:20 - Pair-specific wake for latest split ASR
+
+Symptom: the next post-patch wake attempt still did not open the gate.
+
+Evidence: logs showed the attempt as "你把。" followed by "行。". Neither fragment alone is safe as a wake word.
+
+Change: expanded the two-stage WakeGate to remember the observed prefix. "你把" followed by "行" within 8 seconds now wakes the robot, but "行" alone and "你好" followed by "行" do not. The previous "你好" prefix path remains limited to the earlier observed XiaoBai suffix confusions.
+
+
+## 2026-08-13 12:25 - Accept bare QWEN ASR "你好" as wake
+
+Symptom: after pair-specific wake handling, the latest wake attempt was still not accepted.
+
+Evidence: logs showed the active process recognized the spoken "你好小白" attempt as only "你好。"; no second suffix fragment followed. An earlier attempt did wake through "嘿嘿。", proving the gate/action path itself works.
+
+Change: accept exact compact "你好" as a wake alias in QWEN mode because current ASR often drops the "小白" tail entirely. Kept broad suffixes such as "行" non-wake unless paired with their specific observed prefix.
+
+
+## 2026-08-13 12:35 - Default bare spoken weather to Shenzhen
+
+Symptom: after wake, user said "今天深圳的天气怎么样", but QWEN answered an unrelated visual question.
+
+Evidence: logs showed QWEN ASR recognized the utterance as only "天气。". Local spoken weather routing saw no city after cleanup, returned no match, and the query fell through to the main model.
+
+Change: if spoken control contains "天气" but no city remains after cleanup, default the local weather route to 深圳. This keeps ASR-truncated weather requests on the deterministic Hermes exact-TTS path instead of asking QWEN to infer intent.
