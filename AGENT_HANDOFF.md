@@ -60,6 +60,14 @@ Observed results:
 - Earlier deployment of `c5a1b32`: `yrobot.service` and the official daemon
   were both `active`; QWEN WebSocket was `connected` and `last_error=null`.
 
+## Latest completed stage
+
+- 2026-08-14: repository-local agent memory was created in commit `1a8dadb`.
+  It adds the durable project context, a dynamic handoff, decision records,
+  this deployment runbook, and the `AGENTS.md` read-first instruction.
+- Validation: `git diff --check` passed before commit; a repository scan of the
+  new files found no credential values or secret environment-variable values.
+
 ## Working commands
 
 Run local focused tests from the repository root:
