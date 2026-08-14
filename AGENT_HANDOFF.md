@@ -67,6 +67,8 @@ Observed results:
   this deployment runbook, and the `AGENTS.md` read-first instruction.
 - Validation: `git diff --check` passed before commit; a repository scan of the
   new files found no credential values or secret environment-variable values.
+- Sync: the same files were copied to `/home/pollen/YRobot`; remote checks for
+  `AGENT_HANDOFF.md`, `PROJECT_MEMORY.md`, and the deployment runbook passed.
 
 ## Working commands
 
