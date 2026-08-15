@@ -70,13 +70,13 @@
 /* Begin PBXFileReference section */
 		053206EE3517925008E7F833 /* DiscoverySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverySession.swift; sourceTree = "<group>"; };
 		0F1733A49427103743AD2090 /* ManualHostDefaultsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualHostDefaultsTests.swift; sourceTree = "<group>"; };
-		15047943C09769776A8D5E63 /* YRobotRemoteTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = YRobotRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		15047943C09769776A8D5E63 /* YRobotRemoteTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = YRobotRemoteTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		15A18DDA16F3CB1F949EBA2A /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 		193765EAA4659715B9AC980B /* RestWifiProvisioner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RestWifiProvisioner.swift; sourceTree = "<group>"; };
 		1B6D81E5BEF69461E018C99E /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		2798015B286E486511F15B27 /* RobotPreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RobotPreferencesTests.swift; sourceTree = "<group>"; };
 		3F0CA39BEC76461E2BD5E225 /* ConnectionResultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionResultTests.swift; sourceTree = "<group>"; };
-		484F40929B901238D31B4DFC /* YRobotRemote.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = YRobotRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		484F40929B901238D31B4DFC /* YRobotRemote.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YRobotRemote.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A614184C81282206C966093 /* PowerControlTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PowerControlTests.swift; sourceTree = "<group>"; };
 		4B542551E5083C242D68BB14 /* Errors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Errors.swift; sourceTree = "<group>"; };
 		5352FF5CAAA4F88A8A707496 /* ReachyBLEConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReachyBLEConstants.swift; sourceTree = "<group>"; };
@@ -386,7 +386,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					6BF83AFAE7BD86E0390E7C3F = {
 						DevelopmentTeam = 26AC3BDBFG;
@@ -508,6 +508,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -564,6 +565,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -632,6 +634,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -681,6 +684,7 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_STRICT_CONCURRENCY = complete;
