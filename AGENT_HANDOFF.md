@@ -14,9 +14,6 @@
 - Baseline commit before this handoff: `c5a1b32` (`fix(qwen): greet face once per wake`).
 - Deployed source: `/home/pollen/YRobot` on Reachy at `192.168.1.14`.
 - Official daemon: port `8000`; YRobot Dashboard/API: port `8042`.
-- User-owned local changes that must not be overwritten or staged without
-  explicit scope: iOS Xcode project/scheme changes and
-  `docs/plans/2026-08-12-yrobot-ios-remote-dual-backend.md`.
 
 ## Completed and verified
 
@@ -61,6 +58,18 @@ Observed results:
   were both `active`; QWEN WebSocket was `connected` and `last_error=null`.
 
 ## Latest completed stage
+
+- 2026-08-15: the previously user-owned local iOS changes were committed by
+  explicit user instruction:
+  - `35f63ae` (`chore(ios): sync Xcode project after toolchain upgrade`) —
+    `project.pbxproj` and the shared `YRobotRemote.xcscheme`, rewritten by
+    Xcode on open with a newer toolchain; no source changes.
+  - `b974d74` (`docs: add iOS remote dual-backend implementation plan`) —
+    adds `docs/plans/2026-08-12-yrobot-ios-remote-dual-backend.md`.
+- Validation: diffs reviewed before staging; the plan doc was grepped for
+  `token|password|secret|api[_-]?key|bearer|ssh-rsa|-----BEGIN` and only
+  matched its own no-secrets requirement text, not real credential values.
+- Not yet synced to `/home/pollen/YRobot`.
 
 - 2026-08-14: repository-local agent memory was created in commit `1a8dadb`.
   It adds the durable project context, a dynamic handoff, decision records,
