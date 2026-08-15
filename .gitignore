@@ -1,6 +1,12 @@
 # Local backup directories (created during cherry-pick sync)
 ios/local-ios-backup/
 
+# Local git worktrees for isolated task execution
+.worktrees/
+
+# Claude Code local settings (personal overrides, not shared)
+.claude/settings.local.json
+
 # Local runtime secrets and generated files
 .env
 *.env
