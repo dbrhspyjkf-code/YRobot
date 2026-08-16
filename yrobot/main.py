@@ -863,6 +863,7 @@ class Yrobot(ReachyMiniApp):
                     logger.info("QWEN wake word detected")
                     wake_greetings.begin_wake()
                     choreo.play_move("nod")
+                    tracker.set_conversation_active(True)
                     asyncio.create_task(activate_from_wake())
                 if gate.active:
                     pending_qwen_emotion[0] = requested_emotion(transcript)
@@ -1014,6 +1015,7 @@ class Yrobot(ReachyMiniApp):
                                 await client.set_turn_detection(None)
                                 playback.flush()
                                 choreo.set_mode(IDLE)
+                                tracker.set_conversation_active(False)
                                 logger.info("QWEN wake expired (60s timeout)")
                             continue
 
@@ -1033,6 +1035,7 @@ class Yrobot(ReachyMiniApp):
                             await client.set_turn_detection(None)
                             playback.flush()
                             choreo.set_mode(IDLE)
+                            tracker.set_conversation_active(False)
                             logger.info("QWEN wake expired (60s timeout)")
                         continue
 
@@ -1599,6 +1602,10 @@ class Yrobot(ReachyMiniApp):
                         if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
                             _waked = False
                             logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
+                        # Publish conversation state to the tracker: while a
+                        # conversation is active, a locked face may steer the
+                        # head directly (official-app face-anchor parity).
+                        tracker.set_conversation_active(_waked)
                         # Idle self-performance (official app pattern): after a
                         # long quiet stretch, occasionally play a small recorded
                         # emotion or dance while nobody is interacting.
