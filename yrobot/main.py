@@ -334,6 +334,15 @@ def _play_idle_show(choreo: Any, rec_provider: Any = None) -> str | None:
     return "tilt" if choreo.play_move("tilt") else None
 
 
+# Xiaozhi's LLM emits emotion=happy on nearly every reply as its default
+# expression; it carries no content signal and must not gesture on its own.
+# Informative emotions still gesture; happy only via sentence keywords.
+_LLM_EMOTION_NOISE = frozenset({"", "happy", "neutral", "none", "ok", "normal"})
+# Minimum gap between any two emotion-triggered moves, so multi-sentence
+# replies do not machine-gun gestures.
+_EMOTION_MOVE_GLOBAL_COOLDOWN_S = 12.0
+
+
 def _handle_xiaozhi_emotion(
     choreo: Any,
     emo: str,
@@ -341,15 +350,21 @@ def _handle_xiaozhi_emotion(
     rec_provider: Any = None,
     *,
     prefer_recorded: bool = False,
+    source: str = "llm",
 ) -> None:
     """Map Xiaozhi emotion to a recorded move with programmatic fallback.
 
     Recorded moves come from the official curated whitelist and rotate per
     emotion; if the library is unavailable or the move is rejected, the safe
-    programmatic move is used instead. Per-move cooldown prevents the default
-    'happy' emotion from firing on every reply.
+    programmatic move is used instead. The LLM's default 'happy' emotion is
+    treated as noise (source="llm") because Xiaozhi emits it on almost every
+    reply; content-corroborated happy arrives via source="sentence".
     """
     from yrobot.motion import EMOTION_FALLBACK_MOVE, recorded_move_for
+
+    if source == "llm" and emo in _LLM_EMOTION_NOISE:
+        logger.info("xz emotion %s (llm default, ignored)", emo or "?")
+        return
 
     rec_name = recorded_move_for(emo) if prefer_recorded else None
     fb_name = EMOTION_FALLBACK_MOVE.get(emo)
@@ -358,9 +373,13 @@ def _handle_xiaozhi_emotion(
     if not target:
         logger.info("xz emotion %s (no safe move)", emo or "?")
         return
+    if now - last.get("__any__", -1e9) < _EMOTION_MOVE_GLOBAL_COOLDOWN_S:
+        logger.info("xz emotion %s -> %s (global cooldown)", emo, target)
+        return
     if now - last.get(target, -1e9) < 5.0:
         logger.info("xz emotion %s -> %s (cooldown)", emo, target)
         return
+    last["__any__"] = now
     last[target] = now
     if prefer_recorded and rec_name:
         rec = rec_provider() if callable(rec_provider) else None
@@ -1527,6 +1546,7 @@ class Yrobot(ReachyMiniApp):
                                             tracker._last_emotion_move,
                                             _get_recorded,
                                             prefer_recorded=True,
+                                            source="sentence",
                                         )
                             elif t == "tts" and d.get("state") == "sentence_end":
                                 logger.info(
