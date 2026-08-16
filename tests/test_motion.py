@@ -214,3 +214,66 @@ def test_startup_blend_finishes_and_releases_to_normal_motion():
     assert choreo._startup_antennas is None
     assert not np.allclose(pose, startup_pose)
     assert not np.allclose(antennas, (0.7, -0.6))
+
+
+# ── Recorded-emotion whitelist and rotation ────────────────────────────────
+
+def test_recorded_whitelist_matches_official_app_curation():
+    from yrobot.motion import RECORDED_MOVE_WHITELIST
+
+    assert len(RECORDED_MOVE_WHITELIST) == 47
+    for name in ("laughing1", "rage1", "welcoming2", "thoughtful1", "yes1", "sleep1"):
+        assert name in RECORDED_MOVE_WHITELIST
+
+
+def test_emotion_to_moves_all_whitelisted():
+    from yrobot.motion import EMOTION_TO_MOVES, RECORDED_MOVE_WHITELIST
+
+    assert EMOTION_TO_MOVES, "emotion table must not be empty"
+    for emotion, moves in EMOTION_TO_MOVES.items():
+        assert moves, emotion
+        assert len(set(moves)) == len(moves), emotion
+        for name in moves:
+            assert name in RECORDED_MOVE_WHITELIST, (emotion, name)
+
+
+def test_recorded_move_for_rotates_and_ignores_unknown():
+    from yrobot import motion
+    from yrobot.motion import EMOTION_TO_MOVES, recorded_move_for
+
+    motion._recent_recorded_choice.clear()
+
+    assert recorded_move_for("nosuchemotion") is None
+    assert recorded_move_for("") is None
+
+    first = recorded_move_for("happy")
+    second = recorded_move_for("happy")
+    assert first in EMOTION_TO_MOVES["happy"]
+    assert second in EMOTION_TO_MOVES["happy"]
+    assert first != second
+
+
+def test_recorded_move_carries_full_antenna_pair():
+    class _FakeRecorded:
+        duration = 1.0
+
+        def evaluate(self, t):
+            return rpy_pose(0.0, 0.0, 0.0, 0.0), np.array([-0.6, 0.5]), 0.0
+
+    choreo = Choreographer(mini=object())
+    choreo._recorded_move = _FakeRecorded()
+    choreo._recorded_name = "fake"
+    start = time.monotonic()
+    choreo._recorded_start = start
+    choreo._recorded_duration = 1.0
+
+    dt = 0.02
+    now = start + 0.5  # past the 300 ms blend-in, before the blend-out
+    for _ in range(200):
+        _, antennas = choreo._compose(now - start, now, dt)
+
+    left, right = antennas
+    assert abs(left - (-0.6)) < 0.05, antennas
+    assert abs(right - 0.5) < 0.05, antennas
+    # A flattened (averaged) pair would collapse both antennas to ~-0.05.
+    assert abs(left - right) > 0.9
