@@ -13,6 +13,7 @@ import base64
 import logging
 import math
 import os
+import random
 import threading
 import time
 import wave
@@ -42,6 +43,7 @@ from yrobot.qwen_emotion import (
     requested_emotion,
 )
 from yrobot.faces import FaceDB
+from yrobot.speech_emotion import sentence_emotion
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
@@ -304,6 +306,34 @@ def _is_expected_xiaozhi_disconnect(exc: BaseException) -> bool:
     return False
 
 
+_IDLE_SHOW_ENABLED = os.environ.get("YROBOT_IDLE_SHOW", "1").strip() != "0"
+_IDLE_SHOW_INTERVAL_S = max(
+    30.0, float(os.environ.get("YROBOT_IDLE_SHOW_S", "180"))
+)
+
+
+def _play_idle_show(choreo: Any, rec_provider: Any = None) -> str | None:
+    """Weighted idle performance using the official app idle policy weights.
+
+    60% stillness / 16% recorded emotion / 16% dance / 8% head tilt.
+    """
+    from yrobot.motion import recorded_move_for
+
+    roll = random.random()
+    if roll < 0.60:
+        return None
+    if roll < 0.76:
+        emotion = random.choice(("happy", "surprised", "thinking", "grateful", "loving"))
+        name = recorded_move_for(emotion)
+        rec = rec_provider() if callable(rec_provider) and name else None
+        if rec is not None and name and choreo.play_recorded(name, rec):
+            return f"recorded:{name}"
+        return None
+    if roll < 0.92 and choreo.play_dance("simple_nod"):
+        return "dance:simple_nod"
+    return "tilt" if choreo.play_move("tilt") else None
+
+
 def _handle_xiaozhi_emotion(
     choreo: Any,
     emo: str,
@@ -312,10 +342,16 @@ def _handle_xiaozhi_emotion(
     *,
     prefer_recorded: bool = False,
 ) -> None:
-    """Map Xiaozhi emotion to a safe move with per-move cooldown."""
-    from yrobot.motion import EMOTION_FALLBACK_MOVE, EMOTION_TO_MOVE
+    """Map Xiaozhi emotion to a recorded move with programmatic fallback.
 
-    rec_name = EMOTION_TO_MOVE.get(emo)
+    Recorded moves come from the official curated whitelist and rotate per
+    emotion; if the library is unavailable or the move is rejected, the safe
+    programmatic move is used instead. Per-move cooldown prevents the default
+    'happy' emotion from firing on every reply.
+    """
+    from yrobot.motion import EMOTION_FALLBACK_MOVE, recorded_move_for
+
+    rec_name = recorded_move_for(emo) if prefer_recorded else None
     fb_name = EMOTION_FALLBACK_MOVE.get(emo)
     target = rec_name if prefer_recorded and rec_name else fb_name
     now = time.monotonic()
@@ -1331,6 +1367,8 @@ class Yrobot(ReachyMiniApp):
                 _waked = False
                 _wake_deadline = 0.0
                 _wake_at = 0.0  # discard stale TTS from before wake
+                idle_show_last_activity = [time.monotonic()]
+                idle_show_last_fire = [time.monotonic()]
                 WAKE_WORDS = (
                     "你好小白",
                     "小白",
@@ -1393,14 +1431,14 @@ class Yrobot(ReachyMiniApp):
                             t = d.get("type", "")
                             if t == "llm":
                                 # Xiaozhi sends the model's emotion/expression here
-                                # (e.g. {"type":"llm","emotion":"happy","text":"😀"});
-                                # Use bounded programmatic moves for automatic emotions.
-                                # Official recorded emotions can request unreachable
-                                # poses on this robot and make the daemon reject IK.
-                                # Per-move cooldown prevents the default 'happy'
-                                # emotion from firing on every reply.
-                                # If a manual/MCP move is playing, emotions are ignored
-                                # so a tool-triggered dance is never cut short.
+                                # (e.g. {"type":"llm","emotion":"happy","text":"😀"}).
+                                # Recorded moves now come from the official
+                                # curated whitelist (rotated per emotion), with
+                                # the programmatic moves as fallback if the
+                                # library is unavailable or a move is rejected.
+                                # If a manual/MCP move is playing, emotions are
+                                # ignored so a tool-triggered dance is never
+                                # cut short.
                                 emo = (d.get("emotion") or "").strip().lower()
                                 if (
                                     choreo.current_move() is not None
@@ -1413,7 +1451,7 @@ class Yrobot(ReachyMiniApp):
                                         emo,
                                         tracker._last_emotion_move,
                                         _get_recorded,
-                                        prefer_recorded=False,
+                                        prefer_recorded=True,
                                     )
                             if t == "stt":
                                 text = d.get("text", "")
@@ -1432,6 +1470,7 @@ class Yrobot(ReachyMiniApp):
                                         _wake_at = time.time()  # only gate stale for real wake
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
+                                    idle_show_last_activity[0] = time.monotonic()
                                 if not _waked:
                                     logger.info("xz stt ignored (not waked): %.60s", text)
                                     continue
@@ -1449,6 +1488,7 @@ class Yrobot(ReachyMiniApp):
                                     continue
                                 logger.info("xz tts start")
                                 tts_active = True
+                                idle_show_last_activity[0] = time.monotonic()
                                 _tts_start_at = time.time()
                                 tts_watchdog.start()
                                 RUNTIME_HEALTH.update(
@@ -1463,7 +1503,31 @@ class Yrobot(ReachyMiniApp):
                                 choreo.set_mode(SPEAK)
                                 choreo.release_still()
                             elif t == "tts" and d.get("state") == "sentence_start":
-                                logger.info("xz tts text: %s", d.get("text", "")[:80])
+                                sentence_text = d.get("text", "")
+                                logger.info("xz tts text: %s", sentence_text[:80])
+                                # Sentence-level gestures (official app pattern):
+                                # classify each spoken sentence and gesture while
+                                # talking. Skipped when a move is already playing;
+                                # the per-move cooldown dedupes against the llm
+                                # emotion event that fires at reply start.
+                                sentence_emo = sentence_emotion(sentence_text)
+                                if sentence_emo and _waked:
+                                    if (
+                                        choreo.current_move() is not None
+                                        or choreo.current_recorded() is not None
+                                    ):
+                                        logger.info(
+                                            "xz sentence emotion %s skipped (move in progress)",
+                                            sentence_emo,
+                                        )
+                                    else:
+                                        _handle_xiaozhi_emotion(
+                                            choreo,
+                                            sentence_emo,
+                                            tracker._last_emotion_move,
+                                            _get_recorded,
+                                            prefer_recorded=True,
+                                        )
                             elif t == "tts" and d.get("state") == "sentence_end":
                                 logger.info(
                                     "xz tts sentence_end packets=%d audio(enqueued=%d written=%d pending=%d)",
@@ -1490,6 +1554,7 @@ class Yrobot(ReachyMiniApp):
                                 )
                                 _aplay_flush()
                                 choreo.set_mode(IDLE)
+                                idle_show_last_activity[0] = time.monotonic()
 
                 rt = _a.ensure_future(recv())
                 try:
@@ -1514,6 +1579,21 @@ class Yrobot(ReachyMiniApp):
                         if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
                             _waked = False
                             logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
+                        # Idle self-performance (official app pattern): after a
+                        # long quiet stretch, occasionally play a small recorded
+                        # emotion or dance while nobody is interacting.
+                        _idle_now = time.monotonic()
+                        if (
+                            _IDLE_SHOW_ENABLED
+                            and not _waked
+                            and not tts_active
+                            and _idle_now - idle_show_last_activity[0] >= _IDLE_SHOW_INTERVAL_S
+                            and _idle_now - idle_show_last_fire[0] >= _IDLE_SHOW_INTERVAL_S
+                        ):
+                            idle_show_last_fire[0] = _idle_now
+                            _idle_what = _play_idle_show(choreo, _get_recorded)
+                            if _idle_what:
+                                logger.info("idle show: %s", _idle_what)
                         if tts_active:
                             # Recover both startup stalls and mid-stream
                             # disconnects so one missing tts.stop cannot make

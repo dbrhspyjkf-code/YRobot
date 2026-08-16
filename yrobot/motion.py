@@ -57,16 +57,63 @@ MOVE_SPECS = {
 # Xiaozhi protocol emotion -> Reachy move name (see xiaozhi.tech websocket doc).
 # Prefer official recorded-emotion moves for vividness; the programmatic moves
 # (shake/nod/...) are fallbacks used when the emotion library is unavailable.
-EMOTION_TO_MOVE = {
-    "happy": "cheerful1", "laughing": "laughing1", "funny": "laughing2",
-    "winking": "welcoming1", "confident": "proud2",
-    "surprised": "surprised1", "shocked": "amazed1",
-    "thinking": "thoughtful1", "confused": "confused1",
-    "sleepy": "sleep1", "tired": "tired1",
-    "sad": "sad1", "crying": "sad2", "downcast": "downcast1",
-    "angry": "reprimand1", "furious": "rage1", "irritated": "irritated1",
-    "loving": "loving1", "kissy": "loving1",
+#
+# Recorded-move whitelist ported from the official Conversation App
+# (play_emotion.py): moves curated by Pollen Robotics as looking good and
+# staying reachable on this robot. Only names in this set are mapped below.
+_RECORDED_EXCELLENT_MOVES: tuple[str, ...] = (
+    "anxiety1", "boredom2", "dance2", "dance3", "downcast1", "dying1",
+    "exhausted1", "grateful1", "helpful1", "loving1", "rage1", "reprimand1",
+    "resigned1", "sad1", "sad2", "scared1", "sleep1", "surprised1",
+    "thoughtful1", "welcoming2",
+)
+_RECORDED_OK_CLEAR_MOVES: tuple[str, ...] = (
+    "amazed1", "attentive1", "attentive2", "boredom1", "confused1",
+    "disgusted1", "displeased1", "displeased2", "fear1", "impatient2",
+    "irritated1", "irritated2", "laughing1", "laughing2", "lonely1", "no1",
+    "no_excited1", "no_sad1", "reprimand2", "shy1", "success1", "success2",
+    "surprised2", "thoughtful2", "uncertain1", "understanding2", "yes1",
+)
+RECORDED_MOVE_WHITELIST: frozenset[str] = frozenset(
+    _RECORDED_EXCELLENT_MOVES + _RECORDED_OK_CLEAR_MOVES
+)
+
+# Xiaozhi emotion -> whitelisted recorded-move candidates. Multiple
+# candidates per emotion are rotated so consecutive replies don't repeat the
+# exact same animation (official Conversation App pattern).
+EMOTION_TO_MOVES: dict[str, tuple[str, ...]] = {
+    "happy": ("laughing2", "laughing1"),
+    "laughing": ("laughing1", "laughing2"),
+    "funny": ("laughing2", "laughing1"),
+    "winking": ("shy1", "welcoming2"),
+    "confident": ("success1", "success2"),
+    "surprised": ("surprised1", "surprised2"),
+    "shocked": ("amazed1", "surprised1"),
+    "thinking": ("thoughtful1", "thoughtful2"),
+    "confused": ("confused1", "uncertain1"),
+    "sleepy": ("sleep1",),
+    "tired": ("exhausted1", "sleep1"),
+    "sad": ("sad1", "sad2", "downcast1"),
+    "crying": ("sad2", "sad1"),
+    "downcast": ("downcast1", "sad1"),
+    "angry": ("reprimand1", "irritated2", "irritated1"),
+    "furious": ("rage1",),
+    "irritated": ("irritated1", "irritated2"),
+    "loving": ("loving1",),
+    "kissy": ("loving1",),
+    # Extra vocabulary borrowed from the official intent table.
+    "excited": ("dance3", "dance2"),
+    "grateful": ("grateful1",),
+    "scared": ("scared1", "fear1", "anxiety1"),
+    "anxious": ("anxiety1", "fear1"),
+    "bored": ("boredom2", "boredom1"),
+    "lonely": ("lonely1",),
+    "embarrassed": ("shy1",),
+    "yes": ("yes1", "understanding2"),
+    "no": ("no1",),
 }
+# Legacy single-name view (first candidate) kept for existing callers.
+EMOTION_TO_MOVE = {emotion: moves[0] for emotion, moves in EMOTION_TO_MOVES.items()}
 # Fallback: if the recorded move above can't be played, use a programmatic
 # move that conveys the same idea.
 EMOTION_FALLBACK_MOVE = {
@@ -79,6 +126,24 @@ EMOTION_FALLBACK_MOVE = {
     "angry": ANGRY, "furious": ANGRY, "irritated": ANGRY,
     "loving": TILT, "kissy": TILT,
 }
+
+_recent_recorded_choice: dict[str, str] = {}
+
+
+def recorded_move_for(emotion: str) -> str | None:
+    """Return the next whitelisted recorded move for *emotion*.
+
+    Candidates rotate per call so back-to-back replies with the same emotion
+    use different animations (official Conversation App pattern).
+    """
+    candidates = EMOTION_TO_MOVES.get((emotion or "").strip().lower(), ())
+    if not candidates:
+        return None
+    previous = _recent_recorded_choice.get(emotion)
+    ordered = [name for name in candidates if name != previous]
+    chosen = ordered[0] if ordered else candidates[0]
+    _recent_recorded_choice[emotion] = chosen
+    return chosen
 
 
 def head_yaw_of(pose: np.ndarray) -> float:
@@ -629,6 +694,20 @@ class Choreographer(threading.Thread):
         with self._status_lock:
             self._set_target_failures += 1
             self._set_target_consecutive_failures += 1
+        # A recorded move that the daemon keeps rejecting (unreachable pose)
+        # would freeze all motion for its whole duration; drop it early so the
+        # composed layers take back over.
+        if (
+            self._recorded_move is not None
+            and self._set_target_consecutive_failures >= 3
+        ):
+            dropped = self._recorded_name
+            self._recorded_move = None
+            self._recorded_name = None
+            logger.warning(
+                "recorded move %r dropped after repeated set_target failures",
+                dropped,
+            )
 
     def _blend_modes(self, dt: float) -> None:
         """Cross-fade posture weights (~250 ms) so mode flips never step."""
@@ -696,6 +775,7 @@ class Choreographer(threading.Thread):
         # Recorded move (official emotion library) takes over the pose
         # entirely while playing, with a 300 ms blend in/out so neither
         # start nor end ever steps.
+        rec_ant_pair = None
         rmv = self._recorded_move
         if rmv is not None:
             rel = now - self._recorded_start
@@ -709,8 +789,12 @@ class Choreographer(threading.Thread):
                     # Interpolate pose elements (position + rotation matrix)
                     # between the composed pose and the recorded pose.
                     pose = _blend_pose(pose, np.asarray(rec_pose, dtype=np.float64), blend)
+                    # Carry the full recorded antenna pair (antisymmetric
+                    # trajectories included) instead of flattening it to a
+                    # mean offset.
                     ra = np.asarray(rec_ant, dtype=np.float64)
-                    m_ant = float((ra[0] + ra[1]) / 2.0)
+                    if ra.shape == (2,):
+                        rec_ant_pair = (1.0 - blend) * self._antennas + blend * ra
                 except Exception:
                     self._recorded_move = None
 
@@ -728,6 +812,8 @@ class Choreographer(threading.Thread):
                 2 * math.pi * 1.4 * t
             )
             target_arr = np.array([target + sway, target - sway])
+            if rec_ant_pair is not None:
+                target_arr = rec_ant_pair
             if hasattr(self, '_listen_antennas'):
                 target_arr = self._listen_antennas * (1.0 - self._antenna_blend) + target_arr * self._antenna_blend
             goal = target_arr
