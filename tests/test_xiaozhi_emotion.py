@@ -24,7 +24,9 @@ def test_xiaozhi_emotion_prefers_recorded_when_library_available():
     choreo = _FakeChoreo()
     rec = object()
 
-    _handle_xiaozhi_emotion(choreo, "happy", {}, lambda: rec, prefer_recorded=True)
+    _handle_xiaozhi_emotion(
+        choreo, "happy", {}, lambda: rec, prefer_recorded=True, source="sentence"
+    )
 
     assert choreo.recorded == ["laughing2"]
     assert choreo.moves == []
@@ -34,7 +36,9 @@ def test_xiaozhi_emotion_falls_back_to_programmatic_without_library():
     motion._recent_recorded_choice.clear()
     choreo = _FakeChoreo()
 
-    _handle_xiaozhi_emotion(choreo, "happy", {}, lambda: None, prefer_recorded=True)
+    _handle_xiaozhi_emotion(
+        choreo, "happy", {}, lambda: None, prefer_recorded=True, source="sentence"
+    )
 
     assert choreo.recorded == []
     assert choreo.moves == ["nod"]
@@ -45,8 +49,12 @@ def test_xiaozhi_emotion_cooldown_suppresses_repeat():
     choreo = _FakeChoreo()
     last = {}
 
-    _handle_xiaozhi_emotion(choreo, "happy", last, lambda: None, prefer_recorded=False)
-    _handle_xiaozhi_emotion(choreo, "happy", last, lambda: None, prefer_recorded=False)
+    _handle_xiaozhi_emotion(
+        choreo, "happy", last, lambda: None, prefer_recorded=False, source="sentence"
+    )
+    _handle_xiaozhi_emotion(
+        choreo, "happy", last, lambda: None, prefer_recorded=False, source="sentence"
+    )
 
     assert choreo.moves == ["nod"]
 
@@ -81,3 +89,56 @@ def test_play_idle_show_branches():
     result, choreo = run(0.95)
     assert result == "tilt"
     assert choreo.moves == ["tilt"]
+
+
+def test_llm_default_happy_is_noise_not_gesture():
+    """Xiaozhi sends emotion=happy on nearly every reply; it must not
+    trigger a move on its own. Content-corroborated happy (sentence
+    keywords like 哈哈) still gestures via source='sentence'."""
+    motion._recent_recorded_choice.clear()
+    choreo = _FakeChoreo()
+
+    for emo in ("happy", "neutral", "none", ""):
+        _handle_xiaozhi_emotion(
+            choreo, emo, {}, lambda: object(), prefer_recorded=True, source="llm"
+        )
+
+    assert choreo.recorded == []
+    assert choreo.moves == []
+
+
+def test_sentence_happy_still_gestures():
+    motion._recent_recorded_choice.clear()
+    choreo = _FakeChoreo()
+
+    _handle_xiaozhi_emotion(
+        choreo, "happy", {}, lambda: object(), prefer_recorded=True, source="sentence"
+    )
+
+    assert choreo.recorded == ["laughing2"]
+
+
+def test_informative_llm_emotion_still_gestures():
+    motion._recent_recorded_choice.clear()
+    choreo = _FakeChoreo()
+
+    _handle_xiaozhi_emotion(
+        choreo, "surprised", {}, lambda: object(), prefer_recorded=True, source="llm"
+    )
+
+    assert choreo.recorded
+
+
+def test_global_cooldown_suppresses_back_to_back_moves():
+    motion._recent_recorded_choice.clear()
+    choreo = _FakeChoreo()
+    last = {}
+
+    _handle_xiaozhi_emotion(
+        choreo, "surprised", last, lambda: object(), prefer_recorded=True, source="llm"
+    )
+    _handle_xiaozhi_emotion(
+        choreo, "sad", last, lambda: object(), prefer_recorded=True, source="sentence"
+    )
+
+    assert len(choreo.recorded) == 1
