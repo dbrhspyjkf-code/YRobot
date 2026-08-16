@@ -44,6 +44,34 @@ def fuse_speaker_gaze(
     return fused, "audio+visual"
 
 
+def _wrap_yaw(angle: float) -> float:
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def visual_gaze_should_lead(
+    face_age_s: float,
+    last_doa_age_s: Optional[float],
+    conversation_active: bool,
+    *,
+    face_max_age_s: float = 0.9,
+    doa_hold_s: float = 1.0,
+) -> bool:
+    """Whether the visual face lock may drive the gaze directly.
+
+    Mirrors the official app's face-anchor behaviour: while a conversation is
+    active, a fresh face lock keeps the head on the user even when the audio
+    DoA is silent (e.g. while the robot is speaking). Fresh DoA output still
+    wins, and idle robots never stare at bystanders.
+    """
+    if not conversation_active:
+        return False
+    if face_age_s > face_max_age_s:
+        return False
+    if last_doa_age_s is not None and last_doa_age_s < doa_hold_s:
+        return False
+    return True
+
+
 class SpeakerTracker:
     """Combined audio DoA + visual face tracker, shared by XIAOZHI and QWEN.
 
@@ -76,11 +104,26 @@ class SpeakerTracker:
         self._face_cascade: Any = None
         self._vis_frames = 0
         self._last_emotion_move: dict[str, float] = {}
+        # Face-lead state (official-app face-anchor parity).
+        self._conversation_active: list[bool] = [False]
+        self._last_doa_at: list[float] = [0.0]  # monotonic; 0 = never
+        self._face_lead_target: list[Optional[float]] = [None]
 
     # ── Public API ──────────────────────────────────────────────────────────
     def set_user_speaking(self, speaking: bool) -> None:
         """Immediately set the user-active flag (used by XIAOZHI VAD)."""
         self._user_speaking[0] = bool(speaking)
+
+    def set_conversation_active(self, active: bool) -> None:
+        """Gate face-led gaze on an ongoing conversation.
+
+        While inactive the robot never turns its head toward faces (respects
+        the 'no unprompted motion while idle' preference); the audio DoA path
+        is unaffected.
+        """
+        self._conversation_active[0] = bool(active)
+        if not active:
+            self._face_lead_target[0] = None
 
     def note_speech(self, window_s: float = 2.0) -> None:
         """Pulse the user-active flag for `window_s` seconds (used by QWEN
@@ -114,6 +157,7 @@ class SpeakerTracker:
             return self.choreo.current_yaw()
 
     def _set_speaker_gaze(self, audio_yaw: float) -> None:
+        self._last_doa_at[0] = time.monotonic()
         visual_yaw = None
         if self._visual_gaze[0] is not None:
             vy, vt = self._visual_gaze[0]
@@ -141,6 +185,28 @@ class SpeakerTracker:
                 visual_label,
                 math.degrees(target),
             )
+
+    def _publish_face_gaze(self, world_yaw: float) -> None:
+        """Face-lead path: drive gaze straight from a locked face.
+
+        Only fires while the conversation is active and the audio DoA has
+        been silent long enough (robot speaking / quiet turn gap), matching
+        the official app holding the head on the user through a reply.
+        """
+        if not visual_gaze_should_lead(
+            face_age_s=0.0,
+            last_doa_age_s=(
+                None if self._last_doa_at[0] == 0.0
+                else time.monotonic() - self._last_doa_at[0]
+            ),
+            conversation_active=self._conversation_active[0],
+        ):
+            return
+        last = self._face_lead_target[0]
+        if last is not None and abs(_wrap_yaw(world_yaw - last)) < math.radians(4.0):
+            return
+        self._face_lead_target[0] = world_yaw
+        self.choreo.set_gaze_target(world_yaw, source="face")
 
     # ── Internal: face tracker thread ──────────────────────────────────────
     def _face_tracker_loop(self) -> None:
@@ -211,7 +277,10 @@ class SpeakerTracker:
                 except Exception:
                     head_yaw = self.choreo.current_yaw()
                 self._visual_gaze[0] = (head_yaw + cam_rad, time.time())
-                self._face_stop.wait(0.5)
+                # Face anchor (official-app parity): while the conversation is
+                # active and DoA is quiet, keep the head aimed at the user.
+                self._publish_face_gaze(head_yaw + cam_rad)
+                self._face_stop.wait(0.2)
             except Exception:
                 self._face_stop.wait(0.5)
 
