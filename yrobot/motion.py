@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 
 IDLE, LISTEN, SPEAK = "idle", "listen", "speak"
 
+# Idle antenna sway tuned to the official Conversation App breathing move
+# (±15° at 0.5 Hz, mirrored between the two antennas) so the robot reads as
+# alive while waiting, matching the reference implementation.
+IDLE_ANTENNA_SWAY = math.radians(15.0)
+IDLE_ANTENNA_SWAY_HZ = 0.5
+
 # One-shot expressive moves (played on top of the current mode, then fade out).
 SHAKE, NOD, TILT, SURPRISE, THINK, YAWN, SAD, ANGRY = (
     "shake", "nod", "tilt", "surprise", "think", "yawn", "sad", "angry")
@@ -808,8 +814,11 @@ class Choreographer(threading.Thread):
                 self._antenna_blend = 0.0
             self._antenna_blend = min(1.0, getattr(self, '_antenna_blend', 1.0) + dt / 0.4)
             target = self.ANTENNA_NEUTRAL * (1.0 - 0.6 * listen) + m_ant
-            sway = 0.05 * idle * math.sin(2 * math.pi * 0.3 * t) + 0.10 * speak * math.sin(
-                2 * math.pi * 1.4 * t
+            sway = (
+                IDLE_ANTENNA_SWAY
+                * idle
+                * math.sin(2 * math.pi * IDLE_ANTENNA_SWAY_HZ * t)
+                + 0.10 * speak * math.sin(2 * math.pi * 1.4 * t)
             )
             target_arr = np.array([target + sway, target - sway])
             if rec_ant_pair is not None:

@@ -4,6 +4,7 @@ import math
 import time
 
 import numpy as np
+import pytest
 
 from yrobot.motion import (
     Choreographer,
@@ -277,3 +278,24 @@ def test_recorded_move_carries_full_antenna_pair():
     assert abs(right - 0.5) < 0.05, antennas
     # A flattened (averaged) pair would collapse both antennas to ~-0.05.
     assert abs(left - right) > 0.9
+
+
+def test_idle_antenna_sway_matches_official_app_breathing():
+    """Idle antennas must sway as visibly as the official Conversation App."""
+    from yrobot.motion import IDLE_ANTENNA_SWAY, IDLE_ANTENNA_SWAY_HZ
+
+    assert IDLE_ANTENNA_SWAY >= math.radians(13.0)
+    assert IDLE_ANTENNA_SWAY_HZ == pytest.approx(0.5, abs=0.05)
+
+
+def test_compose_idle_antennas_reach_official_amplitude():
+    choreo = Choreographer(mini=object())
+    dt = 0.02
+    samples = []
+    for i in range(300):  # ~6 s of idle at 50 Hz
+        t = i * dt
+        _, antennas = choreo._compose(t, 1000.0 + t, dt)
+        if i > 100:  # skip warm-up
+            samples.append(antennas[0] - choreo.ANTENNA_NEUTRAL)
+    peak = max(abs(v) for v in samples)
+    assert peak >= 0.15, peak  # official app reaches ~0.26 rad per side
