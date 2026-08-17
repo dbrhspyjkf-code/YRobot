@@ -90,6 +90,45 @@ def test_schemas_expose_only_explicit_tools(tmp_path):
     assert "token" not in json.dumps(executor.schemas()).lower()
 
 
+def test_schemas_expose_hermes_registry_only_when_enabled(tmp_path):
+    executor = ToolExecutor(make_settings_with_hermes(tmp_path))
+    names = [item["function"]["name"] for item in executor.schemas()]
+
+    # Curated hermes registry tools are exposed with hermes enabled.
+    for expected in (
+        "get_stock_price",
+        "control_sonos",
+        "web_search",
+        "check_unread_emails",
+        "send_email",
+        "query_calendar_events",
+        "query_3d_printer",
+        "analyze_image",
+    ):
+        assert expected in names
+    # Generic device control / meta tools must never be exposed to the
+    # model: they would bypass the HA whitelist (immutable #8/#9).
+    for forbidden in (
+        "control_smart_home",
+        "control_vacuum",
+        "call_hermes_async_with_speak",
+    ):
+        assert forbidden not in names
+
+
+def test_registry_tool_routes_through_verified_ios_api(tmp_path):
+    opener = RecordingOpener({"ok": True, "result": "搜索结果"})
+    settings = make_settings_with_hermes(tmp_path)
+    executor = ToolExecutor(settings, opener=opener)
+
+    result = executor.execute("web_search", {"prompt": "深圳天气"})
+
+    assert result == {"ok": True, "result": "搜索结果"}
+    request, _ = opener.calls[0]
+    assert request.full_url == "http://192.168.1.200:8900/api/tools/call"
+    assert json.loads(request.data) == {"name": "web_search", "arguments": {"prompt": "深圳天气"}}
+
+
 def test_unknown_tool_is_rejected_before_network(tmp_path):
     opener = RecordingOpener()
     executor = ToolExecutor(make_settings(tmp_path), opener=opener)

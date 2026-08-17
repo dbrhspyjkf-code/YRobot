@@ -18,6 +18,106 @@ logger = logging.getLogger(__name__)
 
 VERIFIED_HERMES_BASE = "http://192.168.1.200:8766"
 VERIFIED_HERMES_IOS_API = "http://192.168.1.200:8900"   # hermes-mcp-xiaozhi iOS HTTP API
+
+# Curated hermes-mcp-xiaozhi (:8900) tool registry. All entries route
+# through the verified iOS API call endpoint with prompt-style args.
+# Deliberately EXCLUDED (immutable decisions #8/#9):
+#   control_smart_home / control_vacuum - generic device control must
+#     stay whitelist-bound via control_allowed_device (HA path),
+#   call_hermes_async_with_speak - meta tool (arbitrary nested calls).
+# Every entry: (name, description, prompt description | None, required)
+_HERMES_TOOL_SPECS: tuple[tuple[str, str, str | None, bool], ...] = (
+    (
+        "web_search",
+        "联网搜索最新信息（新闻、事实、价格、资料）。",
+        "搜索关键词或完整问题",
+        True,
+    ),
+    (
+        "check_unread_emails",
+        "查询未读邮件摘要。",
+        None,
+        False,
+    ),
+    (
+        "send_email",
+        "发送邮件。调用前必须先向用户复述收件人、主题和正文要点，得到用户明确确认后才能调用。",
+        "完整描述：收件人、主题、正文内容",
+        True,
+    ),
+    (
+        "add_note",
+        "添加一条笔记。",
+        "笔记内容",
+        True,
+    ),
+    (
+        "add_reminder",
+        "添加一条提醒。",
+        "提醒内容与时间，如「明天上午9点提醒我吃药」",
+        True,
+    ),
+    (
+        "add_calendar_event",
+        "添加日程到日历。",
+        "事件名与时间，如「周三下午3点牙医」",
+        True,
+    ),
+    (
+        "query_calendar_events",
+        "查询日历日程。",
+        "时间范围或问题，如「今天下午有什么安排」「本周」",
+        True,
+    ),
+    (
+        "get_cctv_news",
+        "获取新闻联播摘要。",
+        "可选：主题或关键词过滤",
+        False,
+    ),
+    (
+        "query_3d_printer",
+        "查询 3D 打印机状态（打印进度/温度/耗材/告警）。",
+        None,
+        False,
+    ),
+    (
+        "get_deepseek_balance",
+        "查询 DeepSeek API 账户余额。",
+        None,
+        False,
+    ),
+    (
+        "get_ipo_info",
+        "查询近期新股申购信息。",
+        "可选：市场或关键词过滤",
+        False,
+    ),
+    (
+        "get_margin_data",
+        "查询融资融券数据。",
+        "股票名称或代码，如「查询688018融资融券」",
+        True,
+    ),
+    (
+        "query_chat_history",
+        "查询与 Hermes 助手的历史对话。",
+        "可选：关键词或日期，空则最近会话",
+        False,
+    ),
+    (
+        "query_taobao_orders",
+        "查询淘宝订单。",
+        "可选：订单状态或关键词过滤",
+        False,
+    ),
+    (
+        "analyze_image",
+        "分析服务端最近的一张图片。",
+        "可选：针对图片的具体问题",
+        False,
+    ),
+)
 MAX_RESULT_BYTES = 4096
 ALLOWED_DOMAINS = frozenset({"light", "switch", "fan", "media_player", "number"})
 ALLOWED_ACTIONS = frozenset({"turn_on", "turn_off", "toggle", "oscillate", "media_play", "media_pause", "set_value"})
@@ -74,6 +174,16 @@ class AllowedAction:
     service: str
     entity_id: str
     service_data: dict[str, Any] | None = None
+
+
+def _make_hermes_prompt_handler(name: str):
+    """Build an execute() handler for a registry tool: prompt -> :8900."""
+
+    def handler(self: "ToolExecutor", arguments: dict[str, Any]) -> dict[str, Any]:
+        prompt = str(arguments.get("prompt") or arguments.get("name") or "").strip()
+        return self._call_hermes_tool(name, prompt)
+
+    return handler
 
 
 class ToolExecutor:
@@ -150,6 +260,8 @@ class ToolExecutor:
                     },
                 },
             },
+        ]
+        hermes_schemas: list[dict[str, Any]] = [
             {
                 "type": "function",
                 "function": {
@@ -256,6 +368,34 @@ class ToolExecutor:
                 },
             },
         ]
+        if self.settings.hermes_tools_enabled:
+            schemas.extend(hermes_schemas)
+            schemas.extend(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": spec_name,
+                        "description": spec_description,
+                        "parameters": (
+                            {
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": False,
+                            }
+                            if prompt_description is None
+                            else {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {"type": "string", "description": prompt_description},
+                                },
+                                "required": (["prompt"] if required else []),
+                                "additionalProperties": False,
+                            }
+                        ),
+                    },
+                }
+                for spec_name, spec_description, prompt_description, required in _HERMES_TOOL_SPECS
+            )
         if self._emotion_player is not None:
             schemas.append(
                 {
@@ -294,6 +434,10 @@ class ToolExecutor:
             "control_sonos": self._control_sonos,
             "express_emotion": self._express_emotion,
         }
+        for registry_name, _desc, _prompt, _required in _HERMES_TOOL_SPECS:
+            handlers[registry_name] = _make_hermes_prompt_handler(registry_name).__get__(
+                self, ToolExecutor
+            )
         handler = handlers.get(name)
         if handler is None:
             return {"ok": False, "error": f"unknown tool: {name}"}
