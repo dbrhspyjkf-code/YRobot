@@ -23,6 +23,7 @@ from yrobot.main import (
     _qwen_wants_visual_snapshot,
     _qwen_device_intent,
     _qwen_is_pure_backchannel,
+    _qwen_is_bare_wake_utterance,
 )
 
 
@@ -382,3 +383,15 @@ def test_qwen_pure_backchannel_detection():
     assert _qwen_is_pure_backchannel("好的，帮我关灯。") is False
     assert _qwen_is_pure_backchannel("关闭顶灯。") is False
     assert _qwen_is_pure_backchannel("") is False
+
+
+def test_qwen_bare_wake_utterance_suppresses_duplicate_response():
+    # Regression: after a KWS hit the cloud ASR transcript of the same
+    # phrase (~1-2 s later) must not fire a second response.create.
+    assert _qwen_is_bare_wake_utterance("你好小白。") is True
+    assert _qwen_is_bare_wake_utterance("你好，小白") is True
+    assert _qwen_is_bare_wake_utterance("你好小孩。") is True
+    assert _qwen_is_bare_wake_utterance("你好小白，查一下天气") is False
+    assert _qwen_is_bare_wake_utterance("查询一下六八八的价格。") is False
+    assert _qwen_is_bare_wake_utterance("嗯。") is False
+    assert _qwen_is_bare_wake_utterance("") is False

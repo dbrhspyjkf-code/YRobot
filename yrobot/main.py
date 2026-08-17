@@ -314,6 +314,26 @@ _QWEN_BACKCHANNEL_TEXTS = frozenset(
 )
 
 
+def _qwen_is_bare_wake_utterance(transcript: str) -> bool:
+    """True when the whole utterance is just the wake word/alias.
+
+    The wake path already activated the session and requested the
+    greeting response. When the cloud ASR transcript of that same phrase
+    comes back (always ~1-2 s after a KWS hit), it must NOT trigger
+    another response.create: DashScope rejects it mid-stream ("Conversation
+    has none active response") and closes the session. Utterances like
+    "你好小白，查一下天气" still carry a request and stay eligible.
+    """
+    norm = _WAKE_STRIP_RE.sub("", transcript).casefold().strip()
+    if not norm:
+        return False
+    wake_norms = {
+        _WAKE_STRIP_RE.sub("", word).casefold().strip()
+        for word in (*WAKE_WORDS, *_WAKE_ASR_ALIASES)
+    }
+    return norm in wake_norms
+
+
 def _qwen_is_pure_backchannel(transcript: str) -> bool:
     """True when the whole utterance is just an acknowledgement.
 
@@ -1064,6 +1084,14 @@ class Yrobot(ReachyMiniApp):
                             # Pure acknowledgement (好/行/嗯): no model
                             # response, just a small nod.
                             choreo.play_move("nod")
+                        elif _qwen_is_bare_wake_utterance(transcript):
+                            # The wake path (KWS hit or cloud transcript
+                            # match) already activated the session, and its
+                            # response.create is streaming the greeting. A
+                            # second response.create for the bare wake-word
+                            # echo makes DashScope close the session
+                            # ("Conversation has none active response").
+                            pass
                         elif _qwen_should_request_response_after_local_control(
                             matched, command_matched
                         ):
