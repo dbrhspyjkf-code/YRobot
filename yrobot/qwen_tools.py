@@ -86,11 +86,13 @@ class ToolExecutor:
         opener: Any = urllib.request.urlopen,
         timeout: float = 5.0,
         volume_controller: Any | None = None,
+        emotion_player: Any | None = None,
     ) -> None:
         self.settings = settings
         self._opener = opener
         self._timeout = timeout
         self._volume_controller = volume_controller
+        self._emotion_player = emotion_player
         self._actions: dict[tuple[str, str], AllowedAction] = {}
         self._devices: dict[str, AllowedAction] = {}
         self._phrases: dict[str, tuple[str, str]] = {}
@@ -99,9 +101,8 @@ class ToolExecutor:
         self._last_spoken_at = 0.0
         self._load_whitelist()
 
-    @staticmethod
-    def schemas() -> list[dict[str, Any]]:
-        return [
+    def schemas(self) -> list[dict[str, Any]]:
+        schemas = [
             {
                 "type": "function",
                 "function": {
@@ -255,6 +256,28 @@ class ToolExecutor:
                 },
             },
         ]
+        if self._emotion_player is not None:
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "express_emotion",
+                        "description": "仅在回答明显带有情绪时，配合一次简短的机器人表情动作。普通回答不要调用；不要在设备控制、数字查询或严肃内容中调用。",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "emotion": {
+                                    "type": "string",
+                                    "enum": ["happy", "thinking", "surprised", "sad", "loving"],
+                                }
+                            },
+                            "required": ["emotion"],
+                            "additionalProperties": False,
+                        },
+                    },
+                }
+            )
+        return schemas
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         logger.info("tool call: %s args=%r", name, arguments)
@@ -269,6 +292,7 @@ class ToolExecutor:
             "remove_portfolio_stock": self._remove_portfolio_stock,
             "get_stock_advice": self._get_stock_advice,
             "control_sonos": self._control_sonos,
+            "express_emotion": self._express_emotion,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -281,6 +305,16 @@ class ToolExecutor:
                 message = message.replace(self.settings.ha_token, "[redacted]")
             result = {"ok": False, "error": message or type(exc).__name__}
         return self._bounded(result)
+
+    def _express_emotion(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        emotion = str(arguments.get("emotion") or "").strip().lower()
+        if emotion not in {"happy", "thinking", "surprised", "sad", "loving"}:
+            return {"ok": False, "error": "unsupported emotion"}
+        if self._emotion_player is None:
+            return {"ok": False, "error": "emotion playback unavailable"}
+        if not self._emotion_player(emotion):
+            return {"ok": False, "error": "emotion playback skipped"}
+        return {"ok": True, "emotion": emotion}
 
     def execute_spoken_control(
         self, transcript: str, *, now: float | None = None
@@ -660,6 +694,22 @@ class ToolExecutor:
             self._devices.setdefault(name, allowed)
             for phrase in self._control_phrases(item, name):
                 self._phrases.setdefault(phrase, (name, action))
+        # A verb-less utterance that merely mentions a device name (ASR
+        # garble like "配吸顶灯", or ambient speech naming the device) must
+        # never silently execute the first-registered action. When richer
+        # verb-qualified phrases exist for a device, drop its bare-name
+        # entry so such text falls through to the model path instead.
+        for name in {device for device, _action in self._phrases.values()}:
+            bare = self._normalize_phrase(name)
+            if not bare:
+                continue
+            has_verb_phrase = any(
+                phrase != bare and bare in phrase
+                for phrase, (device, _a) in self._phrases.items()
+                if device == name
+            )
+            if has_verb_phrase:
+                self._phrases.pop(bare, None)
 
     def _control_phrases(self, item: dict[str, Any], name: str) -> list[str]:
         phrases = item.get("phrases")
