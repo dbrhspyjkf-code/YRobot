@@ -352,6 +352,12 @@ _EMOTION_MOVE_GLOBAL_COOLDOWN_S = 12.0
 WAKE_WORDS = (
     "你好小白",
 )
+# Observed ASR mis-hearings of the wake phrase (cloud ASR often returns
+# 你好小孩 for 你好小白). Exact-match aliases: they wake the robot but do
+# NOT get the startswith(...) extension.
+_WAKE_ASR_ALIASES = (
+    "你好小孩",
+)
 
 _WAKE_STRIP_RE = re.compile(r"[，。！？：；!?,.:;\s、～~]")
 
@@ -368,6 +374,9 @@ def _wake_match(text: str) -> str | None:
     norm = _WAKE_STRIP_RE.sub("", text).casefold().strip()
     if not norm:
         return None
+    for alias in _WAKE_ASR_ALIASES:
+        if norm == _WAKE_STRIP_RE.sub("", alias).casefold().strip():
+            return alias
     for w in WAKE_WORDS:
         wn = _WAKE_STRIP_RE.sub("", w).casefold().strip()
         if not wn:
@@ -1423,18 +1432,16 @@ class Yrobot(ReachyMiniApp):
                 )
                 tts_active = False
                 tts_watchdog = TtsWatchdog()
-                _skip_audio_until = 0.0
                 # ── Wake word state ──────────────────────────────────
                 _waked = False
                 _wake_deadline = 0.0
-                _wake_at = 0.0  # discard stale TTS from before wake
                 idle_show_last_activity = [time.monotonic()]
                 idle_show_last_fire = [time.monotonic()]
                 WAKE_TIMEOUT = _GATE_WAKE_TIMEOUT  # env YROBOT_WAKE_TIMEOUT_S
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
-                    nonlocal _waked, _wake_deadline, _wake_at, _skip_audio_until
+                    nonlocal _waked, _wake_deadline
                     while not stop_event.is_set():
                         try:
                             raw = await ws.recv()
@@ -1442,8 +1449,6 @@ class Yrobot(ReachyMiniApp):
                             continue
                         if isinstance(raw, bytes):
                             if not _waked:
-                                continue
-                            if _skip_audio_until > 0 and time.time() < _skip_audio_until:
                                 continue
                             tts_packets += 1
                             tts_watchdog.packet()
@@ -1514,12 +1519,9 @@ class Yrobot(ReachyMiniApp):
                                     _force = open("/tmp/yrobot_force_wake").read().strip() == "1"
                                 except Exception:
                                     pass
-                                text_lower = text.lower()
                                 if _force or _wake_match(text):
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
-                                    if not _force:
-                                        _wake_at = time.time()  # only gate stale for real wake
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                     idle_show_last_activity[0] = time.monotonic()
@@ -1530,14 +1532,11 @@ class Yrobot(ReachyMiniApp):
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
                                     continue
-                                now_ts = time.time()
-                                if _wake_at > 0 and now_ts - _wake_at < 1.5:
-                                    logger.info(
-                                        "xz tts start ignored (stale, %.1fs post-wake)",
-                                        now_ts - _wake_at,
-                                    )
-                                    _skip_audio_until = now_ts + 1.5
-                                    continue
+                                # The server's reply to the wake phrase (its
+                                # greeting / 我在 acknowledgement) must PLAY:
+                                # silence after a successful wake reads as a
+                                # dead mic. Ambient-conversation protection is
+                                # the not-waked gate above.
                                 logger.info("xz tts start")
                                 tts_active = True
                                 tracker.set_robot_speaking(True)  # echo guard
