@@ -1097,6 +1097,14 @@ class Yrobot(ReachyMiniApp):
                                 gate.observe_transcript(hit)
                                 wake_greetings.begin_wake()
                                 RUNTIME_HEALTH.update(wake_active=True)
+                                # Mirror the transcript-wake path exactly:
+                                # feedback, head tracking, and the session
+                                # activation (manual turn mode + response
+                                # request) so the conversation actually
+                                # starts.
+                                choreo.play_move("nod")
+                                tracker.set_conversation_active(True)
+                                asyncio.create_task(activate_from_wake())
                                 logger.info("KWS wake detected: %r", hit)
                         except Exception as exc:  # noqa: BLE001
                             logger.debug("kws wake feed failed: %s", exc)
