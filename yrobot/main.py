@@ -290,6 +290,41 @@ def _qwen_device_intent(transcript: str) -> bool:
     return any(action in text for action in _QWEN_DEVICE_INTENT_ACTIONS)
 
 
+_QWEN_BACKCHANNEL_TEXTS = frozenset(
+    {
+        "好",
+        "好的",
+        "好呀",
+        "好啦",
+        "好的呀",
+        "行",
+        "行吧",
+        "嗯",
+        "嗯嗯",
+        "哦",
+        "噢",
+        "对",
+        "是的",
+        "没事",
+        "没事了",
+        "算了",
+        "ok",
+        "okay",
+    }
+)
+
+
+def _qwen_is_pure_backchannel(transcript: str) -> bool:
+    """True when the whole utterance is just an acknowledgement.
+
+    Replying “我在呢，有什么事吗？” to the user's own “好。” after a
+    completed device action is noise: these turns get a nod instead of a
+    model response.
+    """
+    text = "".join(ch for ch in transcript.casefold() if ch.isalnum())
+    return text in _QWEN_BACKCHANNEL_TEXTS
+
+
 def _qwen_wants_visual_snapshot(transcript: str) -> bool:
     text = transcript.replace(" ", "")
     return any(
@@ -1025,7 +1060,11 @@ class Yrobot(ReachyMiniApp):
                         command_matched = False
                         if not matched and wav_bytes:
                             command_matched = await execute_command_recognizer(wav_bytes)
-                        if _qwen_should_request_response_after_local_control(
+                        if _qwen_is_pure_backchannel(transcript):
+                            # Pure acknowledgement (好/行/嗯): no model
+                            # response, just a small nod.
+                            choreo.play_move("nod")
+                        elif _qwen_should_request_response_after_local_control(
                             matched, command_matched
                         ):
                             if _qwen_device_intent(transcript):

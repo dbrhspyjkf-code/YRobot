@@ -22,6 +22,7 @@ from yrobot.main import (
     _qwen_should_resume_wake_after_reconnect,
     _qwen_wants_visual_snapshot,
     _qwen_device_intent,
+    _qwen_is_pure_backchannel,
 )
 
 
@@ -370,3 +371,14 @@ def test_qwen_device_intent_ignores_chatter():
     assert _qwen_device_intent("哈哈，你心情不错") is False
     assert _qwen_device_intent("今天天气怎么样") is False
     assert _qwen_device_intent("一起。") is False
+
+
+def test_qwen_pure_backchannel_detection():
+    assert _qwen_is_pure_backchannel("好。") is True
+    assert _qwen_is_pure_backchannel("好的") is True
+    assert _qwen_is_pure_backchannel("行。") is True
+    assert _qwen_is_pure_backchannel("嗯嗯。") is True
+    assert _qwen_is_pure_backchannel("没事了，不聊了。") is False
+    assert _qwen_is_pure_backchannel("好的，帮我关灯。") is False
+    assert _qwen_is_pure_backchannel("关闭顶灯。") is False
+    assert _qwen_is_pure_backchannel("") is False
