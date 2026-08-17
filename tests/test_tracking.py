@@ -20,42 +20,27 @@ def test_speaker_tracker_accepts_shared_camera_streamer():
     assert tracker._camera_streamer.latest() == b"jpeg"
 
 
-# ── Face-led gaze during conversation (official-app face-anchor parity) ─────
+# ── Face-led gaze during conversation (official-app positioning parity) ────
 
-def test_visual_leads_when_doa_silent_and_conversation_active():
+def test_face_leads_whenever_conversation_active():
     from yrobot.tracking import visual_gaze_should_lead
 
-    assert visual_gaze_should_lead(
-        face_age_s=0.2, last_doa_age_s=None, conversation_active=True
-    )
-    # DoA went stale (robot speaking, user quiet) -> face takes over
-    assert visual_gaze_should_lead(
-        face_age_s=0.2, last_doa_age_s=2.0, conversation_active=True
-    )
+    # Official-style positioning: a fresh face lock IS the target, no matter
+    # what the audio DoA is doing (it may even be chasing TTS echo).
+    assert visual_gaze_should_lead(face_age_s=0.2, conversation_active=True)
+    assert visual_gaze_should_lead(face_age_s=0.9, conversation_active=True)
 
 
-def test_visual_never_leads_when_conversation_inactive():
+def test_face_never_leads_when_conversation_inactive():
     from yrobot.tracking import visual_gaze_should_lead
 
-    assert not visual_gaze_should_lead(
-        face_age_s=0.2, last_doa_age_s=None, conversation_active=False
-    )
+    assert not visual_gaze_should_lead(face_age_s=0.2, conversation_active=False)
 
 
-def test_visual_yields_to_fresh_doa():
+def test_face_leads_requires_fresh_face():
     from yrobot.tracking import visual_gaze_should_lead
 
-    assert not visual_gaze_should_lead(
-        face_age_s=0.2, last_doa_age_s=0.5, conversation_active=True
-    )
-
-
-def test_visual_leads_requires_fresh_face():
-    from yrobot.tracking import visual_gaze_should_lead
-
-    assert not visual_gaze_should_lead(
-        face_age_s=2.0, last_doa_age_s=None, conversation_active=True
-    )
+    assert not visual_gaze_should_lead(face_age_s=2.0, conversation_active=True)
 
 
 class _GazeRecorderChoreo:
@@ -65,27 +50,80 @@ class _GazeRecorderChoreo:
     def set_gaze_target(self, world_yaw, now=None, source="audio"):
         self.targets.append((world_yaw, source))
 
+    def set_tracking_debug(self, **kwargs):
+        pass
+
 
 def test_face_loop_publishes_face_gaze_during_conversation():
-    """End-to-end-ish: with conversation active and DoA silent, a locked face
-    publishes source='face' gaze targets (the official-app face anchor)."""
-    import time as _time
-
+    """With conversation active, a locked face publishes source='face' gaze
+    targets (official-app positioning: the face IS the target)."""
     from yrobot.tracking import SpeakerTracker
 
     choreo = _GazeRecorderChoreo()
     tracker = SpeakerTracker(object(), choreo)
     tracker.set_conversation_active(True)
 
-    # Simulate the face-loop publishing path directly (Haar excluded here).
     tracker._publish_face_gaze(math.radians(25.0))
     tracker._publish_face_gaze(math.radians(26.0))  # within deadband: ignored
     tracker._publish_face_gaze(math.radians(45.0))
 
-    sources = [s for _, s in choreo.targets]
+    sources = [src for _, src in choreo.targets]
     assert sources == ["face", "face"]
     assert choreo.targets[0][0] == pytest.approx(math.radians(25.0))
     assert choreo.targets[-1][0] == pytest.approx(math.radians(45.0))
+
+
+def test_doa_path_yields_to_fresh_face_lock():
+    """While a face is locked, the DoA callback publishes the face yaw
+    directly instead of blending audio toward the speaker echo."""
+    import time as _time
+
+    from yrobot.tracking import SpeakerTracker
+
+    choreo = _GazeRecorderChoreo()
+    tracker = SpeakerTracker(object(), choreo)
+
+    tracker._visual_gaze[0] = (math.radians(40.0), _time.time())
+    tracker._set_speaker_gaze(math.radians(-170.0))  # TTS-echo-style garbage
+
+    assert len(choreo.targets) == 1
+    yaw, source = choreo.targets[0]
+    assert source == "face"
+    assert yaw == pytest.approx(math.radians(40.0))
+
+
+def test_doa_path_audio_only_without_face():
+    import time as _time
+
+    from yrobot.tracking import SpeakerTracker
+
+    choreo = _GazeRecorderChoreo()
+    tracker = SpeakerTracker(object(), choreo)
+    tracker._visual_gaze[0] = None
+
+    tracker._set_speaker_gaze(math.radians(30.0))
+
+    yaw, source = choreo.targets[0]
+    assert source == "audio"
+    assert yaw == pytest.approx(math.radians(30.0))
+
+
+def test_doa_muted_while_robot_speaking():
+    """TTS echo must never open the DoA gate (the head chased its own
+    speaker around the room when VAD mistook echo for user speech)."""
+    from yrobot.tracking import SpeakerTracker
+
+    tracker = SpeakerTracker(object(), _GazeRecorderChoreo())
+
+    tracker.set_user_speaking(True)
+    assert tracker._doa_active() is True
+
+    tracker.set_robot_speaking(True)
+    assert tracker._doa_active() is False  # echo guard
+
+    tracker.set_robot_speaking(False)
+    tracker.set_user_speaking(False)
+    assert tracker._doa_active() is False
 
 
 def test_face_loop_silent_when_conversation_inactive():
