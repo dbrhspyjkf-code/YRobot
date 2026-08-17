@@ -19,6 +19,7 @@ const chatMiniEntries = document.getElementById("chat-mini-entries");
 const backendButtons = Array.from(document.querySelectorAll("[data-backend]"));
 const backendStatus = document.getElementById("backend-status");
 const backendDetail = document.getElementById("backend-detail");
+const voiceSection = document.getElementById("voice-section");
 const voiceSelect = document.getElementById("voice-select");
 const voicePreview = document.getElementById("voice-preview");
 const voiceDetail = document.getElementById("voice-detail");
@@ -84,6 +85,15 @@ function stateText(enabled, configured = true) {
   return configured ? "已启用" : "未配置";
 }
 
+function renderVoiceSectionVisibility(configuredBackend) {
+  // The voice picker drives DashScope realtime voices (/api/conversation/voice*),
+  // which only exist under QWEN. Hide the dead UI under XIAOZHI.
+  const visible = configuredBackend === "qwen";
+  const wasHidden = voiceSection.classList.contains("hidden");
+  voiceSection.classList.toggle("hidden", !visible);
+  if (visible && wasHidden) loadVoice();
+}
+
 function renderFacePanelVisibility(configuredBackend) {
   // Face recognition only runs inside QWEN sessions (monitor_face_identity
   // in main.py). Under XIAOZHI the recognition never fires, so keep the
@@ -106,6 +116,7 @@ function renderBackend(data) {
     ? `连接失败：${data.error}`
     : `当前配置 ${configured.toUpperCase()} · 连接 ${data.connection_state || "未知"}`;
   renderFacePanelVisibility(configured);
+  renderVoiceSectionVisibility(configured);
 }
 
 async function loadBackend() {
@@ -136,6 +147,7 @@ async function saveBackend(button) {
     backendDetail.textContent = `已保存 ${data.configured_backend.toUpperCase()}，重启后生效。`;
     restartBanner.classList.remove("hidden");
     renderFacePanelVisibility(data.configured_backend);
+    renderVoiceSectionVisibility(data.configured_backend);
   } catch (error) {
     backendDetail.textContent = `保存失败：${error.message}`;
   } finally {
@@ -165,6 +177,7 @@ function renderVoice(data) {
 }
 
 async function loadVoice() {
+  if (voiceSection.classList.contains("hidden")) return;
   try {
     const response = await fetch("/api/conversation/voice", { cache: "no-store" });
     const data = await response.json();
