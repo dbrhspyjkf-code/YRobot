@@ -1170,8 +1170,10 @@ class Yrobot(ReachyMiniApp):
                     # same mic chunk. On a hit, open the WakeGate window
                     # (observe_transcript matches the WAKE_WORDS list) so
                     # the audio uplink below starts forwarding to QWEN.
+                    kws_chunks_fed = 0
                     if kws_detector is not None and not gate.active:
                         try:
+                            kws_chunks_fed += 1
                             hit = kws_detector.feed(pcm_int16)
                             if hit:
                                 gate.observe_transcript(hit)
@@ -1186,8 +1188,16 @@ class Yrobot(ReachyMiniApp):
                                 tracker.set_conversation_active(True)
                                 asyncio.create_task(activate_from_wake())
                                 logger.info("KWS wake detected: %r", hit)
+                            elif kws_chunks_fed % 1000 == 0:
+                                # Heartbeat: proves the feed loop is alive
+                                # even while the detector stays silent.
+                                logger.info(
+                                    "KWS alive: %d chunks fed (~%.0fs of audio)",
+                                    kws_chunks_fed,
+                                    kws_chunks_fed * 0.06,
+                                )
                         except Exception as exc:  # noqa: BLE001
-                            logger.debug("kws wake feed failed: %s", exc)
+                            logger.warning("kws wake feed failed: %s", exc)
                     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
                     rms = float(np.sqrt(np.mean(np.square(samples))))
                     _publish_dashboard_mic(rms / 32768.0)
