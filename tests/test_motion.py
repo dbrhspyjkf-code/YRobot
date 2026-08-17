@@ -299,3 +299,17 @@ def test_compose_idle_antennas_reach_official_amplitude():
             samples.append(antennas[0] - choreo.ANTENNA_NEUTRAL)
     peak = max(abs(v) for v in samples)
     assert peak >= 0.15, peak  # official app reaches ~0.26 rad per side
+
+
+def test_sync_gaze_sets_spring_position_and_target():
+    """Anchoring must move the spring pos to the daemon pose, not just the
+    target - otherwise the composed pose snaps from a stale position."""
+    choreo = Choreographer(mini=object())
+    choreo._gaze.pos = -1.2  # stale position from before daemon tracking
+
+    choreo.sync_gaze(0.4)
+    for _ in range(50):
+        choreo._apply_commands()
+
+    assert choreo._gaze.pos == pytest.approx(0.4)
+    assert choreo._gaze.target == pytest.approx(0.4)
