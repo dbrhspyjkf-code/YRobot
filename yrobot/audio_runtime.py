@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import subprocess
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -16,7 +17,9 @@ WAKE_PREFIX_ALIASES = ("你把",)
 WAKE_SUFFIX_BY_PREFIX = {
     "你把": ("行",),
 }
-WAKE_TIMEOUT = 60.0
+# Idle window before the conversation closes and the speaker mutes.
+# Configurable via YROBOT_WAKE_TIMEOUT_S (seconds, min 30).
+WAKE_TIMEOUT = max(30.0, float(os.environ.get("YROBOT_WAKE_TIMEOUT_S", "120")))
 WAKE_PREFIX_TIMEOUT = 8.0
 
 

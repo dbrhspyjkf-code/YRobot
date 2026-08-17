@@ -34,6 +34,7 @@ from yrobot.app_config import (
     volume_controller_singleton,
 )
 from yrobot.audio import apply_audio_startup_config
+from yrobot.audio_runtime import WAKE_TIMEOUT as _GATE_WAKE_TIMEOUT
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.qwen_emotion import (
@@ -1403,7 +1404,7 @@ class Yrobot(ReachyMiniApp):
                     "嘿",
                     "Hello Reachy",
                 )
-                WAKE_TIMEOUT = 60.0  # reset on every speech burst
+                WAKE_TIMEOUT = _GATE_WAKE_TIMEOUT  # env YROBOT_WAKE_TIMEOUT_S
 
                 async def recv():
                     nonlocal tts_active, _tts_start_at, tts_packets, tts_decode_errors
@@ -1603,7 +1604,12 @@ class Yrobot(ReachyMiniApp):
                                     raise _XiaozhiReconnect(str(recv_error)) from recv_error
                                 raise RuntimeError("xiaozhi receive task failed") from recv_error
                             raise RuntimeError("xiaozhi receive task ended unexpectedly")
-                        # Auto-expire wake after conversation timeout.
+                        # Auto-expire wake after conversation timeout; the
+                        # robot speaking keeps the session alive (deadline
+                        # refreshed while TTS plays so long replies are never
+                        # cut off mid-sentence).
+                        if _waked and tts_active:
+                            _wake_deadline = time.time() + WAKE_TIMEOUT
                         if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
                             _waked = False
                             logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
