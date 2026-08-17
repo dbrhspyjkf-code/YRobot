@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import random
+import re
 import threading
 import time
 import wave
@@ -342,6 +343,46 @@ _LLM_EMOTION_NOISE = frozenset({"", "happy", "neutral", "none", "ok", "normal"})
 # Minimum gap between any two emotion-triggered moves, so multi-sentence
 # replies do not machine-gun gestures.
 _EMOTION_MOVE_GLOBAL_COOLDOWN_S = 12.0
+
+
+# Wake phrases for the xiaozhi session. Strict matching (_wake_match):
+# the whole utterance must equal a phrase (after punctuation stripping),
+# or start with the canonical "你好小白…" address. Bare interjections
+# like "嘿" are deliberately absent: ambient conversation must not wake
+# the robot through substrings.
+WAKE_WORDS = (
+    "你好小白",
+    "小白",
+    "阿皮",
+    "reachy",
+    "hey reachy",
+    "hello reachy",
+)
+
+_WAKE_STRIP_RE = re.compile(r"[，。！？：；!?,.:;\s、～~]")
+
+
+def _wake_match(text: str) -> str | None:
+    """Strict wake-phrase match that ignores ambient conversation.
+
+    Ambient speech must never wake the robot just because it happens to
+    contain a wake-word substring (field report: "我要小白。" in background
+    conversation woke it). After stripping punctuation/whitespace the whole
+    utterance must equal a wake phrase, or start with the canonical address
+    "你好小白…" followed by an actual request.
+    """
+    norm = _WAKE_STRIP_RE.sub("", text).casefold().strip()
+    if not norm:
+        return None
+    for w in WAKE_WORDS:
+        wn = _WAKE_STRIP_RE.sub("", w).casefold().strip()
+        if not wn:
+            continue
+        if norm == wn:
+            return w
+        if wn == "你好小白" and norm.startswith(wn):
+            return w
+    return None
 
 
 def _handle_xiaozhi_emotion(
@@ -1395,15 +1436,6 @@ class Yrobot(ReachyMiniApp):
                 _wake_at = 0.0  # discard stale TTS from before wake
                 idle_show_last_activity = [time.monotonic()]
                 idle_show_last_fire = [time.monotonic()]
-                WAKE_WORDS = (
-                    "你好小白",
-                    "小白",
-                    "阿皮",
-                    "reachy",
-                    "hey reachy",
-                    "嘿",
-                    "Hello Reachy",
-                )
                 WAKE_TIMEOUT = _GATE_WAKE_TIMEOUT  # env YROBOT_WAKE_TIMEOUT_S
 
                 async def recv():
@@ -1489,7 +1521,7 @@ class Yrobot(ReachyMiniApp):
                                 except Exception:
                                     pass
                                 text_lower = text.lower()
-                                if _force or any(w.lower() in text_lower for w in WAKE_WORDS):
+                                if _force or _wake_match(text):
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
                                     if not _force:
