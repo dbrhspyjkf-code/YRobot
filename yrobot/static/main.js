@@ -41,6 +41,7 @@ const cameraImage = document.getElementById("camera-image");
 const cameraPlaceholder = document.getElementById("camera-placeholder");
 const cameraStatus = document.getElementById("camera-status");
 const cameraMeta = document.getElementById("camera-meta");
+const facePanel = document.getElementById("face-panel");
 const faceName = document.getElementById("face-name");
 const faceRegister = document.getElementById("face-register");
 const faceRefresh = document.getElementById("face-refresh");
@@ -83,6 +84,16 @@ function stateText(enabled, configured = true) {
   return configured ? "已启用" : "未配置";
 }
 
+function renderFacePanelVisibility(configuredBackend) {
+  // Face recognition only runs inside QWEN sessions (monitor_face_identity
+  // in main.py). Under XIAOZHI the recognition never fires, so keep the
+  // panel hidden instead of showing a dead "当前识别" area.
+  const visible = configuredBackend === "qwen";
+  const wasHidden = facePanel.classList.contains("hidden");
+  facePanel.classList.toggle("hidden", !visible);
+  if (visible && wasHidden) loadFaces();
+}
+
 function renderBackend(data) {
   const configured = data.configured_backend;
   const running = data.running_backend;
@@ -94,6 +105,7 @@ function renderBackend(data) {
   backendDetail.textContent = data.error
     ? `连接失败：${data.error}`
     : `当前配置 ${configured.toUpperCase()} · 连接 ${data.connection_state || "未知"}`;
+  renderFacePanelVisibility(configured);
 }
 
 async function loadBackend() {
@@ -123,6 +135,7 @@ async function saveBackend(button) {
     }
     backendDetail.textContent = `已保存 ${data.configured_backend.toUpperCase()}，重启后生效。`;
     restartBanner.classList.remove("hidden");
+    renderFacePanelVisibility(data.configured_backend);
   } catch (error) {
     backendDetail.textContent = `保存失败：${error.message}`;
   } finally {
@@ -990,6 +1003,7 @@ function faceSeenLabel(lastSeen) {
 }
 
 async function loadFaces() {
+  if (facePanel.classList.contains("hidden")) return;
   try {
     const response = await fetch("/api/face", { cache: "no-store" });
     if (!response.ok) throw new Error("读取失败");
