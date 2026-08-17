@@ -172,8 +172,15 @@ class _DaemonTrackingRobot:
 
 
 class _YawChoreo(_GazeRecorderChoreo):
+    def __init__(self):
+        super().__init__()
+        self.synced = []
+
     def current_yaw(self):
         return 0.0
+
+    def sync_gaze(self, world_yaw):
+        self.synced.append(world_yaw)
 
 
 def test_conversation_start_enables_daemon_tracking():
@@ -217,10 +224,9 @@ def test_speech_pauses_tracking_with_anchor_when_face_locked():
 
     assert ("face", True) in robot.calls
     assert ("start", 0.0) in robot.calls
-    # Anchor: gaze holds exactly where the daemon left the head.
-    yaw, source = choreo.targets[-1]
-    assert source == "anchor"
-    assert yaw == pytest.approx(0.3)
+    # Anchor: the gaze spring POSITION syncs to the daemon's exact head
+    # pose so the handoff never snaps.
+    assert choreo.synced == [pytest.approx(0.3)]
 
 
 def test_speech_keeps_tracking_when_no_face_locked():

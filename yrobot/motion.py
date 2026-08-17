@@ -524,6 +524,13 @@ class Choreographer(threading.Thread):
                 with self._status_lock:
                     self._gaze_source = str(source)
                     self._gaze_target_updated_at = time.time()
+            elif command == "sync_gaze":
+                target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(float(payload))))
+                self._gaze.target = target
+                self._gaze.pos = target
+                self._last_voice_at = time.monotonic()
+                with self._status_lock:
+                    self._gaze_source = "anchor"
             elif command == "hold_still":
                 self._still_until = max(self._still_until, float(payload))
             elif command == "release_still":
@@ -567,6 +574,15 @@ class Choreographer(threading.Thread):
         target = max(-self.YAW_LIMIT, min(self.YAW_LIMIT, _wrap(world_yaw)))
         voice_at = time.monotonic() if now is None else now
         self._enqueue_command("set_gaze_target", (target, voice_at, source))
+
+    def sync_gaze(self, world_yaw: float) -> None:
+        """Snap the gaze spring (position AND target) to a world yaw.
+
+        Used when taking the head over from daemon-side tracking: the
+        composed pose must continue from the daemon's exact pose, not sweep
+        in from the last local position (which reads as a head twitch).
+        """
+        self._enqueue_command("sync_gaze", float(world_yaw))
 
     def set_tracking_debug(
         self,

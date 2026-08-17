@@ -129,10 +129,9 @@ class SpeakerTracker:
             if speaking:
                 face = self.reachy_mini.get_tracked_face(wait=False)
                 if face is not None and face.detected:
-                    # Anchor: hold exactly where the daemon left the head.
-                    self.choreo.set_gaze_target(
-                        self._current_head_yaw(), source="anchor"
-                    )
+                    # Anchor: sync the gaze spring position to the daemon's
+                    # exact head pose so the handoff never snaps.
+                    self.choreo.sync_gaze(self._current_head_yaw())
                     self.reachy_mini.start_head_tracking(weight=0.0)
                     logger.info("speaking handoff: anchored + tracking paused")
                 else:
@@ -261,6 +260,8 @@ class SpeakerTracker:
     # ── Internal: face tracker thread ──────────────────────────────────────
     def _poll_daemon_face(self) -> None:
         """Log daemon face-lock state transitions (field diagnostics)."""
+        if self._robot_speaking[0]:
+            return  # tracking paused while speaking: detection is off too
         try:
             face = self.reachy_mini.get_tracked_face(wait=False)
         except Exception:
