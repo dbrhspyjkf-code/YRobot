@@ -36,3 +36,12 @@ def test_ambient_conversation_never_wakes():
 def test_empty_is_none():
     assert _wake_match("") is None
     assert _wake_match("。。。") is None
+
+
+def test_asr_mishearing_alias_wakes():
+    # Cloud ASR often returns 你好小孩 for 你好小白 (observed in field log).
+    assert _wake_match("你好小孩。") is not None
+
+
+def test_asr_alias_is_exact_only():
+    assert _wake_match("你好小孩真可爱。") is None
