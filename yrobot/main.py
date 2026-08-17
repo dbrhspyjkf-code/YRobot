@@ -263,6 +263,32 @@ def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
     return gate.active
 
 
+_QWEN_DEVICE_INTENT_ACTIONS = (
+    "打开",
+    "关闭",
+    "关掉",
+    "关上",
+    "开一下",
+    "开灯",
+    "关灯",
+    "调高",
+    "调低",
+    "调到",
+    "切换",
+)
+
+
+def _qwen_device_intent(transcript: str) -> bool:
+    """Detect a device-control attempt in a transcript.
+
+    Used after the local spoken-control parser fails to match: those turns
+    must inject the truth (nothing was executed) instead of letting the
+    model fabricate a “好的，已关闭” reply for an unmatched device name.
+    """
+    text = transcript.replace(" ", "")
+    return any(action in text for action in _QWEN_DEVICE_INTENT_ACTIONS)
+
+
 def _qwen_wants_visual_snapshot(transcript: str) -> bool:
     text = transcript.replace(" ", "")
     return any(
@@ -1001,7 +1027,21 @@ class Yrobot(ReachyMiniApp):
                         if _qwen_should_request_response_after_local_control(
                             matched, command_matched
                         ):
-                            await client.request_response()
+                            if _qwen_device_intent(transcript):
+                                # The local deterministic parser found nothing:
+                                # nothing was executed. Inject the truth so the
+                                # model cannot fabricate a success reply, and
+                                # point it at its own function tool for fuzzy
+                                # device names (e.g. 省灯 -> 吸顶灯).
+                                await client.cancel_and_inject(
+                                    "[system] 用户的这句话没有匹配到任何本地设备"
+                                    "指令，没有任何设备操作被执行过。禁止声称已"
+                                    "执行。如果你想帮用户控制设备，请调用 "
+                                    "control_allowed_device 工具（可以自行推断"
+                                    "用户想说的设备名）；否则请如实说明没听清。"
+                                )
+                            else:
+                                await client.request_response()
 
                     asyncio.create_task(_run_spoken_control())
 
