@@ -21,6 +21,7 @@ from yrobot.main import (
     _qwen_should_reconnect,
     _qwen_should_resume_wake_after_reconnect,
     _qwen_wants_visual_snapshot,
+    _qwen_device_intent,
 )
 
 
@@ -354,3 +355,18 @@ def test_qwen_vad_default_is_not_overly_aggressive():
     from yrobot.audio import get_vad_rms_min
 
     assert get_vad_rms_min() == 0.065
+
+
+def test_qwen_device_intent_flags_control_attempts():
+    assert _qwen_device_intent("关闭省灯。") is True
+    assert _qwen_device_intent("打开顶灯。") is True
+    assert _qwen_device_intent("关闭系统。") is True
+    assert _qwen_device_intent("帮我关一下灯") is True
+    assert _qwen_device_intent("把音量调高一点") is True
+
+
+def test_qwen_device_intent_ignores_chatter():
+    assert _qwen_device_intent("拍视频。") is False
+    assert _qwen_device_intent("哈哈，你心情不错") is False
+    assert _qwen_device_intent("今天天气怎么样") is False
+    assert _qwen_device_intent("一起。") is False
