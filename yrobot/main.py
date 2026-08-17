@@ -345,18 +345,12 @@ _LLM_EMOTION_NOISE = frozenset({"", "happy", "neutral", "none", "ok", "normal"})
 _EMOTION_MOVE_GLOBAL_COOLDOWN_S = 12.0
 
 
-# Wake phrases for the xiaozhi session. Strict matching (_wake_match):
-# the whole utterance must equal a phrase (after punctuation stripping),
-# or start with the canonical "你好小白…" address. Bare interjections
-# like "嘿" are deliberately absent: ambient conversation must not wake
-# the robot through substrings.
+# Wake phrase for the xiaozhi session (user directive 2026-08-17: ONLY
+# 你好小白). Strict matching (_wake_match): the whole utterance must equal
+# the phrase (after punctuation stripping), or start with 你好小白 followed
+# by an actual request. Ambient conversation must never wake the robot.
 WAKE_WORDS = (
     "你好小白",
-    "小白",
-    "阿皮",
-    "reachy",
-    "hey reachy",
-    "hello reachy",
 )
 
 _WAKE_STRIP_RE = re.compile(r"[，。！？：；!?,.:;\s、～~]")
