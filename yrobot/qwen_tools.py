@@ -25,6 +25,9 @@ VERIFIED_HERMES_IOS_API = "http://192.168.1.200:8900"   # hermes-mcp-xiaozhi iOS
 #   control_smart_home / control_vacuum - generic device control must
 #     stay whitelist-bound via control_allowed_device (HA path),
 #   call_hermes_async_with_speak - meta tool (arbitrary nested calls).
+# Dropped per user decision 2026-08-17 (not wanted on the robot):
+#   send_email, add_note, add_reminder, add_calendar_event,
+#   analyze_image, query_taobao_orders, query_chat_history.
 # Every entry: (name, description, prompt description | None, required)
 _HERMES_TOOL_SPECS: tuple[tuple[str, str, str | None, bool], ...] = (
     (
@@ -38,30 +41,6 @@ _HERMES_TOOL_SPECS: tuple[tuple[str, str, str | None, bool], ...] = (
         "查询未读邮件摘要。",
         None,
         False,
-    ),
-    (
-        "send_email",
-        "发送邮件。调用前必须先向用户复述收件人、主题和正文要点，得到用户明确确认后才能调用。",
-        "完整描述：收件人、主题、正文内容",
-        True,
-    ),
-    (
-        "add_note",
-        "添加一条笔记。",
-        "笔记内容",
-        True,
-    ),
-    (
-        "add_reminder",
-        "添加一条提醒。",
-        "提醒内容与时间，如「明天上午9点提醒我吃药」",
-        True,
-    ),
-    (
-        "add_calendar_event",
-        "添加日程到日历。",
-        "事件名与时间，如「周三下午3点牙医」",
-        True,
     ),
     (
         "query_calendar_events",
@@ -98,24 +77,6 @@ _HERMES_TOOL_SPECS: tuple[tuple[str, str, str | None, bool], ...] = (
         "查询融资融券数据。",
         "股票名称或代码，如「查询688018融资融券」",
         True,
-    ),
-    (
-        "query_chat_history",
-        "查询与 Hermes 助手的历史对话。",
-        "可选：关键词或日期，空则最近会话",
-        False,
-    ),
-    (
-        "query_taobao_orders",
-        "查询淘宝订单。",
-        "可选：订单状态或关键词过滤",
-        False,
-    ),
-    (
-        "analyze_image",
-        "分析服务端最近的一张图片。",
-        "可选：针对图片的具体问题",
-        False,
     ),
 )
 MAX_RESULT_BYTES = 4096

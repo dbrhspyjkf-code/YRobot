@@ -100,18 +100,24 @@ def test_schemas_expose_hermes_registry_only_when_enabled(tmp_path):
         "control_sonos",
         "web_search",
         "check_unread_emails",
-        "send_email",
         "query_calendar_events",
         "query_3d_printer",
-        "analyze_image",
     ):
         assert expected in names
     # Generic device control / meta tools must never be exposed to the
     # model: they would bypass the HA whitelist (immutable #8/#9).
+    # The write/personal set was dropped per user decision 2026-08-17.
     for forbidden in (
         "control_smart_home",
         "control_vacuum",
         "call_hermes_async_with_speak",
+        "send_email",
+        "add_note",
+        "add_reminder",
+        "add_calendar_event",
+        "analyze_image",
+        "query_taobao_orders",
+        "query_chat_history",
     ):
         assert forbidden not in names
 
