@@ -134,6 +134,9 @@ class SpeakerTracker:
                         self._current_head_yaw(), source="anchor"
                     )
                     self.reachy_mini.start_head_tracking(weight=0.0)
+                    logger.info("speaking handoff: anchored + tracking paused")
+                else:
+                    logger.info("speaking handoff: no face lock, tracking keeps acquiring")
             else:
                 if self._daemon_tracking[0]:
                     self.reachy_mini.start_head_tracking(weight=1.0)
@@ -256,6 +259,18 @@ class SpeakerTracker:
         self.choreo.set_gaze_target(world_yaw, source="face")
 
     # ── Internal: face tracker thread ──────────────────────────────────────
+    def _poll_daemon_face(self) -> None:
+        """Log daemon face-lock state transitions (field diagnostics)."""
+        try:
+            face = self.reachy_mini.get_tracked_face(wait=False)
+        except Exception:
+            return
+        detected = bool(face is not None and face.detected)
+        prev = getattr(self, "_daemon_face_detected", None)
+        if detected != prev:
+            self._daemon_face_detected = detected
+            logger.info("daemon face lock: %s", "acquired" if detected else "lost")
+
     def _face_tracker_loop(self) -> None:
         try:
             import cv2
@@ -271,6 +286,13 @@ class SpeakerTracker:
 
         while not self._face_stop.is_set():
             try:
+                # Daemon-side tracking owns the head during a conversation;
+                # local Haar is pointless then. Poll the daemon lock state at
+                # 1 Hz for field visibility instead.
+                if self._conversation_active[0] and self._daemon_tracking[0]:
+                    self._poll_daemon_face()
+                    self._face_stop.wait(1.0)
+                    continue
                 if self._camera_streamer is None:
                     self._face_stop.wait(0.5)
                     continue
