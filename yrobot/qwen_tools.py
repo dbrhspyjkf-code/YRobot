@@ -694,6 +694,22 @@ class ToolExecutor:
             self._devices.setdefault(name, allowed)
             for phrase in self._control_phrases(item, name):
                 self._phrases.setdefault(phrase, (name, action))
+        # A verb-less utterance that merely mentions a device name (ASR
+        # garble like "配吸顶灯", or ambient speech naming the device) must
+        # never silently execute the first-registered action. When richer
+        # verb-qualified phrases exist for a device, drop its bare-name
+        # entry so such text falls through to the model path instead.
+        for name in {device for device, _action in self._phrases.values()}:
+            bare = self._normalize_phrase(name)
+            if not bare:
+                continue
+            has_verb_phrase = any(
+                phrase != bare and bare in phrase
+                for phrase, (device, _a) in self._phrases.items()
+                if device == name
+            )
+            if has_verb_phrase:
+                self._phrases.pop(bare, None)
 
     def _control_phrases(self, item: dict[str, Any], name: str) -> list[str]:
         phrases = item.get("phrases")

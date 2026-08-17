@@ -272,6 +272,46 @@ def test_spoken_control_ignores_unknown_phrase_before_network(tmp_path):
     assert opener.calls == []
 
 
+def test_spoken_control_ignores_verbless_device_mention_when_verb_phrases_exist(tmp_path):
+    # Regression (field 16:39): "关闭吸顶灯" was ASR-garbled to "配吸顶灯";
+    # the bare device-name phrase (registered as turn_on because turn_on
+    # sorts first) substring-matched and silently turned the light ON.
+    opener = RecordingOpener([])
+    settings = make_settings(
+        tmp_path,
+        [
+            {
+                "name": "吸顶灯",
+                "phrases": ["打开吸顶灯", "开灯"],
+                "service": "light.turn_on",
+                "entity_id": "light.ceiling",
+            },
+            {
+                "name": "吸顶灯",
+                "phrases": ["关闭吸顶灯", "关灯"],
+                "service": "light.turn_off",
+                "entity_id": "light.ceiling",
+            },
+        ],
+    )
+    executor = ToolExecutor(settings, opener=opener)
+
+    assert executor.execute_spoken_control("配吸顶灯。") is None
+    assert executor.execute_spoken_control("吸顶灯") is None
+    assert opener.calls == []
+
+    assert executor.execute_spoken_control("打开吸顶灯") == {
+        "ok": True,
+        "device": "吸顶灯",
+        "action": "turn_on",
+    }
+    assert executor.execute_spoken_control("关闭吸顶灯") == {
+        "ok": True,
+        "device": "吸顶灯",
+        "action": "turn_off",
+    }
+
+
 def test_spoken_control_can_raise_robot_speaker_volume(tmp_path):
     opener = RecordingOpener([])
     volume = FakeVolumeController(88)
