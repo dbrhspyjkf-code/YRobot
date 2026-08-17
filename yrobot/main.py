@@ -1512,7 +1512,6 @@ class Yrobot(ReachyMiniApp):
                                     )
                             if t == "stt":
                                 text = d.get("text", "")
-                                logger.info("xz stt: %s", text)
                                 # Wake word gate (skip if force-wake flag set).
                                 _force = False
                                 try:
@@ -1520,14 +1519,22 @@ class Yrobot(ReachyMiniApp):
                                 except Exception:
                                     pass
                                 if _force or _wake_match(text):
+                                    # Chat-marker log only for turns that are
+                                    # part of the conversation: the wake call
+                                    # itself and everything after it.
+                                    logger.info("xz stt: %s", text)
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                     idle_show_last_activity[0] = time.monotonic()
                                 if not _waked:
-                                    logger.info("xz stt ignored (not waked): %.60s", text)
+                                    # No chat marker here: ambient conversation
+                                    # must not appear in the dashboard chat panel.
+                                    logger.info("xz ambient stt ignored: %.60s", text)
                                     continue
+                                if not (_force or _wake_match(text)):
+                                    logger.info("xz stt: %s", text)
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
