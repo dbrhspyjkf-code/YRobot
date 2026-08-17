@@ -54,10 +54,17 @@ class KeywordWakeDetector:
             keywords_file=str(model_dir / "keywords.txt"),
             num_threads=num_threads,
             provider="cpu",
+            keywords_score=float(os.environ.get("YROBOT_KWS_KEYWORDS_SCORE", "1.0")),
+            keywords_threshold=float(os.environ.get("YROBOT_KWS_THRESHOLD", "0.25")),
         )
         self._stream = self._kws.create_stream()
         self._lock = threading.Lock()
-        logger.info("sherpa-onnx keyword spotter loaded: %s", model_dir)
+        logger.info(
+            "sherpa-onnx keyword spotter loaded: %s (keywords_score=%s, keywords_threshold=%s)",
+            model_dir,
+            os.environ.get("YROBOT_KWS_KEYWORDS_SCORE", "1.0"),
+            os.environ.get("YROBOT_KWS_THRESHOLD", "0.25"),
+        )
 
     def feed(self, samples_int16: np.ndarray) -> str | None:
         """Feed a 16 kHz int16 chunk; return the matched keyword or ``None``.
