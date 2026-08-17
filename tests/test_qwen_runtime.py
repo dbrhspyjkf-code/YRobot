@@ -126,32 +126,44 @@ def test_qwen_wake_list_contains_nihao_xiaobai():
     assert gate.active is True
 
 
-def test_qwen_wake_accepts_observed_xiaobai_asr_aliases():
-    assert WakeGate().observe_transcript("你好。", now=100.0) is True
-    assert WakeGate().observe_transcript("明白。", now=100.0) is True
-    assert WakeGate().observe_transcript("你好明白", now=100.0) is True
-    assert WakeGate().observe_transcript("你老来。", now=100.0) is True
-    assert WakeGate().observe_transcript("你说，你咋？", now=100.0) is True
-    assert WakeGate().observe_transcript("你等会儿。", now=100.0) is True
+def test_qwen_wake_rejects_old_loose_asr_aliases():
+    # User directive 2026-08-17: only 你好小白 may wake the robot. The old
+    # ASR-error aliases (你好/明白/你老来/你说你咋/你等会儿) woke it on
+    # ordinary ambient speech.
+    assert WakeGate().observe_transcript("你好。", now=100.0) is False
+    assert WakeGate().observe_transcript("明白。", now=100.0) is False
+    assert WakeGate().observe_transcript("你好明白", now=100.0) is False
+    assert WakeGate().observe_transcript("你老来。", now=100.0) is False
+    assert WakeGate().observe_transcript("你说，你咋？", now=100.0) is False
+    assert WakeGate().observe_transcript("你等会儿。", now=100.0) is False
 
 
 def test_qwen_wake_asr_alias_does_not_match_inside_longer_sentence():
     assert WakeGate().observe_transcript("我明白了", now=100.0) is False
+    assert WakeGate().observe_transcript("我要小白。", now=100.0) is False
+    assert WakeGate().observe_transcript("他说你好小白啊。", now=100.0) is False
 
 
-def test_qwen_wake_accepts_observed_nihao_xiaobai_split_pair():
+def test_qwen_wake_accepts_cloud_asr_mishearing_alias():
+    # 你好小孩 is the observed cloud-ASR mishearing of 你好小白.
+    assert WakeGate().observe_transcript("你好小孩。", now=100.0) is True
+    assert WakeGate().observe_transcript("你好小孩真可爱。", now=100.0) is False
+
+
+def test_qwen_wake_accepts_nihao_xiaobai_split_pair():
     gate = WakeGate()
 
-    assert gate.observe_transcript("你把。", now=100.0) is False
-    assert gate.observe_transcript("行。", now=106.5) is True
+    assert gate.observe_transcript("你好。", now=100.0) is False
+    assert gate.observe_transcript("小白。", now=106.5) is True
     assert gate.active is True
 
 
 def test_qwen_wake_suffix_does_not_match_wrong_prefix_or_alone():
-    assert WakeGate().observe_transcript("行。", now=100.0) is False
+    assert WakeGate().observe_transcript("小白。", now=100.0) is False
     gate = WakeGate()
-    assert gate.observe_transcript("明白吗。", now=100.0) is False
+    assert gate.observe_transcript("你把。", now=100.0) is False
     assert gate.observe_transcript("行。", now=101.0) is False
+    assert gate.observe_transcript("小白。", now=101.0) is False
     assert gate.active is False
 
 
@@ -161,8 +173,9 @@ def test_qwen_pre_wake_silence_window_is_wider_than_active_command_window():
     assert _QWEN_PRE_WAKE_SILENCE_FRAMES > _QWEN_ACTIVE_SILENCE_FRAMES
 
 
-def test_qwen_wake_expires_after_sixty_seconds():
+def test_qwen_wake_expires_after_timeout():
     gate = WakeGate()
+    gate.timeout = 60.0  # deterministic: production default is env-driven
     gate.observe_transcript("你好小白", now=100.0)
 
     assert gate.expire(now=159.9) is False
@@ -179,6 +192,7 @@ def test_qwen_wake_is_not_reactivated_while_active():
 
 def test_qwen_wake_resumes_after_reconnect_when_gate_is_active():
     gate = WakeGate()
+    gate.timeout = 60.0  # deterministic: production default is env-driven
     gate.observe_transcript("你好小白", now=100.0)
 
     assert _qwen_should_resume_wake_after_reconnect(gate) is True

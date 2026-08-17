@@ -11,11 +11,16 @@ from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
-WAKE_WORDS = ("你好小白", "小白", "阿皮", "reachy", "hey reachy", "嘿", "Hello Reachy")
-WAKE_ASR_ALIASES = ("你好", "明白", "你好明白", "你老来", "你说你咋", "你等会儿")
-WAKE_PREFIX_ALIASES = ("你把",)
+# User directive 2026-08-17: ONLY 你好小白 may wake the robot. Strict
+# matching: the whole utterance (compact) must equal the phrase, or start
+# with it (你好小白+正事). 你好小孩 is the observed cloud-ASR mishearing.
+WAKE_WORDS = ("你好小白",)
+WAKE_ASR_ALIASES = ("你好小孩",)
+# Two-stage address support: 你好 (turn 1) + 小白 (turn 2) within 8 s also
+# counts as the full wake phrase (ASR segmentation fallback).
+WAKE_PREFIX_ALIASES = ("你好",)
 WAKE_SUFFIX_BY_PREFIX = {
-    "你把": ("行",),
+    "你好": ("小白",),
 }
 # Idle window before the conversation closes and the speaker mutes.
 # Configurable via YROBOT_WAKE_TIMEOUT_S (seconds, min 30).
@@ -89,7 +94,6 @@ class WakeGate:
     def observe_transcript(self, transcript: str, now: float | None = None) -> bool:
         if self.active:
             return False
-        text = transcript.casefold()
         compact_text = _compact_wake_text(transcript)
         current = time.monotonic() if now is None else now
         if compact_text in WAKE_PREFIX_TEXTS:
@@ -106,14 +110,23 @@ class WakeGate:
         if current > self.pending_prefix_deadline:
             self.pending_prefix_deadline = 0.0
             self.pending_prefix_text = ""
-        alias_match = compact_text in WAKE_ASR_ALIAS_TEXTS
-        if not alias_match and not any(phrase.casefold() in text for phrase in self.phrases):
-            return False
-        self.active = True
-        self.deadline = current + self.timeout
-        self.pending_prefix_deadline = 0.0
-        self.pending_prefix_text = ""
-        return True
+        if compact_text in WAKE_ASR_ALIAS_TEXTS:
+            self.active = True
+            self.deadline = current + self.timeout
+            self.pending_prefix_deadline = 0.0
+            self.pending_prefix_text = ""
+            return True
+        # Canonical phrase: compact equality or phrase-initial address
+        # (你好小白+request). Mid-sentence containment does NOT wake.
+        for phrase in self.phrases:
+            compact_phrase = _compact_wake_text(phrase)
+            if compact_text == compact_phrase or compact_text.startswith(compact_phrase):
+                self.active = True
+                self.deadline = current + self.timeout
+                self.pending_prefix_deadline = 0.0
+                self.pending_prefix_text = ""
+                return True
+        return False
 
     def note_speech(self, now: float | None = None) -> None:
         if not self.active:
