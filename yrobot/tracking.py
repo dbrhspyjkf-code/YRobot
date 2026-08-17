@@ -101,6 +101,7 @@ class SpeakerTracker:
         # Face-lead state (official-app positioning parity).
         self._conversation_active: list[bool] = [False]
         self._robot_speaking: list[bool] = [False]
+        self._daemon_tracking: list[bool] = [False]
         self._last_doa_at: list[float] = [0.0]  # monotonic; 0 = never
         self._face_lead_target: list[Optional[float]] = [None]
 
@@ -110,14 +111,34 @@ class SpeakerTracker:
         self._user_speaking[0] = bool(speaking)
 
     def set_robot_speaking(self, speaking: bool) -> None:
-        """Echo guard: while the robot's TTS plays, the mics hear the robot.
+        """Official-app speaking handoff on daemon head tracking.
 
-        The XVF DoA flag is pre-AEC and the app VAD can mistake TTS echo for
-        user speech; observed in the field as the head chasing its own
-        speaker around the room (-170 deg) during replies. The DoA gate is
-        forced closed while TTS is playing.
+        While the robot speaks, the daemon tracker must release the head so
+        expression moves and speak nods can play. Exactly like the official
+        app: pause only once a face is locked (else speech blocks
+        acquisition), anchoring the gaze to the current head pose so the
+        robot keeps facing the user; resume full tracking afterwards.
+
+        Also an echo guard: the DoA gate is forced closed while TTS plays
+        (the pre-AEC firmware flag mistakes TTS echo for user speech).
         """
         self._robot_speaking[0] = bool(speaking)
+        if not self._conversation_active[0]:
+            return
+        try:
+            if speaking:
+                face = self.reachy_mini.get_tracked_face(wait=False)
+                if face is not None and face.detected:
+                    # Anchor: hold exactly where the daemon left the head.
+                    self.choreo.set_gaze_target(
+                        self._current_head_yaw(), source="anchor"
+                    )
+                    self.reachy_mini.start_head_tracking(weight=0.0)
+            else:
+                if self._daemon_tracking[0]:
+                    self.reachy_mini.start_head_tracking(weight=1.0)
+        except Exception as exc:  # noqa: BLE001 — tracking is best effort
+            logger.warning("speaking handoff failed: %s", exc)
 
     def _doa_active(self) -> bool:
         """SoundCompass gate: user speaking AND robot not speaking."""
@@ -126,13 +147,29 @@ class SpeakerTracker:
     def set_conversation_active(self, active: bool) -> None:
         """Gate face-led gaze on an ongoing conversation.
 
-        While inactive the robot never turns its head toward faces (respects
-        the 'no unprompted motion while idle' preference); the audio DoA path
-        is unaffected.
+        While active, daemon-side YuNet head tracking owns the head
+        orientation (the official Conversation App mechanism); the local
+        DoA/Haar gaze writers stand down. While inactive the robot never
+        turns its head toward faces (respects the 'no unprompted motion
+        while idle' preference).
         """
+        if active == self._conversation_active[0]:
+            return
         self._conversation_active[0] = bool(active)
-        if not active:
-            self._face_lead_target[0] = None
+        self._face_lead_target[0] = None
+        try:
+            if active:
+                self.reachy_mini.start_head_tracking(weight=1.0)
+                self._daemon_tracking[0] = True
+                logger.info("daemon head tracking enabled (weight=1.0)")
+            else:
+                if self._daemon_tracking[0]:
+                    self.reachy_mini.stop_head_tracking()
+                self._daemon_tracking[0] = False
+                logger.info("daemon head tracking stopped")
+        except Exception as exc:  # noqa: BLE001 — tracking is best effort
+            self._daemon_tracking[0] = False
+            logger.warning("daemon head tracking toggle failed: %s", exc)
 
     def note_speech(self, window_s: float = 2.0) -> None:
         """Pulse the user-active flag for `window_s` seconds (used by QWEN
@@ -167,6 +204,10 @@ class SpeakerTracker:
 
     def _set_speaker_gaze(self, audio_yaw: float) -> None:
         self._last_doa_at[0] = time.monotonic()
+        # Daemon-side tracking owns the head during a conversation; local
+        # writers must not fight it (they would only drag the body yaw).
+        if self._conversation_active[0] and self._daemon_tracking[0]:
+            return
         visual_yaw = None
         vg = self._visual_gaze[0]
         if vg is not None and time.time() - vg[1] < 0.8:
@@ -203,7 +244,9 @@ class SpeakerTracker:
         """
         if not visual_gaze_should_lead(
             face_age_s=0.0,
-            conversation_active=self._conversation_active[0],
+            conversation_active=(
+                self._conversation_active[0] and not self._daemon_tracking[0]
+            ),
         ):
             return
         last = self._face_lead_target[0]
@@ -335,5 +378,11 @@ class SpeakerTracker:
             except Exception:
                 pass
             self._compass = None
+        try:
+            if self._daemon_tracking[0]:
+                self.reachy_mini.stop_head_tracking()
+                self._daemon_tracking[0] = False
+        except Exception:
+            pass
         self._face_stop = None
         logger.info("SpeakerTracker stopped")

@@ -136,3 +136,131 @@ def test_face_loop_silent_when_conversation_inactive():
     tracker._publish_face_gaze(math.radians(25.0))
 
     assert choreo.targets == []
+
+
+# ── Daemon-side head tracking (official Conversation App mechanism) ─────────
+
+class _FaceTarget:
+    def __init__(self, detected):
+        self.detected = detected
+
+
+class _DaemonTrackingRobot:
+    """Fake ReachyMini recording daemon head-tracking commands."""
+
+    def __init__(self, detected=True, head_yaw_rad=0.3):
+        self.calls = []
+        self._detected = detected
+        self._head_yaw = head_yaw_rad
+
+    def start_head_tracking(self, weight=1.0):
+        self.calls.append(("start", weight))
+        return None
+
+    def stop_head_tracking(self):
+        self.calls.append(("stop", None))
+        return None
+
+    def get_tracked_face(self, wait=True, timeout=5.0):
+        self.calls.append(("face", self._detected))
+        return _FaceTarget(self._detected)
+
+    def get_current_head_pose(self):
+        from yrobot.motion import rpy_pose
+
+        return rpy_pose(0.0, 0.0, self._head_yaw, 0.0)
+
+
+class _YawChoreo(_GazeRecorderChoreo):
+    def current_yaw(self):
+        return 0.0
+
+
+def test_conversation_start_enables_daemon_tracking():
+    from yrobot.tracking import SpeakerTracker
+
+    robot = _DaemonTrackingRobot()
+    choreo = _YawChoreo()
+    tracker = SpeakerTracker(robot, choreo)
+
+    tracker.set_conversation_active(True)
+
+    assert ("start", 1.0) in robot.calls
+
+
+def test_conversation_end_stops_daemon_tracking():
+    from yrobot.tracking import SpeakerTracker
+
+    robot = _DaemonTrackingRobot()
+    tracker = SpeakerTracker(robot, _YawChoreo())
+    tracker.set_conversation_active(True)
+    robot.calls.clear()
+
+    tracker.set_conversation_active(False)
+
+    assert ("stop", None) in robot.calls
+
+
+def test_speech_pauses_tracking_with_anchor_when_face_locked():
+    import math
+
+    from yrobot.tracking import SpeakerTracker
+
+    robot = _DaemonTrackingRobot(detected=True, head_yaw_rad=0.3)
+    choreo = _YawChoreo()
+    tracker = SpeakerTracker(robot, choreo)
+    tracker.set_conversation_active(True)
+    robot.calls.clear()
+    choreo.targets.clear()
+
+    tracker.set_robot_speaking(True)
+
+    assert ("face", True) in robot.calls
+    assert ("start", 0.0) in robot.calls
+    # Anchor: gaze holds exactly where the daemon left the head.
+    yaw, source = choreo.targets[-1]
+    assert source == "anchor"
+    assert yaw == pytest.approx(0.3)
+
+
+def test_speech_keeps_tracking_when_no_face_locked():
+    from yrobot.tracking import SpeakerTracker
+
+    robot = _DaemonTrackingRobot(detected=False)
+    tracker = SpeakerTracker(robot, _YawChoreo())
+    tracker.set_conversation_active(True)
+    robot.calls.clear()
+
+    tracker.set_robot_speaking(True)
+
+    assert ("start", 0.0) not in robot.calls
+
+
+def test_speech_end_resumes_full_tracking():
+    from yrobot.tracking import SpeakerTracker
+
+    robot = _DaemonTrackingRobot(detected=True)
+    tracker = SpeakerTracker(robot, _YawChoreo())
+    tracker.set_conversation_active(True)
+    tracker.set_robot_speaking(True)
+    robot.calls.clear()
+
+    tracker.set_robot_speaking(False)
+
+    assert ("start", 1.0) in robot.calls
+
+
+def test_local_gaze_writers_suppressed_during_daemon_tracking():
+    from yrobot.tracking import SpeakerTracker
+
+    robot = _DaemonTrackingRobot()
+    choreo = _YawChoreo()
+    tracker = SpeakerTracker(robot, choreo)
+    tracker.set_conversation_active(True)
+    choreo.targets.clear()
+
+    # DoA callback and face-loop publish must not fight the daemon.
+    tracker._set_speaker_gaze(1.0)
+    tracker._publish_face_gaze(1.0)
+
+    assert choreo.targets == []
