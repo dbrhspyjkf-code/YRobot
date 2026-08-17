@@ -388,6 +388,76 @@ def _wake_match(text: str) -> str | None:
     return None
 
 
+_RECORDED_MOVES: list[Any] = [None]
+
+
+def _get_recorded() -> Any:
+    """Lazy singleton for the official emotion library (85 recorded moves).
+
+    Shared by both backends; loads on first use so slow first loads do not
+    block startup.
+    """
+    if _RECORDED_MOVES[0] is None:
+        try:
+            from reachy_mini.motion.recorded_move import RecordedMoves
+
+            _RECORDED_MOVES[0] = RecordedMoves(
+                "pollen-robotics/reachy-mini-emotions-library"
+            )
+        except Exception as exc:
+            logger.warning("emotion library unavailable: %s", exc)
+    return _RECORDED_MOVES[0]
+
+
+def _play_emotion_move(
+    choreo: Any,
+    emo: str,
+    last: dict[str, float],
+    rec_provider: Any = None,
+    *,
+    prefer_recorded: bool = False,
+    source: str = "llm",
+    tag: str = "xz",
+) -> bool:
+    """Map an emotion to a recorded move with programmatic fallback.
+
+    Shared by both backends. Recorded moves come from the official curated
+    whitelist and rotate per emotion; if the library is unavailable or the
+    move is rejected, the safe programmatic move is used instead. A 12 s
+    global cooldown keeps any session from emoting on every reply.
+    """
+    from yrobot.motion import EMOTION_FALLBACK_MOVE, recorded_move_for
+
+    if source == "llm" and emo in _LLM_EMOTION_NOISE:
+        logger.info("%s emotion %s (llm default, ignored)", tag, emo or "?")
+        return False
+
+    rec_name = recorded_move_for(emo) if prefer_recorded else None
+    fb_name = EMOTION_FALLBACK_MOVE.get(emo)
+    target = rec_name if prefer_recorded and rec_name else fb_name
+    now = time.monotonic()
+    if not target:
+        logger.info("%s emotion %s (no safe move)", tag, emo or "?")
+        return False
+    if now - last.get("__any__", -1e9) < _EMOTION_MOVE_GLOBAL_COOLDOWN_S:
+        logger.info("%s emotion %s -> %s (global cooldown)", tag, emo, target)
+        return False
+    if now - last.get(target, -1e9) < 5.0:
+        logger.info("%s emotion %s -> %s (cooldown)", tag, emo, target)
+        return False
+    last["__any__"] = now
+    last[target] = now
+    if prefer_recorded and rec_name:
+        rec = rec_provider() if callable(rec_provider) else None
+        if rec is not None and choreo.play_recorded(rec_name, rec):
+            logger.info("%s emotion %s -> recorded %s", tag, emo, rec_name)
+            return True
+    if fb_name and choreo.play_move(fb_name):
+        logger.info("%s emotion %s -> safe move %s", tag, emo, fb_name)
+        return True
+    return False
+
+
 def _handle_xiaozhi_emotion(
     choreo: Any,
     emo: str,
@@ -397,42 +467,21 @@ def _handle_xiaozhi_emotion(
     prefer_recorded: bool = False,
     source: str = "llm",
 ) -> None:
-    """Map Xiaozhi emotion to a recorded move with programmatic fallback.
+    """Xiaozhi-backend wrapper around the shared emotion-move policy.
 
-    Recorded moves come from the official curated whitelist and rotate per
-    emotion; if the library is unavailable or the move is rejected, the safe
-    programmatic move is used instead. The LLM's default 'happy' emotion is
-    treated as noise (source="llm") because Xiaozhi emits it on almost every
-    reply; content-corroborated happy arrives via source="sentence".
+    The LLM's default 'happy' emotion is treated as noise (source="llm")
+    because Xiaozhi emits it on almost every reply; content-corroborated
+    happy arrives via source="sentence".
     """
-    from yrobot.motion import EMOTION_FALLBACK_MOVE, recorded_move_for
-
-    if source == "llm" and emo in _LLM_EMOTION_NOISE:
-        logger.info("xz emotion %s (llm default, ignored)", emo or "?")
-        return
-
-    rec_name = recorded_move_for(emo) if prefer_recorded else None
-    fb_name = EMOTION_FALLBACK_MOVE.get(emo)
-    target = rec_name if prefer_recorded and rec_name else fb_name
-    now = time.monotonic()
-    if not target:
-        logger.info("xz emotion %s (no safe move)", emo or "?")
-        return
-    if now - last.get("__any__", -1e9) < _EMOTION_MOVE_GLOBAL_COOLDOWN_S:
-        logger.info("xz emotion %s -> %s (global cooldown)", emo, target)
-        return
-    if now - last.get(target, -1e9) < 5.0:
-        logger.info("xz emotion %s -> %s (cooldown)", emo, target)
-        return
-    last["__any__"] = now
-    last[target] = now
-    if prefer_recorded and rec_name:
-        rec = rec_provider() if callable(rec_provider) else None
-        if rec is not None and choreo.play_recorded(rec_name, rec):
-            logger.info("xz emotion %s -> recorded %s", emo, rec_name)
-            return
-    if fb_name and choreo.play_move(fb_name):
-        logger.info("xz emotion %s -> safe move %s", emo, fb_name)
+    _play_emotion_move(
+        choreo,
+        emo,
+        last,
+        rec_provider,
+        prefer_recorded=prefer_recorded,
+        source=source,
+        tag="xz",
+    )
 
 
 def _fuse_speaker_gaze(
@@ -590,6 +639,20 @@ class Yrobot(ReachyMiniApp):
                 logger.info("KWS wake armed: phrase=%r", settings.wake_phrase)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("KWS wake init failed (falling back to cloud ASR): %s", exc)
+        # Escape hatch: YROBOT_IDLE_UPLINK=1 forces the legacy cloud-ASR
+        # idle uplink even when local KWS is armed (e.g. if field wake
+        # misses make the local engine unreliable).
+        _idle_uplink_forced = os.environ.get("YROBOT_IDLE_UPLINK", "").strip() == "1"
+        # With local KWS armed the cloud hears NOTHING while idle: zero
+        # upload, zero ambient transcripts, zero server-side conversation
+        # records until the wake phrase is detected locally.
+        _idle_uplink = kws_detector is None or _idle_uplink_forced
+        logger.info(
+            "QWEN idle uplink: %s (kws=%s, forced=%s)",
+            "on" if _idle_uplink else "off",
+            kws_detector is not None,
+            _idle_uplink_forced,
+        )
 
         mic_stream = sd.InputStream(
             device="reachymini_audio_src",
@@ -892,9 +955,11 @@ class Yrobot(ReachyMiniApp):
 
             def on_input_transcript(transcript: str) -> None:
                 nonlocal last_sonos_fragment, last_sonos_fragment_at
-                logger.info("qwen stt: %s", transcript[:120])
                 wav_bytes = bytes(asr_capture) if gate.active and asr_capture else b""
                 if gate.active:
+                    # Chat-marker log only for in-session turns: ambient
+                    # conversation must not appear in the dashboard panel.
+                    logger.info("qwen stt: %s", transcript[:120])
                     save_asr_debug_wav(transcript)
                 normalized = _qwen_normalize_for_control(transcript)
                 now = time.monotonic()
@@ -909,6 +974,7 @@ class Yrobot(ReachyMiniApp):
                     candidates = [*candidates, contextual_command]
                 if gate.observe_transcript(transcript):
                     logger.info("QWEN wake word detected")
+                    logger.info("qwen stt: %s", transcript[:120])
                     wake_greetings.begin_wake()
                     choreo.play_move("nod")
                     tracker.set_conversation_active(True)
@@ -954,23 +1020,23 @@ class Yrobot(ReachyMiniApp):
             last_qwen_emotion: dict[str, float] = {}
 
             def play_qwen_emotion(emotion: str) -> bool:
-                from yrobot.motion import EMOTION_FALLBACK_MOVE
-
+                # Shared policy with the xiaozhi backend: recorded-move
+                # rotation from the official whitelist, programmatic
+                # fallback, 12 s global cooldown. QWEN emotions come from
+                # explicit transcript requests, so they are always
+                # content-corroborated (source="sentence").
                 if choreo.current_move() is not None or choreo.current_recorded() is not None:
                     logger.info("qwen emotion %s skipped: move in progress", emotion)
                     return False
-                move = EMOTION_FALLBACK_MOVE.get(emotion)
-                if move is None:
-                    return False
-                now = time.monotonic()
-                if now - last_qwen_emotion.get(emotion, -1e9) < 5.0:
-                    logger.info("qwen emotion %s skipped: cooldown", emotion)
-                    return False
-                if not choreo.play_move(move):
-                    return False
-                last_qwen_emotion[emotion] = now
-                logger.info("qwen emotion %s -> %s", emotion, move)
-                return True
+                return _play_emotion_move(
+                    choreo,
+                    emotion,
+                    last_qwen_emotion,
+                    _get_recorded,
+                    prefer_recorded=True,
+                    source="sentence",
+                    tag="qwen",
+                )
 
             tool_executor = ToolExecutor(
                 settings,
@@ -1064,7 +1130,9 @@ class Yrobot(ReachyMiniApp):
                                 playback.flush()
                                 choreo.set_mode(IDLE)
                                 tracker.set_conversation_active(False)
-                                logger.info("QWEN wake expired (60s timeout)")
+                                logger.info(
+                                    "QWEN wake expired (%.0fs timeout)", gate.timeout
+                                )
                             continue
 
                         if asr_capturing and len(asr_capture) < asr_debug_max_bytes:
@@ -1084,7 +1152,14 @@ class Yrobot(ReachyMiniApp):
                             playback.flush()
                             choreo.set_mode(IDLE)
                             tracker.set_conversation_active(False)
-                            logger.info("QWEN wake expired (60s timeout)")
+                            logger.info(
+                                "QWEN wake expired (%.0fs timeout)", gate.timeout
+                            )
+                        continue
+
+                    if not _idle_uplink:
+                        # Local KWS owns wake: no audio leaves the robot
+                        # until the session is active.
                         continue
 
                     if rms >= threshold:
@@ -1210,22 +1285,6 @@ class Yrobot(ReachyMiniApp):
         from yrobot.app_config import motion_controller_singleton
 
         motion_controller_singleton().set(choreo)
-        # Official emotion library (85 recorded moves) — lazy singleton so
-        # playback works even if the library is slow to load on first use.
-        _recorded_moves = [None]
-
-        def _get_recorded():
-            if _recorded_moves[0] is None:
-                try:
-                    from reachy_mini.motion.recorded_move import RecordedMoves
-
-                    _recorded_moves[0] = RecordedMoves(
-                        "pollen-robotics/reachy-mini-emotions-library"
-                    )
-                except Exception as exc:
-                    logger.warning("emotion library unavailable: %s", exc)
-            return _recorded_moves[0]
-
         motion_controller_singleton().set_recorded_provider(_get_recorded)
         choreo.start()
         _start_motion_connection_watchdog(choreo, stop_event)
