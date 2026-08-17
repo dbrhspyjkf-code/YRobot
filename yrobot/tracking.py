@@ -50,26 +50,20 @@ def _wrap_yaw(angle: float) -> float:
 
 def visual_gaze_should_lead(
     face_age_s: float,
-    last_doa_age_s: Optional[float],
     conversation_active: bool,
     *,
     face_max_age_s: float = 0.9,
-    doa_hold_s: float = 1.0,
 ) -> bool:
-    """Whether the visual face lock may drive the gaze directly.
+    """Whether the visual face lock drives the gaze (official-app positioning).
 
-    Mirrors the official app's face-anchor behaviour: while a conversation is
-    active, a fresh face lock keeps the head on the user even when the audio
-    DoA is silent (e.g. while the robot is speaking). Fresh DoA output still
-    wins, and idle robots never stare at bystanders.
+    The official app positions the head purely on the user's face during a
+    conversation. Mirroring that: a fresh face lock IS the gaze target —
+    audio DoA never overrides it (DoA can chase the robot's own TTS echo).
+    Idle robots never stare at bystanders.
     """
     if not conversation_active:
         return False
-    if face_age_s > face_max_age_s:
-        return False
-    if last_doa_age_s is not None and last_doa_age_s < doa_hold_s:
-        return False
-    return True
+    return face_age_s <= face_max_age_s
 
 
 class SpeakerTracker:
@@ -104,8 +98,9 @@ class SpeakerTracker:
         self._face_cascade: Any = None
         self._vis_frames = 0
         self._last_emotion_move: dict[str, float] = {}
-        # Face-lead state (official-app face-anchor parity).
+        # Face-lead state (official-app positioning parity).
         self._conversation_active: list[bool] = [False]
+        self._robot_speaking: list[bool] = [False]
         self._last_doa_at: list[float] = [0.0]  # monotonic; 0 = never
         self._face_lead_target: list[Optional[float]] = [None]
 
@@ -113,6 +108,20 @@ class SpeakerTracker:
     def set_user_speaking(self, speaking: bool) -> None:
         """Immediately set the user-active flag (used by XIAOZHI VAD)."""
         self._user_speaking[0] = bool(speaking)
+
+    def set_robot_speaking(self, speaking: bool) -> None:
+        """Echo guard: while the robot's TTS plays, the mics hear the robot.
+
+        The XVF DoA flag is pre-AEC and the app VAD can mistake TTS echo for
+        user speech; observed in the field as the head chasing its own
+        speaker around the room (-170 deg) during replies. The DoA gate is
+        forced closed while TTS is playing.
+        """
+        self._robot_speaking[0] = bool(speaking)
+
+    def _doa_active(self) -> bool:
+        """SoundCompass gate: user speaking AND robot not speaking."""
+        return self._user_speaking[0] and not self._robot_speaking[0]
 
     def set_conversation_active(self, active: bool) -> None:
         """Gate face-led gaze on an ongoing conversation.
@@ -159,15 +168,15 @@ class SpeakerTracker:
     def _set_speaker_gaze(self, audio_yaw: float) -> None:
         self._last_doa_at[0] = time.monotonic()
         visual_yaw = None
-        if self._visual_gaze[0] is not None:
-            vy, vt = self._visual_gaze[0]
-            if time.time() - vt < 0.8:
-                visual_yaw = vy
-        target, source = fuse_speaker_gaze(
-            audio_yaw,
-            visual_yaw,
-            visual_weight=self.head_tracking_weight,
-        )
+        vg = self._visual_gaze[0]
+        if vg is not None and time.time() - vg[1] < 0.8:
+            visual_yaw = vg[0]
+        # Official-style positioning: a fresh face lock IS the target; audio
+        # DoA is only a fallback when no face is currently visible.
+        if visual_yaw is not None:
+            target, source = visual_yaw, "face"
+        else:
+            target, source = audio_yaw, "audio"
         self.choreo.set_gaze_target(target, source=source)
         self.choreo.set_tracking_debug(
             audio_yaw=audio_yaw,
@@ -189,16 +198,11 @@ class SpeakerTracker:
     def _publish_face_gaze(self, world_yaw: float) -> None:
         """Face-lead path: drive gaze straight from a locked face.
 
-        Only fires while the conversation is active and the audio DoA has
-        been silent long enough (robot speaking / quiet turn gap), matching
-        the official app holding the head on the user through a reply.
+        The face IS the target during a conversation (official-app parity);
+        the audio DoA never overrides a fresh face lock.
         """
         if not visual_gaze_should_lead(
             face_age_s=0.0,
-            last_doa_age_s=(
-                None if self._last_doa_at[0] == 0.0
-                else time.monotonic() - self._last_doa_at[0]
-            ),
             conversation_active=self._conversation_active[0],
         ):
             return
@@ -304,7 +308,7 @@ class SpeakerTracker:
         self._compass = SoundCompass(
             self.reachy_mini.media,
             current_head_yaw=self._current_head_yaw,
-            user_active=lambda: self._user_speaking[0],
+            user_active=self._doa_active,
             on_target=self._set_speaker_gaze,
         )
         self._compass.start()

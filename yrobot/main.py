@@ -672,6 +672,7 @@ class Yrobot(ReachyMiniApp):
                     response_started = True
                     choreo.set_mode(SPEAK)
                     choreo.release_still()
+                    tracker.set_robot_speaking(True)  # echo guard
                     if pending_qwen_emotion[0] is not None:
                         play_qwen_emotion(pending_qwen_emotion[0])
                         pending_qwen_emotion[0] = None
@@ -773,6 +774,7 @@ class Yrobot(ReachyMiniApp):
                 response_started = False
                 playback.flush()
                 choreo.set_mode(LISTEN)
+                tracker.set_robot_speaking(False)
                 RUNTIME_HEALTH.update(tts_active=False, audio_queue=0)
 
             def on_user_speech() -> None:
@@ -788,6 +790,7 @@ class Yrobot(ReachyMiniApp):
                 nonlocal response_started
                 response_started = False
                 choreo.set_mode(IDLE)
+                tracker.set_robot_speaking(False)
                 RUNTIME_HEALTH.update(tts_active=False)
 
             async def activate_from_wake() -> None:
@@ -1510,6 +1513,7 @@ class Yrobot(ReachyMiniApp):
                                     continue
                                 logger.info("xz tts start")
                                 tts_active = True
+                                tracker.set_robot_speaking(True)  # echo guard
                                 idle_show_last_activity[0] = time.monotonic()
                                 _tts_start_at = time.time()
                                 tts_watchdog.start()
@@ -1577,6 +1581,7 @@ class Yrobot(ReachyMiniApp):
                                 )
                                 _aplay_flush()
                                 choreo.set_mode(IDLE)
+                                tracker.set_robot_speaking(False)
                                 idle_show_last_activity[0] = time.monotonic()
 
                 rt = _a.ensure_future(recv())
