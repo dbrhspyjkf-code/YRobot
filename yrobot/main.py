@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
+from yrobot.xiaozhi_mcp import XiaozhiMcpServer
 from yrobot.app_config import (
     _MediaHolder,
     audio_input_controller_singleton,
@@ -1567,6 +1568,13 @@ class Yrobot(ReachyMiniApp):
 
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
+            # Device-side MCP server: fixed whitelist (volume tools only,
+            # immutable decision #9 — no generic MCP discovery).
+            _vc = volume_controller_singleton()
+            _xz_mcp = XiaozhiMcpServer(
+                volume_read=_vc.read_percent,
+                volume_write=_vc.write_percent,
+            )
             hdrs = {
                 "Authorization": f"Bearer {XIAOZHI_TOKEN}",
                 "Device-Id": XIAOZHI_DEVICE_ID,
@@ -1671,6 +1679,28 @@ class Yrobot(ReachyMiniApp):
                             RUNTIME_HEALTH.update(last_rx_at=time.time())
                             d = _j.loads(raw)
                             t = d.get("type", "")
+                            if t == "mcp":
+                                # Xiaozhi MCP (the channel control_smart_home
+                                # uses). Handle in a worker thread and reply
+                                # with the matching JSON-RPC id.
+                                mcp_payload = d.get("payload") or {}
+                                mcp_reply = await asyncio.to_thread(
+                                    _xz_mcp.handle_payload, mcp_payload
+                                )
+                                if mcp_reply is not None:
+                                    await ws.send(
+                                        _j.dumps(
+                                            {
+                                                "session_id": sid,
+                                                "type": "mcp",
+                                                "payload": mcp_reply,
+                                            },
+                                            ensure_ascii=False,
+                                        )
+                                    )
+                                    logger.info("xz mcp -> %.200s", mcp_reply)
+                                else:
+                                    logger.info("xz mcp notification ignored")
                             if t == "llm":
                                 # Xiaozhi sends the model's emotion/expression here
                                 # (e.g. {"type":"llm","emotion":"happy","text":"😀"}).
