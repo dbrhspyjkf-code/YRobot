@@ -1566,35 +1566,63 @@ class Yrobot(ReachyMiniApp):
                 except OSError:
                     pass
 
+        _xz_vol_ctx = {"last_at": 0.0}
+
         def _xz_local_volume_control(text: str) -> dict | None:
             # v1 protocol: the cloud streams ambient stt and YRobot matches
-            # the wake word locally. The cloud LLM may still route 音量
-            # intents to cloud-side tools (e.g. control_sonos), so the
-            # robot volume executes deterministically on-device first.
-            # Phrases mirror qwen_tools (shared vocabulary, decision: keep
-            # both backends consistent).
+            # the wake word locally. The cloud LLM may answer “好的” without
+            # any tool actually existing cloud-side, so the robot volume
+            # executes deterministically on-device. Mirrors qwen_tools
+            # vocabulary plus conversational continuation: within
+            # VOLUME_CONTEXT_WINDOW_S after a robot-volume command, bare
+            # direction words (再小一点/更大一点/搞小) keep adjusting.
             from yrobot.qwen_tools import (
                 ROBOT_VOLUME_TARGET_PHRASES,
                 TV_VOLUME_TARGET_PHRASES,
-                VOLUME_UP_PHRASES,
-                VOLUME_DOWN_PHRASES,
+                SONOS_VOLUME_TARGET_PHRASES,
                 VOLUME_STEP_PERCENT,
             )
 
             norm = text.lower().replace(" ", "")
             if any(phrase in norm for phrase in TV_VOLUME_TARGET_PHRASES):
                 return None
-            if not any(phrase in norm for phrase in ROBOT_VOLUME_TARGET_PHRASES):
+            if any(phrase in norm for phrase in SONOS_VOLUME_TARGET_PHRASES):
                 return None
-            if any(phrase in norm for phrase in VOLUME_UP_PHRASES):
+
+            has_target = any(phrase in norm for phrase in ROBOT_VOLUME_TARGET_PHRASES)
+            now = time.time()
+            in_context = now - _xz_vol_ctx["last_at"] <= 15.0
+            if not has_target and not in_context:
+                return None
+
+            # Explicit percentage: 音量调到50 / 调到百分之三十 (ASR emits digits)
+            m = re.search(r"(?:调到|设到|设置为?|设为)百?分?之?([0-9]{1,3})", norm)
+            vc = volume_controller_singleton()
+            if m:
+                target = max(0, min(100, int(m.group(1))))
+                applied = int(vc.write_percent(target))
+                _xz_vol_ctx["last_at"] = now
+                return {"action": "volume_set", "volume_percent": applied}
+            # Mute: 静音 / 关掉声音 / 别说话
+            if "静音" in norm or "关闭声音" in norm or "关掉声音" in norm:
+                applied = int(vc.write_percent(0))
+                _xz_vol_ctx["last_at"] = now
+                return {"action": "volume_mute", "volume_percent": applied}
+
+            # Direction words (base + colloquial continuations)
+            up_words = ("调大", "大一点", "大点", "加大", "加点", "提高", "高一点",
+                        "再大", "更大", "更强", "响一点", "大声点", "搞大", "弄大")
+            down_words = ("调小", "小一点", "小点", "减小", "降低", "低一点",
+                          "再小", "更小", "小声点", "轻一点", "搞小", "弄小")
+            if any(w in norm for w in up_words):
                 action, delta = "volume_up", VOLUME_STEP_PERCENT
-            elif any(phrase in norm for phrase in VOLUME_DOWN_PHRASES):
+            elif any(w in norm for w in down_words):
                 action, delta = "volume_down", -VOLUME_STEP_PERCENT
             else:
                 return None
-            vc = volume_controller_singleton()
             current = int(vc.read_percent())
             applied = int(vc.write_percent(current + delta))
+            _xz_vol_ctx["last_at"] = now
             return {"action": action, "volume_percent": applied}
 
         async def run():
