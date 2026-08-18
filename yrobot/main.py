@@ -1566,6 +1566,37 @@ class Yrobot(ReachyMiniApp):
                 except OSError:
                     pass
 
+        def _xz_local_volume_control(text: str) -> dict | None:
+            # v1 protocol: the cloud streams ambient stt and YRobot matches
+            # the wake word locally. The cloud LLM may still route 音量
+            # intents to cloud-side tools (e.g. control_sonos), so the
+            # robot volume executes deterministically on-device first.
+            # Phrases mirror qwen_tools (shared vocabulary, decision: keep
+            # both backends consistent).
+            from yrobot.qwen_tools import (
+                ROBOT_VOLUME_TARGET_PHRASES,
+                TV_VOLUME_TARGET_PHRASES,
+                VOLUME_UP_PHRASES,
+                VOLUME_DOWN_PHRASES,
+                VOLUME_STEP_PERCENT,
+            )
+
+            norm = text.lower().replace(" ", "")
+            if any(phrase in norm for phrase in TV_VOLUME_TARGET_PHRASES):
+                return None
+            if not any(phrase in norm for phrase in ROBOT_VOLUME_TARGET_PHRASES):
+                return None
+            if any(phrase in norm for phrase in VOLUME_UP_PHRASES):
+                action, delta = "volume_up", VOLUME_STEP_PERCENT
+            elif any(phrase in norm for phrase in VOLUME_DOWN_PHRASES):
+                action, delta = "volume_down", -VOLUME_STEP_PERCENT
+            else:
+                return None
+            vc = volume_controller_singleton()
+            current = int(vc.read_percent())
+            applied = int(vc.write_percent(current + delta))
+            return {"action": action, "volume_percent": applied}
+
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
             # Device-side MCP server: fixed whitelist (volume tools only,
@@ -1578,7 +1609,7 @@ class Yrobot(ReachyMiniApp):
             hdrs = {
                 "Authorization": f"Bearer {XIAOZHI_TOKEN}",
                 "Device-Id": XIAOZHI_DEVICE_ID,
-                "Protocol-Version": "2",
+                "Protocol-Version": "1",
             }
             RUNTIME_HEALTH.update(ws_state="connecting")
             async with _ws.connect(
@@ -1592,8 +1623,7 @@ class Yrobot(ReachyMiniApp):
                     _j.dumps(
                         {
                             "type": "hello",
-                            "version": 2,
-                            "features": {"mcp": True},
+                            "version": 1,
                             "transport": "websocket",
                             "audio_params": {
                                 "format": "opus",
@@ -1751,6 +1781,14 @@ class Yrobot(ReachyMiniApp):
                                     continue
                                 if not (_force or _wake_match(text)):
                                     logger.info("xz stt: %s", text)
+                                if _waked:
+                                    vol = _xz_local_volume_control(text)
+                                    if vol is not None:
+                                        logger.info(
+                                            "xz local volume control: %s transcript=%r",
+                                            vol,
+                                            text,
+                                        )
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
