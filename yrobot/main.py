@@ -1578,7 +1578,7 @@ class Yrobot(ReachyMiniApp):
             hdrs = {
                 "Authorization": f"Bearer {XIAOZHI_TOKEN}",
                 "Device-Id": XIAOZHI_DEVICE_ID,
-                "Protocol-Version": "1",
+                "Protocol-Version": "2",
             }
             RUNTIME_HEALTH.update(ws_state="connecting")
             async with _ws.connect(
@@ -1592,7 +1592,8 @@ class Yrobot(ReachyMiniApp):
                     _j.dumps(
                         {
                             "type": "hello",
-                            "version": 1,
+                            "version": 2,
+                            "features": {"mcp": True},
                             "transport": "websocket",
                             "audio_params": {
                                 "format": "opus",
@@ -1684,7 +1685,7 @@ class Yrobot(ReachyMiniApp):
                                 # uses). Handle in a worker thread and reply
                                 # with the matching JSON-RPC id.
                                 mcp_payload = d.get("payload") or {}
-                                mcp_reply = await asyncio.to_thread(
+                                mcp_reply = await _a.to_thread(
                                     _xz_mcp.handle_payload, mcp_payload
                                 )
                                 if mcp_reply is not None:
