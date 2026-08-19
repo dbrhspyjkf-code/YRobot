@@ -454,6 +454,9 @@ WAKE_WORDS = (
 # NOT get the startswith(...) extension.
 _WAKE_ASR_ALIASES = (
     "你好小孩",
+    # 2026-08-19 field report: ASR swallowed the 好 (你小白。). Exact-match
+    # only — no prefix extension, so ambient speech stays gated.
+    "你小白",
 )
 
 _WAKE_STRIP_RE = re.compile(r"[，。！？：；!?,.:;\s、～~]")
