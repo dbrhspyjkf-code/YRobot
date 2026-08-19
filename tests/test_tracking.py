@@ -222,24 +222,33 @@ def test_speech_pauses_tracking_with_anchor_when_face_locked():
 
     tracker.set_robot_speaking(True)
 
-    assert ("face", True) in robot.calls
     assert ("start", 0.0) in robot.calls
     # Anchor: the gaze spring POSITION syncs to the daemon's exact head
-    # pose so the handoff never snaps.
+    # pose so the handoff never snaps. (2026-08-19: no face query anymore —
+    # the handoff is unconditional; see the no-face-lock test.)
     assert choreo.synced == [pytest.approx(0.3)]
 
 
-def test_speech_keeps_tracking_when_no_face_locked():
+def test_speech_pauses_tracking_even_without_face_lock():
+    """2026-08-19 gesture-first handoff.
+
+    Field data: with a flaky face lock (acquired->lost every second),
+    6/6 TTS turns took the old no-face-lock branch, daemon tracking kept
+    weight=1.0 on the head and expression moves could only move the
+    antennas. Speech must always hand the head to the Choreographer.
+    """
     from yrobot.tracking import SpeakerTracker
 
     robot = _DaemonTrackingRobot(detected=False)
-    tracker = SpeakerTracker(robot, _YawChoreo())
+    choreo = _YawChoreo()
+    tracker = SpeakerTracker(robot, choreo)
     tracker.set_conversation_active(True)
     robot.calls.clear()
 
     tracker.set_robot_speaking(True)
 
-    assert ("start", 0.0) not in robot.calls
+    assert ("start", 0.0) in robot.calls
+    assert choreo.synced
 
 
 def test_speech_end_resumes_full_tracking():

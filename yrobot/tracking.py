@@ -127,15 +127,15 @@ class SpeakerTracker:
             return
         try:
             if speaking:
-                face = self.reachy_mini.get_tracked_face(wait=False)
-                if face is not None and face.detected:
-                    # Anchor: sync the gaze spring position to the daemon's
-                    # exact head pose so the handoff never snaps.
-                    self.choreo.sync_gaze(self._current_head_yaw())
-                    self.reachy_mini.start_head_tracking(weight=0.0)
-                    logger.info("speaking handoff: anchored + tracking paused")
-                else:
-                    logger.info("speaking handoff: no face lock, tracking keeps acquiring")
+                # Gesture-first handoff (2026-08-19): always pause daemon
+                # tracking for the whole TTS turn. The old face-locked-only
+                # branch kept weight=1.0 on the head whenever the face lock
+                # was flaky (acquired->lost every second in the field), so
+                # expression moves could only move the antennas. The anchor
+                # uses the current head pose and needs no face lock.
+                self.choreo.sync_gaze(self._current_head_yaw())
+                self.reachy_mini.start_head_tracking(weight=0.0)
+                logger.info("speaking handoff: anchored + tracking paused")
             else:
                 if self._daemon_tracking[0]:
                     self.reachy_mini.start_head_tracking(weight=1.0)
