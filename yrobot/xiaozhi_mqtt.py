@@ -224,6 +224,11 @@ class XiaozhiMqttTransport:
     def connected(self) -> bool:
         return self._connected.is_set() and not self._closed.is_set()
 
+    @property
+    def queue(self) -> asyncio.Queue:
+        """Shared inbound queue (dicts from MQTT, bytes from the UDP reader)."""
+        return self._queue
+
     def start(self) -> None:
         import paho.mqtt.client as mqtt  # imported lazily: optional dep
 
