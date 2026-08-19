@@ -2007,7 +2007,8 @@ class Yrobot(ReachyMiniApp):
                             # actions exactly (_waked + nod + deadline).
                             if _xz_kws is not None and not _waked:
                                 try:
-                                    _hit = _xz_kws.feed((buf * 32767.0).astype(np.int16))
+                                    _mono = buf[:, 0] if getattr(buf, "ndim", 1) > 1 else buf
+                                    _hit = _xz_kws.feed((_mono * 32767.0).astype(np.int16))
                                     if _hit:
                                         _waked = True
                                         _wake_deadline = time.time() + WAKE_TIMEOUT
