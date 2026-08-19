@@ -313,3 +313,10 @@ def test_sync_gaze_sets_spring_position_and_target():
 
     assert choreo._gaze.pos == pytest.approx(0.4)
     assert choreo._gaze.target == pytest.approx(0.4)
+
+
+def test_welcoming_emotion_maps_to_recorded_moves():
+    from yrobot.motion import EMOTION_FALLBACK_MOVE, recorded_move_for
+
+    assert recorded_move_for("welcoming") in {"welcoming1", "welcoming2"}
+    assert EMOTION_FALLBACK_MOVE.get("welcoming") is not None

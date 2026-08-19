@@ -114,6 +114,7 @@ EMOTION_TO_MOVES: dict[str, tuple[str, ...]] = {
     "anxious": ("anxiety1", "fear1"),
     "bored": ("boredom2", "boredom1"),
     "lonely": ("lonely1",),
+    "welcoming": ("welcoming2",),
     "embarrassed": ("shy1",),
     "yes": ("yes1", "understanding2"),
     "no": ("no1",),
@@ -131,6 +132,7 @@ EMOTION_FALLBACK_MOVE = {
     "sad": SAD, "crying": SAD, "downcast": SAD,
     "angry": ANGRY, "furious": ANGRY, "irritated": ANGRY,
     "loving": TILT, "kissy": TILT,
+    "welcoming": TILT,
 }
 
 _recent_recorded_choice: dict[str, str] = {}

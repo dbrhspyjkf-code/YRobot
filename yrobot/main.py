@@ -47,6 +47,7 @@ from yrobot.qwen_emotion import (
 )
 from yrobot.faces import FaceDB
 from yrobot.speech_emotion import sentence_emotion
+from yrobot.sentence_emotion_llm import classify_sentence_llm
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 from yrobot.uplink_vad import DECISION_END, EnergyHangoverVAD, PrerollBuffer
 from yrobot.xiaozhi_mqtt import (
@@ -2119,6 +2120,53 @@ class Yrobot(ReachyMiniApp):
                                             prefer_recorded=True,
                                             source="sentence",
                                         )
+                                elif _waked and sentence_text.strip():
+                                    # Semantic fallback tier (2026-08-19): the
+                                    # keyword table misses most emotional
+                                    # sentences (2/76 over 3 days of logs) and
+                                    # every llm-event tag was the default
+                                    # happy. Classify out-of-band with
+                                    # qwen-flash: worker thread only, total,
+                                    # 2 s bounded; the 12 s global cooldown in
+                                    # _play_emotion_move still throttles.
+                                    text_snapshot = sentence_text
+
+                                    async def _llm_emotion_fallback(
+                                        snapshot: str = text_snapshot,
+                                    ) -> None:
+                                        emo = await _a.to_thread(
+                                            classify_sentence_llm, snapshot
+                                        )
+                                        # _waked / tts_active are read live on
+                                        # purpose: gesture only if the robot is
+                                        # still awake and still talking.
+                                        if (  # noqa: B023
+                                            not emo
+                                            or not _waked
+                                            or not tts_active
+                                        ):
+                                            return
+                                        if (
+                                            choreo.current_move() is not None
+                                            or choreo.current_recorded() is not None
+                                        ):
+                                            logger.info(
+                                                "xz llm emotion %s skipped "
+                                                "(move in progress)",
+                                                emo,
+                                            )
+                                            return
+                                        logger.info("xz llm emotion classified: %s", emo)
+                                        _handle_xiaozhi_emotion(
+                                            choreo,
+                                            emo,
+                                            tracker._last_emotion_move,
+                                            _get_recorded,
+                                            prefer_recorded=True,
+                                            source="sentence",
+                                        )
+
+                                    _a.create_task(_llm_emotion_fallback())
                             elif t == "tts" and d.get("state") == "sentence_end":
                                 logger.info(
                                     "xz tts sentence_end packets=%d audio(enqueued=%d written=%d pending=%d)",
