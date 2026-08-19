@@ -169,6 +169,11 @@ class Settings:
     frame_period_idle_s: float = 3.0
     scene_change_threshold: float = 0.04
 
+    # Xiaozhi transport: "mqtt" (protocol v3, MQTT+UDP — the tenclass cloud
+    # stopped accepting home-broadband WebSocket handshakes on 2026-08-19)
+    # or "ws" (legacy protocol v1, kept for rollback).
+    xz_transport: str = "mqtt"
+
     # Experimental local keyword wake-word gate via sherpa-onnx KWS.
     # Keep it opt-in: the deployed stable QWEN path uses cloud ASR audio
     # upload plus WakeGate transcript matching, with a low VAD threshold,
@@ -265,6 +270,8 @@ class Settings:
             raise ValueError("YROBOT_SCENE_CHANGE_THRESHOLD must be between 0 and 1")
         if not 0.001 <= self.vad_rms_min <= 0.5:
             raise ValueError("YROBOT_VAD_RMS_MIN must be between 0.001 and 0.5")
+        if self.xz_transport not in ("mqtt", "ws"):
+            raise ValueError(f"xz_transport must be mqtt or ws, got {self.xz_transport!r}")
         if not 0.3 <= self.utterance_hangover_s <= 3.0:
             raise ValueError("YROBOT_UTTERANCE_HANGOVER_S must be between 0.3 and 3.0")
         if not 6.0 <= self.utterance_max_s <= 30.0:
@@ -326,6 +333,7 @@ class Settings:
             frame_period_active_s=_num("YROBOT_FRAME_CAPTURE_PERIOD_S", 1.0, env),
             frame_period_idle_s=_num("YROBOT_FRAME_IDLE_HEARTBEAT_S", 3.0, env),
             scene_change_threshold=_num("YROBOT_SCENE_CHANGE_THRESHOLD", 0.04, env),
+            xz_transport=env.get("YROBOT_XZ_TRANSPORT", "mqtt").strip().lower() or "mqtt",
             wake_enabled=_flag("YROBOT_WAKE_ENABLED", False, env),
             wake_phrase=env.get("YROBOT_WAKE_PHRASE", "你好小白").strip() or "你好小白",
             kws_model_dir=env.get(

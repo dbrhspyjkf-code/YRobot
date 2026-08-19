@@ -242,3 +242,24 @@ def test_barge_confirmation_window_is_bounded(confirm_ms):
 def test_fast_barge_confirmation_must_precede_safe_path(confirm_ms):
     with pytest.raises(ValueError, match="FAST_CONFIRM"):
         Settings(barge_fast_confirm_ms=confirm_ms, barge_confirm_ms=500)
+
+
+class TestXzTransportSetting:
+    """YROBOT_XZ_TRANSPORT selects the xiaozhi session transport (P3)."""
+
+    def _from_env(self, env: dict):
+        from yrobot.config import Settings
+
+        return Settings.from_env(env)
+
+    def test_default_is_mqtt(self) -> None:
+        assert self._from_env({}).xz_transport == "mqtt"
+
+    def test_explicit_ws(self) -> None:
+        assert self._from_env({"YROBOT_XZ_TRANSPORT": "WS"}).xz_transport == "ws"
+
+    def test_invalid_rejected(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError):
+            self._from_env({"YROBOT_XZ_TRANSPORT": "carrier-pigeon"})

@@ -49,6 +49,18 @@ from yrobot.faces import FaceDB
 from yrobot.speech_emotion import sentence_emotion
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 from yrobot.uplink_vad import DECISION_END, EnergyHangoverVAD, PrerollBuffer
+from yrobot.xiaozhi_mqtt import (
+    UdpChannelInfo,
+    XiaozhiMqttTransport,
+    XiaozhiUdpAudio,
+    hello_request,
+)
+from yrobot.xiaozhi_ota import (
+    OTAError,
+    OtaCredentialCache,
+    fetch_mqtt_config,
+    load_or_create_client_uuid,
+)
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
 try:
@@ -1679,6 +1691,198 @@ class Yrobot(ReachyMiniApp):
             _xz_vol_ctx["last_at"] = now
             return {"action": action, "volume_percent": applied}
 
+        # ── Session channel: MQTT+UDP (protocol v3) or legacy WS ─────────
+        # The tenclass cloud stopped accepting home-broadband WebSocket
+        # handshakes on 2026-08-19 (HTTP 426 for every request shape), so
+        # MQTT is the default transport. Both adapters expose the same
+        # recv/send shape: inbound dicts (MQTT JSON) and bytes (UDP opus)
+        # share one asyncio.Queue — the exact type-split the legacy WS
+        # recv() loop already handled, so the session logic below stays
+        # transport-agnostic.
+        _ota_cache = OtaCredentialCache()
+        _client_uuid = load_or_create_client_uuid()
+
+        class _MqttChannel:
+            def __init__(self, transport, udp, sid, tts_rate, tts_frame_ms):
+                self._tp = transport
+                self._udp = udp
+                self.session_id = sid
+                self.tts_rate = tts_rate
+                self.tts_frame_ms = tts_frame_ms
+                self._ts = 0
+
+            async def recv(self):
+                while not stop_event.is_set():
+                    try:
+                        return await _a.wait_for(self._tp.queue.get(), timeout=15.0)
+                    except TimeoutError:
+                        if not self._tp.connected:
+                            raise _XiaozhiReconnect("mqtt broker disconnected") from None
+                        continue
+                raise _XiaozhiReconnect("stopping")
+
+            async def send_json(self, obj):
+                if not self._tp.publish_json(obj):
+                    raise _XiaozhiReconnect("mqtt publish failed")
+
+            async def send_audio(self, opus):
+                self._ts += 960  # 16 kHz mono, 60 ms frames
+                await _a.to_thread(self._udp.send, opus, timestamp=self._ts)
+
+            async def close(self):
+                try:
+                    self._tp.publish_json(
+                        {"session_id": self.session_id, "type": "goodbye"}
+                    )
+                except Exception:  # noqa: BLE001 — best-effort farewell
+                    pass
+                self._udp.close()
+                self._tp.close()
+
+        class _WsChannel:
+            def __init__(self, ws, sid, tts_rate, tts_frame_ms):
+                self._ws = ws
+                self.session_id = sid
+                self.tts_rate = tts_rate
+                self.tts_frame_ms = tts_frame_ms
+
+            async def recv(self):
+                return await self._ws.recv()
+
+            async def send_json(self, obj):
+                await self._ws.send(_j.dumps(obj, ensure_ascii=False))
+
+            async def send_audio(self, opus):
+                await self._ws.send(opus)
+
+            async def close(self):
+                await self._ws.close()
+
+        async def _open_ws_channel():
+            hdrs = {
+                "Authorization": f"Bearer {XIAOZHI_TOKEN}",
+                "Device-Id": XIAOZHI_DEVICE_ID,
+                "Protocol-Version": "1",
+            }
+            ws = await _ws.connect(
+                XIAOZHI_CONV_URL,
+                additional_headers=hdrs,
+                open_timeout=12,
+                ping_interval=20,
+                ping_timeout=10,
+            )
+            await ws.send(
+                _j.dumps(
+                    {
+                        "type": "hello",
+                        "version": 1,
+                        "transport": "websocket",
+                        "audio_params": {
+                            "format": "opus",
+                            "sample_rate": 16000,
+                            "channels": 1,
+                            "frame_duration": 60,
+                        },
+                    }
+                )
+            )
+            data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
+            params = data.get("audio_params", {})
+            return _WsChannel(
+                ws,
+                data.get("session_id", ""),
+                int(params.get("sample_rate", 24000)),
+                int(params.get("frame_duration", 60)),
+            )
+
+        async def _open_mqtt_channel():
+            loop = _a.get_running_loop()
+            inq: _a.Queue = _a.Queue()
+            cfg = _ota_cache.load()
+            transport: XiaozhiMqttTransport | None = None
+            last_exc: Exception | None = None
+            for _attempt in range(2):
+                if cfg is None:
+                    cfg = await _a.to_thread(
+                        fetch_mqtt_config, XIAOZHI_DEVICE_ID, _client_uuid
+                    )
+                    _ota_cache.save(cfg)
+                transport = XiaozhiMqttTransport(cfg, loop=loop, queue=inq)
+                try:
+                    await _a.to_thread(transport.start)
+                    if not await _a.to_thread(transport.wait_connected, 10.0):
+                        raise OSError("mqtt connect timeout")
+                    break
+                except Exception as exc:  # noqa: BLE001 — retry once with fresh creds
+                    last_exc = exc
+                    logger.warning(
+                        "xz mqtt connect failed (attempt %d): %s", _attempt + 1, exc
+                    )
+                    transport.close()
+                    transport = None
+                    _ota_cache.path.unlink(missing_ok=True)
+                    cfg = None
+            if transport is None:
+                raise OTAError(f"mqtt channel unavailable: {last_exc}")
+            if not transport.publish_text(hello_request()):
+                transport.close()
+                raise OTAError("mqtt hello publish failed")
+            # The broker may push mcp chatter before the hello reply; park
+            # anything else and replay it once the session is up.
+            deferred = []
+            hello = None
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                try:
+                    msg = await _a.wait_for(
+                        inq.get(), timeout=max(0.1, deadline - time.monotonic())
+                    )
+                except TimeoutError:
+                    break
+                if isinstance(msg, dict) and msg.get("type") == "hello":
+                    hello = msg
+                    break
+                deferred.append(msg)
+            if hello is None:
+                transport.close()
+                raise OTAError("mqtt server hello timeout")
+            info = UdpChannelInfo.from_hello(hello)
+            if info is None:
+                transport.close()
+                raise OTAError("mqtt server hello lacks udp section")
+            sid = str(hello.get("session_id", ""))
+            ap = hello.get("audio_params") or {}
+            tts_rate = int(ap.get("sample_rate", 24000))
+            tts_ms = int(ap.get("frame_duration", 60))
+            udp = XiaozhiUdpAudio(
+                info,
+                on_packet=lambda opus, ts: loop.call_soon_threadsafe(
+                    inq.put_nowait, opus
+                ),
+            )
+            udp.start()
+            channel = _MqttChannel(transport, udp, sid, tts_rate, tts_ms)
+            for m in deferred:
+                inq.put_nowait(m)
+            logger.info(
+                "xz mqtt ready sid=%s audio=%dHz/%dms udp=%s:%d",
+                sid[:12],
+                tts_rate,
+                tts_ms,
+                info.server,
+                info.port,
+            )
+            return channel
+
+        async def _open_xz_channel():
+            if settings.xz_transport == "ws":
+                return await _open_ws_channel()
+            try:
+                return await _open_mqtt_channel()
+            except OTAError as exc:
+                logger.warning("xz mqtt unavailable (%s); falling back to ws", exc)
+                return await _open_ws_channel()
+
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
             # Device-side MCP server: fixed whitelist (volume tools only,
@@ -1688,39 +1892,12 @@ class Yrobot(ReachyMiniApp):
                 volume_read=_vc.read_percent,
                 volume_write=_vc.write_percent,
             )
-            hdrs = {
-                "Authorization": f"Bearer {XIAOZHI_TOKEN}",
-                "Device-Id": XIAOZHI_DEVICE_ID,
-                "Protocol-Version": "1",
-            }
             RUNTIME_HEALTH.update(ws_state="connecting")
-            async with _ws.connect(
-                XIAOZHI_CONV_URL,
-                additional_headers=hdrs,
-                open_timeout=12,
-                ping_interval=20,
-                ping_timeout=10,
-            ) as ws:
-                await ws.send(
-                    _j.dumps(
-                        {
-                            "type": "hello",
-                            "version": 1,
-                            "transport": "websocket",
-                            "audio_params": {
-                                "format": "opus",
-                                "sample_rate": 16000,
-                                "channels": 1,
-                                "frame_duration": 60,
-                            },
-                        }
-                    )
-                )
-                data = _j.loads(await _a.wait_for(ws.recv(), timeout=10))
-                sid = data.get("session_id", "")
-                params = data.get("audio_params", {})
-                tts_rate = int(params.get("sample_rate", 24000))
-                tts_duration = int(params.get("frame_duration", 60))
+            chan = await _open_xz_channel()
+            try:
+                sid = chan.session_id
+                tts_rate = chan.tts_rate
+                tts_duration = chan.tts_frame_ms
                 tts_frame_size = tts_rate * tts_duration // 1000
                 dec = opuslib.Decoder(tts_rate, 1)
                 tts_packets = 0
@@ -1750,7 +1927,7 @@ class Yrobot(ReachyMiniApp):
                     nonlocal _waked, _wake_deadline
                     while not stop_event.is_set():
                         try:
-                            raw = await ws.recv()
+                            raw = await chan.recv()
                         except TimeoutError:
                             continue
                         if isinstance(raw, bytes):
@@ -1790,7 +1967,7 @@ class Yrobot(ReachyMiniApp):
                                 )
                         else:
                             RUNTIME_HEALTH.update(last_rx_at=time.time())
-                            d = _j.loads(raw)
+                            d = raw if isinstance(raw, dict) else _j.loads(raw)
                             t = d.get("type", "")
                             if t == "mcp":
                                 # Xiaozhi MCP (the channel control_smart_home
@@ -1801,15 +1978,12 @@ class Yrobot(ReachyMiniApp):
                                     _xz_mcp.handle_payload, mcp_payload
                                 )
                                 if mcp_reply is not None:
-                                    await ws.send(
-                                        _j.dumps(
-                                            {
-                                                "session_id": sid,
-                                                "type": "mcp",
-                                                "payload": mcp_reply,
-                                            },
-                                            ensure_ascii=False,
-                                        )
+                                    await chan.send_json(
+                                        {
+                                            "session_id": sid,
+                                            "type": "mcp",
+                                            "payload": mcp_reply,
+                                        }
                                     )
                                     logger.info("xz mcp -> %.200s", mcp_reply)
                                 else:
@@ -2090,15 +2264,13 @@ class Yrobot(ReachyMiniApp):
                         if _waked:
                             _wake_deadline = time.time() + WAKE_TIMEOUT
                         _user_speaking[0] = True
-                        await ws.send(
-                            _j.dumps(
-                                {
-                                    "session_id": sid,
-                                    "type": "listen",
-                                    "state": "start",
-                                    "mode": "manual",
-                                }
-                            )
+                        await chan.send_json(
+                            {
+                                "session_id": sid,
+                                "type": "listen",
+                                "state": "start",
+                                "mode": "manual",
+                            }
                         )
                         # Prepend the fresh preroll tail (≤0.5 s before the
                         # onset) ahead of the gate window's own frames, then
@@ -2109,7 +2281,7 @@ class Yrobot(ReachyMiniApp):
                         for f16 in uplink_frames:
                             try:
                                 await _a.wait_for(
-                                    ws.send(enc.encode(f16.tobytes(), 960)), timeout=3
+                                    chan.send_audio(enc.encode(f16.tobytes())), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
@@ -2150,7 +2322,7 @@ class Yrobot(ReachyMiniApp):
                                 # was one repeated frame and the cloud could
                                 # not tell what the user said.
                                 await _a.wait_for(
-                                    ws.send(enc.encode(buf.tobytes(), 960)), timeout=3
+                                    chan.send_audio(enc.encode(buf.tobytes())), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
@@ -2161,8 +2333,8 @@ class Yrobot(ReachyMiniApp):
                             # inter-word pauses no longer cut speech.
                             if uplink_vad.feed(rms) == DECISION_END:
                                 break
-                        await ws.send(
-                            _j.dumps({"session_id": sid, "type": "listen", "state": "stop"})
+                        await chan.send_json(
+                            {"session_id": sid, "type": "listen", "state": "stop"}
                         )
                         _user_speaking[0] = False
                         if sent:
@@ -2182,6 +2354,11 @@ class Yrobot(ReachyMiniApp):
                             logger.warning("xiaozhi receive task closed, reconnecting: %s", exc)
                         else:
                             logger.warning("xiaozhi receive task closed with error: %s", exc)
+            finally:
+                try:
+                    await chan.close()
+                except Exception:  # noqa: BLE001 — teardown best effort
+                    pass
 
         try:
             while not stop_event.is_set():
