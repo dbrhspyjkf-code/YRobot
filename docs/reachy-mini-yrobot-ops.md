@@ -1641,3 +1641,24 @@ curl -X POST http://127.0.0.1:8000/api/motors/set_mode/enabled
 opt-in + offer SDP 剥离全部 m=audio 段，减少 daemon 开音频 pipeline 的
 触发面。**待观察**: daemon 进入持卡状态的确切条件（若复发，抓取当时
 daemon 侧 WebRTC/视频请求日志对照）。
+
+## 2026-08-19 深夜补充：tenclass 会话族问题（同一根源的三个表现）
+
+tenclass 云端灰度期会话管理不稳，三种表现、两类机制：
+
+| 表现 | 机制 | 现象 |
+|---|---|---|
+| 闲置过期 | 会话 ~10 分钟无活动被回收（MQTT 连接仍活） | 唤醒后音频上行正常但云端零 stt |
+| 音频下行丢失 | 新会话只建 MQTT 文本通道，UDP 音频下行不建立 | 回复文本正常（"有回应"）但 packets=0 无声，声卡空闲 |
+| 动态换端口 | 每次会话 UDP 端口不同（8811/8812/8813/8814/8815 都见过） | 正常现象，非故障 |
+
+**判别要点**（无声时先看这三行）:
+```bash
+journalctl -u yrobot.service --since "5 min" | grep -E "packets=|aplay|fuser"
+# packets=0 + 声卡空闲     → 会话音频下行丢失 → systemctl restart yrobot 换会话
+# packets>0 + aplay 风暴   → daemon 持卡 → 见上节 daemon 半死 SOP
+# stt 全无 + 上行正常      → 会话闲置过期 → 同样 restart 换会话
+```
+
+**待做（设备端兜底，统一切面）**: TTS start 后 N 秒 packets=0、或唤醒后 M 秒
+无任何云端下行 → 静默重建 MQTT 会话（自动 restart 连接层，不打断 UI）。
