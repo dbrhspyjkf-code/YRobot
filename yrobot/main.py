@@ -2282,7 +2282,7 @@ class Yrobot(ReachyMiniApp):
                         for f16 in uplink_frames:
                             try:
                                 await _a.wait_for(
-                                    chan.send_audio(enc.encode(f16.tobytes())), timeout=3
+                                    chan.send_audio(enc.encode(f16.tobytes(), 960)), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
@@ -2324,7 +2324,7 @@ class Yrobot(ReachyMiniApp):
                                 # was one repeated frame and the cloud could
                                 # not tell what the user said.
                                 await _a.wait_for(
-                                    chan.send_audio(enc.encode(buf.tobytes())), timeout=3
+                                    chan.send_audio(enc.encode(buf.tobytes(), 960)), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
