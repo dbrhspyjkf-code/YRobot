@@ -48,6 +48,7 @@ from yrobot.qwen_emotion import (
 from yrobot.faces import FaceDB
 from yrobot.speech_emotion import sentence_emotion
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
+from yrobot.uplink_vad import DECISION_END, EnergyHangoverVAD, PrerollBuffer
 
 # ── Xiaozhi cloud device identity (read from network interface) ──────────────
 try:
@@ -1960,7 +1961,26 @@ class Yrobot(ReachyMiniApp):
                     from yrobot.audio import get_vad_rms_min as _get_vad_min
 
                     SILENCE_RMS = max(500, int(_get_vad_min() * 32768))
-                    logger.info("xz silence floor rms=%.0f", SILENCE_RMS)
+                    # Energy-hangover VAD (2026-08-19): replaces the inline
+                    # silence_run counter and fixes the extend-loop bug that
+                    # re-sent the LAST collect frame (f16) instead of the
+                    # freshly read buf, so the cloud received one repeated
+                    # frame for the whole utterance tail and could not tell
+                    # what the user said. Speech now streams until sustained
+                    # silence (default 1.5 s) or the 12 s cap; a preroll
+                    # buffer keeps the first syllables of quiet onsets.
+                    uplink_vad = EnergyHangoverVAD(
+                        stop_rms=1000.0,
+                        hangover_s=settings.utterance_hangover_s,
+                        max_utterance_s=settings.utterance_max_s,
+                    )
+                    uplink_preroll = PrerollBuffer(seconds=0.5)
+                    logger.info(
+                        "xz silence floor rms=%.0f hangover=%.1fs max=%.0fs",
+                        SILENCE_RMS,
+                        settings.utterance_hangover_s,
+                        settings.utterance_max_s,
+                    )
                     while not stop_event.is_set():
                         if rt.done():
                             if rt.cancelled():
@@ -2061,6 +2081,10 @@ class Yrobot(ReachyMiniApp):
                                 except Exception as exc:  # noqa: BLE001
                                     logger.warning("xz kws feed error: %s", exc)
                         if rms_max < SILENCE_RMS:
+                            # Keep the window's tail for the next gate pass so
+                            # a quiet onset does not lose its first syllables
+                            # (frames that failed the gate are gone otherwise).
+                            uplink_preroll.extend(frames)
                             continue
                         # Refresh wake deadline on every speech burst.
                         if _waked:
@@ -2076,8 +2100,13 @@ class Yrobot(ReachyMiniApp):
                                 }
                             )
                         )
+                        # Prepend the fresh preroll tail (≤0.5 s before the
+                        # onset) ahead of the gate window's own frames, then
+                        # let the hangover VAD own the turn-end decision.
+                        uplink_frames = uplink_preroll.drain() + frames
+                        uplink_vad.begin()
                         sent = 0
-                        for f16 in frames:
+                        for f16 in uplink_frames:
                             try:
                                 await _a.wait_for(
                                     ws.send(enc.encode(f16.tobytes(), 960)), timeout=3
@@ -2086,10 +2115,7 @@ class Yrobot(ReachyMiniApp):
                                 await _a.sleep(0)
                             except Exception:
                                 break
-                        deadline = time.monotonic() + 8.0
-                        min_deadline = time.monotonic() + 3.0
-                        silence_run = 0
-                        while time.monotonic() < deadline and not stop_event.is_set():
+                        while not stop_event.is_set():
                             buf = await _a.to_thread(mic_q.get, True, 5.0)
                             # Feed KWS during the uplink extension too — a
                             # wake word spanning the collect/extend boundary
@@ -2118,34 +2144,32 @@ class Yrobot(ReachyMiniApp):
                             )
                             _publish_dashboard_mic(float(rms) / 32768.0)
                             try:
+                                # Send the frame just read (buf). An earlier
+                                # revision sent f16 (the leftover collect-loop
+                                # variable) here, so the whole utterance tail
+                                # was one repeated frame and the cloud could
+                                # not tell what the user said.
                                 await _a.wait_for(
-                                    ws.send(enc.encode(f16.tobytes(), 960)), timeout=3
+                                    ws.send(enc.encode(buf.tobytes(), 960)), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
                             except Exception:
                                 break
-                            # Require ~0.9s of CONTINUOUS silence after the
-                            # minimum window before ending the turn — a single
-                            # low-energy frame mid-sentence (or a short pause
-                            # before 怎么样) used to truncate the utterance.
-                            if time.monotonic() > min_deadline:
-                                if rms < 1000:
-                                    silence_run += 1
-                                    if silence_run >= 25:
-                                        break
-                                else:
-                                    silence_run = 0
+                            # Hangover VAD ends the turn only on sustained
+                            # silence (default 1.5 s) or the 12 s cap; single
+                            # inter-word pauses no longer cut speech.
+                            if uplink_vad.feed(rms) == DECISION_END:
+                                break
                         await ws.send(
                             _j.dumps({"session_id": sid, "type": "listen", "state": "stop"})
                         )
                         _user_speaking[0] = False
                         if sent:
                             logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
-                        for _ in range(20):
-                            if stop_event.is_set():
-                                break
-                            await _a.sleep(0.2)
+                        # No post-burst cooldown: the old 4 s blind window ate
+                        # the start of a follow-up sentence. The gate loop
+                        # resumes immediately and stays armed via preroll.
                 finally:
                     if not rt.done():
                         rt.cancel()

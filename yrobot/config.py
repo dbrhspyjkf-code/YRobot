@@ -188,6 +188,12 @@ class Settings:
 
     vad_aggressiveness: int = 2
     vad_rms_min: float = 0.065
+    # Xiaozhi uplink energy-hangover VAD (2026-08-19): single-frame
+    # silence checks and short caps truncated speech on the way to the
+    # cloud (field report: "the cloud never knew what I said"). Defaults
+    # keep the field-tuned 1.5 s turn-end silence and raise the cap to 12 s.
+    utterance_hangover_s: float = 1.5
+    utterance_max_s: float = 12.0
     # A candidate is treated as self-echo only when it both matches recent
     # playout and leaves less than this much unexplained near-end energy.
     barge_echo_similarity: float = 0.75
@@ -259,6 +265,10 @@ class Settings:
             raise ValueError("YROBOT_SCENE_CHANGE_THRESHOLD must be between 0 and 1")
         if not 0.001 <= self.vad_rms_min <= 0.5:
             raise ValueError("YROBOT_VAD_RMS_MIN must be between 0.001 and 0.5")
+        if not 0.3 <= self.utterance_hangover_s <= 3.0:
+            raise ValueError("YROBOT_UTTERANCE_HANGOVER_S must be between 0.3 and 3.0")
+        if not 6.0 <= self.utterance_max_s <= 30.0:
+            raise ValueError("YROBOT_UTTERANCE_MAX_S must be between 6 and 30")
         if not 0.0 <= self.head_tracking_weight <= 1.0:
             raise ValueError("YROBOT_HEAD_TRACKING_WEIGHT must be between 0 and 1")
 
@@ -327,6 +337,8 @@ class Settings:
             reconnect_delay_s=_num("YROBOT_RECONNECT_DELAY_S", 2.5, env),
             vad_aggressiveness=int(_num("YROBOT_VAD_AGGRESSIVENESS", 2, env)),
             vad_rms_min=_num("YROBOT_VAD_RMS_MIN", 0.065, env),
+            utterance_hangover_s=_num("YROBOT_UTTERANCE_HANGOVER_S", 1.5, env),
+            utterance_max_s=_num("YROBOT_UTTERANCE_MAX_S", 12.0, env),
             barge_echo_similarity=_num("YROBOT_BARGE_ECHO_SIMILARITY", 0.75, env),
             barge_unexplained_db=_num("YROBOT_BARGE_UNEXPLAINED_DB", -42.0, env),
             barge_confirm_ms=int(_num("YROBOT_BARGE_CONFIRM_MS", 500, env)),
