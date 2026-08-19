@@ -1598,3 +1598,46 @@ KWS/VAD/aplay/choreo 零改动。
 
 **验证状态**（2026-08-19 20:53, operator 在场）: 唤醒应答、多轮对话、
 音量控制（volume_up）、Sonos 音箱控制（control_sonos）全部实测通过。
+
+## 2026-08-19 晚：daemon「半死」持卡事件（对话无声 + 无点头 + KWS 无响应）
+
+**症状三联**（桌面 app 连接期间出现，也可独立出现）:
+1. 对话链路全通（stt/llm/tts 包正常到达，0 解码错误）但**无声**
+2. 唤醒**不点头**、所有动作失效
+3. KWS 对唤醒词无反应（用户大声喊也不行）
+
+**根因**: daemon 进程整体进入半死状态——
+- GStreamer 音频 pipeline 打开后**持续持有 /dev/snd/pcmC0D0p 不释放**
+  （即使触发它的消费者早已断开）；YRobot 的 aplay 自愈拉锯永远打不赢
+  （一晚 spawn 2000+ 次 aplay）
+- motor 控制环僵死（daemon 日志 IK error "Collision detected" 每秒刷屏）
+- aplay 风暴把 CPU 负载推到 5+，sherpa-onnx KWS 实时性被饿死
+
+**三个假象（排查时勿被骗）**:
+1. 退出桌面 app 后 aplay 风暴「停了」≠ 恢复——只是没有 TTS 播放需求了，
+   daemon 从未放卡（`fuser` 可证）
+2. WebRTC 音频轨（桌面 app v1/v2 的 audio m-line）是 daemon 开 pipeline 的
+   **触发器之一**，但「开了不回收」是 daemon 自己的 bug；无 WebRTC 时
+   若 daemon 已持卡，风暴照样复发
+3. 「tenclass stt 空窗」（重启后即通、闲置 ~10 分钟后空窗）是**独立问题**，
+   与本事件无关；待做：唤醒后 N 秒无云端下行 → 静默重建 MQTT 会话
+
+**诊断 SOP**（对话没声音时 30 秒定位）:
+```bash
+sudo fuser -v /dev/snd/pcmC0D0p        # daemon(python) 持有 → 本事件
+journalctl -u yrobot.service --since "5 min" | grep -c "started aplay"  # >10 = 风暴
+journalctl -u reachy-mini-daemon.service --since "10 min" | grep -c "IK error"
+```
+
+**恢复 SOP**:
+```bash
+sudo systemctl restart reachy-mini-daemon.service   # 声卡释放 + 控制环复位
+# 等 daemon active 后（约 20s），电机默认 disabled 必须重新使能:
+curl -X POST http://127.0.0.1:8000/api/motors/set_mode/enabled
+# yrobot.service 会因 daemon 断连自动重启，等 KWS armed + mqtt ready 即恢复
+```
+
+**预防（已部署）**: 桌面 app v3（desktop-app repo `9d44159`）摄像头流
+opt-in + offer SDP 剥离全部 m=audio 段，减少 daemon 开音频 pipeline 的
+触发面。**待观察**: daemon 进入持卡状态的确切条件（若复发，抓取当时
+daemon 侧 WebRTC/视频请求日志对照）。
