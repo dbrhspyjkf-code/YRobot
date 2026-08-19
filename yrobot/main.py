@@ -2272,6 +2272,7 @@ class Yrobot(ReachyMiniApp):
                                 "mode": "manual",
                             }
                         )
+                        logger.info("xz listen start (rms_max=%.0f)", rms_max)
                         # Prepend the fresh preroll tail (≤0.5 s before the
                         # onset) ahead of the gate window's own frames, then
                         # let the hangover VAD own the turn-end decision.
@@ -2285,7 +2286,8 @@ class Yrobot(ReachyMiniApp):
                                 )
                                 sent += 1
                                 await _a.sleep(0)
-                            except Exception:
+                            except Exception as exc:
+                                logger.warning("xz uplink send failed: %s", exc)
                                 break
                         while not stop_event.is_set():
                             buf = await _a.to_thread(mic_q.get, True, 5.0)
@@ -2326,7 +2328,8 @@ class Yrobot(ReachyMiniApp):
                                 )
                                 sent += 1
                                 await _a.sleep(0)
-                            except Exception:
+                            except Exception as exc:
+                                logger.warning("xz uplink send failed: %s", exc)
                                 break
                             # Hangover VAD ends the turn only on sustained
                             # silence (default 1.5 s) or the 12 s cap; single
