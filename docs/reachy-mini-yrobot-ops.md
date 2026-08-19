@@ -1515,3 +1515,44 @@ This remains entirely local and continues to read only the Dashboard camera
 cache; it does not send any additional image to QWEN. Verification: focused
 greeting-gate tests, Python compilation, and diff whitespace checks passed
 before deployment.
+
+## 2026-08-19 16:40 CST - Deploy script and sync discipline
+
+Problem: two sources of truth drifted. Codex deployed three commits
+directly on the robot (`4bab365`, `52cf00c`, `6e12494`, `ad90ecc`,
+`9e3ff1e`) that the Mac clone did not have; a naive file overwrite from
+the stale clone would have silently removed the freshly deployed xiaozhi
+local-KWS wake. The user then ruled: the local repo is the single
+source of truth, the robot is a deployment snapshot, and the robot's git
+is NOT a deployment channel.
+
+Rule set (also pinned in AGENTS.md, "Code sync & deployment discipline"):
+
+1. All code changes happen in the local repo (any agent: Codex, Proma,
+   Claude, human). Never edit robot files directly.
+2. Deploys go only through `scripts/deploy.sh`:
+   - drift check: `git fetch` the robot branch; an unknown robot HEAD
+     aborts the deploy until reconciled; a dirty robot `git status`
+     requires an explicit `overwrite` confirmation;
+   - local py_compile + focused pytest (skippable via `--skip-tests`);
+   - timestamped robot backup + SHA-256 manifest under
+     `/home/pollen/.local/state/yrobot/backups/deploy-<ts>/`;
+   - checksum rsync, NO `--delete`, `.git/.venv/.env/secrets/caches`
+     excluded — `.env` is never synced (secrets stay robot-local,
+     invariant #7);
+   - robot-side py_compile + focused pytest;
+   - orphan-safe restart (stop, kill leftover `[p]ython.*YRobot` PIDs
+     outside the cgroup, reset-failed, start);
+   - robot-side archive commit `deploy: <local-sha> <subject>` so the
+     next drift check starts from a clean fingerprint.
+   Flags: `--dry-run` (drift check + rsync plan only), `--no-restart`.
+3. The robot git tree is a fingerprint, not a history: `git log` shows
+   which deploy is live; dirty `git status` = someone bypassed the rule.
+4. Unavoidable on-robot debugging must still end with
+   `git add -A && git commit` on the robot, so the next deploy's fetch
+   pulls it back into the local repo instead of drifting silently.
+
+Validated 2026-08-19: `--dry-run` correctly flagged the un-archived
+afternoon deploy (dirty robot tree, exit 3), passed after the archive
+commit `fec8cb3`, and caught two script bugs before any real use
+(untracked-dir false positive; macOS openrsync lacks `--info=stats1`).
