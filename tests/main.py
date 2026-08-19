@@ -28,7 +28,6 @@ from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
-from yrobot.xiaozhi_mcp import XiaozhiMcpServer
 from yrobot.app_config import (
     _MediaHolder,
     audio_input_controller_singleton,
@@ -1358,7 +1357,6 @@ class Yrobot(ReachyMiniApp):
         import websockets as _ws
 
         from yrobot.app_config import audio_input_controller_singleton
-        from yrobot.kws import KeywordWakeDetector
         from yrobot.audio import _publish_dashboard_mic
         from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
@@ -1454,47 +1452,8 @@ class Yrobot(ReachyMiniApp):
 
         _sleep.sleep(1.0)
 
-        # Explicit stream params matter: the device-default open produced
-        # float32 frames that were fed to opus as raw bytes (garbled audio
-        # the cloud ASR could only half understand) and starved KWS.
-        mic_stream = _sd.InputStream(
-            device="reachymini_audio_src",
-            samplerate=16000,
-            channels=1,
-            dtype="float32",
-        )
+        mic_stream = _sd.InputStream(device="reachymini_audio_src")
         mic_stream.start()
-
-        # Dedicated mic reader thread: the event loop's to_thread scheduling
-        # jittered past the 60ms frame budget (~75% frames dropped — speech
-        # came out as 2-4 garbled syllables and KWS never matched). A
-        # blocking read on its own thread plus a queue decouples consumers.
-        import queue as _q
-
-        mic_q: "_q.Queue[np.ndarray]" = _q.Queue(maxsize=512)
-        _mic_reader_stop = threading.Event()
-
-        def _mic_reader():
-            while not _mic_reader_stop.is_set():
-                try:
-                    raw, _ = mic_stream.read(960)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("mic reader error: %s", exc)
-                    _mic_reader_stop.wait(0.1)
-                    continue
-                src = raw[:, 0] if getattr(raw, "ndim", 1) > 1 else raw
-                pcm = (src * 32767.0).astype(np.int16)
-                try:
-                    mic_q.put_nowait(pcm)
-                except _q.Full:
-                    try:
-                        mic_q.get_nowait()  # drop oldest
-                        mic_q.put_nowait(pcm)
-                    except _q.Empty:
-                        pass
-
-        _mic_thread = threading.Thread(target=_mic_reader, daemon=True, name="xz-mic-reader")
-        _mic_thread.start()
 
         # Playback is intentionally isolated from the WebSocket event loop.
         # aplay writes can block on ALSA; the receive coroutine must never wait
@@ -1606,87 +1565,8 @@ class Yrobot(ReachyMiniApp):
                 except OSError:
                     pass
 
-        # Local keyword wake detector (sherpa-onnx KWS), sharing the same
-        # settings.wake_enabled switch as the QWEN path. A hit runs the
-        # exact same actions as the cloud-transcript wake match (_waked
-        # gate + nod), so wake no longer depends on tenclass streaming
-        # ambient stt (which has intermittent gaps).
-        _xz_kws: KeywordWakeDetector | None = None
-        if settings.wake_enabled:
-            try:
-                _xz_kws = KeywordWakeDetector(model_dir=Path(settings.kws_model_dir))
-                logger.info("XZ KWS wake armed: phrase=%r", settings.wake_phrase)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("XZ KWS init failed (falling back to cloud stt match): %s", exc)
-
-        _xz_vol_ctx = {"last_at": 0.0}
-
-        def _xz_local_volume_control(text: str) -> dict | None:
-            # v1 protocol: the cloud streams ambient stt and YRobot matches
-            # the wake word locally. The cloud LLM may answer “好的” without
-            # any tool actually existing cloud-side, so the robot volume
-            # executes deterministically on-device. Mirrors qwen_tools
-            # vocabulary plus conversational continuation: within
-            # VOLUME_CONTEXT_WINDOW_S after a robot-volume command, bare
-            # direction words (再小一点/更大一点/搞小) keep adjusting.
-            from yrobot.qwen_tools import (
-                ROBOT_VOLUME_TARGET_PHRASES,
-                TV_VOLUME_TARGET_PHRASES,
-                SONOS_VOLUME_TARGET_PHRASES,
-                VOLUME_STEP_PERCENT,
-            )
-
-            norm = text.lower().replace(" ", "")
-            if any(phrase in norm for phrase in TV_VOLUME_TARGET_PHRASES):
-                return None
-            if any(phrase in norm for phrase in SONOS_VOLUME_TARGET_PHRASES):
-                return None
-
-            has_target = any(phrase in norm for phrase in ROBOT_VOLUME_TARGET_PHRASES)
-            now = time.time()
-            in_context = now - _xz_vol_ctx["last_at"] <= 15.0
-            if not has_target and not in_context:
-                return None
-
-            # Explicit percentage: 音量调到50 / 调到百分之三十 (ASR emits digits)
-            m = re.search(r"(?:调到|设到|设置为?|设为)百?分?之?([0-9]{1,3})", norm)
-            vc = volume_controller_singleton()
-            if m:
-                target = max(0, min(100, int(m.group(1))))
-                applied = int(vc.write_percent(target))
-                _xz_vol_ctx["last_at"] = now
-                return {"action": "volume_set", "volume_percent": applied}
-            # Mute: 静音 / 关掉声音 / 别说话
-            if "静音" in norm or "关闭声音" in norm or "关掉声音" in norm:
-                applied = int(vc.write_percent(0))
-                _xz_vol_ctx["last_at"] = now
-                return {"action": "volume_mute", "volume_percent": applied}
-
-            # Direction words (base + colloquial continuations)
-            up_words = ("调大", "大一点", "大点", "加大", "加点", "提高", "高一点",
-                        "再大", "更大", "更强", "响一点", "大声点", "搞大", "弄大")
-            down_words = ("调小", "小一点", "小点", "减小", "降低", "低一点",
-                          "再小", "更小", "小声点", "轻一点", "搞小", "弄小")
-            if any(w in norm for w in up_words):
-                action, delta = "volume_up", VOLUME_STEP_PERCENT
-            elif any(w in norm for w in down_words):
-                action, delta = "volume_down", -VOLUME_STEP_PERCENT
-            else:
-                return None
-            current = int(vc.read_percent())
-            applied = int(vc.write_percent(current + delta))
-            _xz_vol_ctx["last_at"] = now
-            return {"action": action, "volume_percent": applied}
-
         async def run():
             enc = opuslib.Encoder(16000, 1, "voip")
-            # Device-side MCP server: fixed whitelist (volume tools only,
-            # immutable decision #9 — no generic MCP discovery).
-            _vc = volume_controller_singleton()
-            _xz_mcp = XiaozhiMcpServer(
-                volume_read=_vc.read_percent,
-                volume_write=_vc.write_percent,
-            )
             hdrs = {
                 "Authorization": f"Bearer {XIAOZHI_TOKEN}",
                 "Device-Id": XIAOZHI_DEVICE_ID,
@@ -1791,28 +1671,6 @@ class Yrobot(ReachyMiniApp):
                             RUNTIME_HEALTH.update(last_rx_at=time.time())
                             d = _j.loads(raw)
                             t = d.get("type", "")
-                            if t == "mcp":
-                                # Xiaozhi MCP (the channel control_smart_home
-                                # uses). Handle in a worker thread and reply
-                                # with the matching JSON-RPC id.
-                                mcp_payload = d.get("payload") or {}
-                                mcp_reply = await _a.to_thread(
-                                    _xz_mcp.handle_payload, mcp_payload
-                                )
-                                if mcp_reply is not None:
-                                    await ws.send(
-                                        _j.dumps(
-                                            {
-                                                "session_id": sid,
-                                                "type": "mcp",
-                                                "payload": mcp_reply,
-                                            },
-                                            ensure_ascii=False,
-                                        )
-                                    )
-                                    logger.info("xz mcp -> %.200s", mcp_reply)
-                                else:
-                                    logger.info("xz mcp notification ignored")
                             if t == "llm":
                                 # Xiaozhi sends the model's emotion/expression here
                                 # (e.g. {"type":"llm","emotion":"happy","text":"😀"}).
@@ -1862,14 +1720,6 @@ class Yrobot(ReachyMiniApp):
                                     continue
                                 if not (_force or _wake_match(text)):
                                     logger.info("xz stt: %s", text)
-                                if _waked:
-                                    vol = _xz_local_volume_control(text)
-                                    if vol is not None:
-                                        logger.info(
-                                            "xz local volume control: %s transcript=%r",
-                                            vol,
-                                            text,
-                                        )
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
@@ -2017,10 +1867,7 @@ class Yrobot(ReachyMiniApp):
                                 )
                                 _aplay_flush()
                                 choreo.set_mode(IDLE)
-                            try:
-                                mic_q.get_nowait()
-                            except _q.Empty:
-                                pass
+                            await _a.to_thread(mic_stream.read, 960)
                             await _a.sleep(0)
                             continue
                         if _xiaozhi_should_pause_for_mic(
@@ -2030,12 +1877,12 @@ class Yrobot(ReachyMiniApp):
                         frames = []
                         rms_max = 0
                         for _ in range(16):
-                            pcm16 = await _a.to_thread(mic_q.get, True, 5.0)
+                            buf, _ = await _a.to_thread(mic_stream.read, 960)
                             rms = float(
                                 np.sqrt(
                                     np.mean(
                                         np.square(
-                                            pcm16.astype(np.float64)
+                                            np.frombuffer(buf, dtype=np.int16).astype(np.float64)
                                         )
                                     )
                                 )
@@ -2043,23 +1890,7 @@ class Yrobot(ReachyMiniApp):
                             _publish_dashboard_mic(float(rms) / 32768.0)
                             if rms > rms_max:
                                 rms_max = rms
-                            frames.append(pcm16)
-                            # Feed every mic frame to the local KWS while
-                            # idle; on a hit mirror the transcript-wake
-                            # actions exactly (_waked + nod + deadline).
-                            if _xz_kws is not None and not _waked:
-                                try:
-                                    _hit = _xz_kws.feed(pcm16)
-                                    if _hit:
-                                        _waked = True
-                                        _wake_deadline = time.time() + WAKE_TIMEOUT
-                                        choreo.play_move("nod")
-                                        logger.info(
-                                            "wake word detected (local KWS): %s", _hit
-                                        )
-                                        idle_show_last_activity[0] = time.monotonic()
-                                except Exception as exc:  # noqa: BLE001
-                                    logger.warning("xz kws feed error: %s", exc)
+                            frames.append(buf)
                         if rms_max < SILENCE_RMS:
                             continue
                         # Refresh wake deadline on every speech burst.
@@ -2077,41 +1908,24 @@ class Yrobot(ReachyMiniApp):
                             )
                         )
                         sent = 0
-                        for f16 in frames:
+                        for buf in frames:
                             try:
                                 await _a.wait_for(
-                                    ws.send(enc.encode(f16.tobytes(), 960)), timeout=3
+                                    ws.send(enc.encode(buf.tobytes(), 960)), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
                             except Exception:
                                 break
-                        deadline = time.monotonic() + 8.0
+                        deadline = time.monotonic() + 6.0
                         min_deadline = time.monotonic() + 3.0
-                        silence_run = 0
                         while time.monotonic() < deadline and not stop_event.is_set():
-                            buf = await _a.to_thread(mic_q.get, True, 5.0)
-                            # Feed KWS during the uplink extension too — a
-                            # wake word spanning the collect/extend boundary
-                            # used to lose its tail (你好小白 -> 你好小f).
-                            if _xz_kws is not None and not _waked:
-                                try:
-                                    _hit = _xz_kws.feed(buf)
-                                    if _hit:
-                                        _waked = True
-                                        _wake_deadline = time.time() + WAKE_TIMEOUT
-                                        choreo.play_move("nod")
-                                        logger.info(
-                                            "wake word detected (local KWS): %s", _hit
-                                        )
-                                        idle_show_last_activity[0] = time.monotonic()
-                                except Exception as exc:  # noqa: BLE001
-                                    logger.warning("xz kws feed error: %s", exc)
+                            buf, _ = await _a.to_thread(mic_stream.read, 960)
                             rms = float(
                                 np.sqrt(
                                     np.mean(
                                         np.square(
-                                            buf.astype(np.float64)
+                                            np.frombuffer(buf, dtype=np.int16).astype(np.float64)
                                         )
                                     )
                                 )
@@ -2119,23 +1933,14 @@ class Yrobot(ReachyMiniApp):
                             _publish_dashboard_mic(float(rms) / 32768.0)
                             try:
                                 await _a.wait_for(
-                                    ws.send(enc.encode(f16.tobytes(), 960)), timeout=3
+                                    ws.send(enc.encode(buf.tobytes(), 960)), timeout=3
                                 )
                                 sent += 1
                                 await _a.sleep(0)
                             except Exception:
                                 break
-                            # Require ~0.9s of CONTINUOUS silence after the
-                            # minimum window before ending the turn — a single
-                            # low-energy frame mid-sentence (or a short pause
-                            # before 怎么样) used to truncate the utterance.
-                            if time.monotonic() > min_deadline:
-                                if rms < 1000:
-                                    silence_run += 1
-                                    if silence_run >= 15:
-                                        break
-                                else:
-                                    silence_run = 0
+                            if time.monotonic() > min_deadline and rms < 1000:
+                                break
                         await ws.send(
                             _j.dumps({"session_id": sid, "type": "listen", "state": "stop"})
                         )

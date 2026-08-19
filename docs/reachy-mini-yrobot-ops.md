@@ -1402,3 +1402,116 @@ reads.
 Acceptance: `GET /api/logs?filter=chat&limit=200` returned 33 real historical
 dialogue records after restart; `/api/status` reported active QWEN,
 `video_enabled=true`, WebSocket `connected`, and no runtime error.
+
+
+## 2026-08-13 14:00 - Integrate iOS Remote source into YRobot repository
+
+The `ios/YRobotRemote` SwiftUI project is now versioned with the current
+YRobot production branch and GitHub. It was imported path-only from the
+dedicated iOS branch after regenerating its Xcode project with XcodeGen and
+running XCTest on the iPhone 17 Pro simulator.
+
+Scope: only iOS source, fixtures, tests, build documentation, and iOS design
+progress records are included. No older iOS-branch robot backend, test, or
+script changes were merged. `.DS_Store`, `xcuserdata`, and `.xcuserstate` are
+ignored. The iOS source is not copied to Reachy, which remains a runtime host
+only.
+
+
+## 2026-08-13 14:37 - QWEN expressive conversation gestures
+
+QWEN now has one local-only function, `express_emotion`, for clearly suitable
+conversational responses. It is limited to `happy`, `thinking`, `surprised`,
+`sad`, and `loving`, which map only to the existing bounded programmatic
+motions. It never selects arbitrary recorded moves or dances.
+
+Safety: the system prompt excludes ordinary answers, device control, numeric
+queries, and serious content; an emotion has a five-second cooldown and is
+skipped whenever a manual or recorded move is already active. The function
+executes inside YRobot and does not call Home Assistant, Hermes, or the
+official Reachy daemon.
+
+Verification: focused local tool and QWEN function-call tests passed, Python
+compilation passed, and Reachy restarted only `yrobot.service`. Post-restart
+status reported daemon running, motors enabled, motion worker alive at about
+51 Hz, QWEN WebSocket connected, and no runtime error. Final acceptance is a
+spoken conversation that naturally produces one of the permitted gestures.
+
+Follow-up: QWEN did not consistently choose the optional function call during
+the initial live test. Explicit conversational requests are therefore matched
+locally before the response begins: “给我一个惊喜”, “开心的笑话”, and “想一想”
+queue `surprised`, `happy`, and `thinking` respectively. Device control and
+status/query wording are excluded. The queued gesture plays on the first QWEN
+audio packet, so it accompanies rather than follows the spoken response.
+
+
+## 2026-08-13 14:55 - QWEN explicit dance commands
+
+QWEN accepts only explicit local dance commands: “小白跳个舞” starts the short
+`simple_nod` dance, “小白跳开心舞” starts `yeah_nod`, and “停止跳舞” cancels the
+currently active recorded emotion or dance at the next motion tick. Dance is
+never selected automatically from a normal reply.
+
+Verification: local intent tests passed; syntax checks passed for the QWEN
+matcher, motion worker, and main runtime. On Reachy, only `yrobot.service` was
+restarted. The official daemon remained active, motors enabled, motion loop
+about 50 Hz, QWEN connected, and no runtime error.
+
+
+## 2026-08-13 15:05 - Local face greeting during QWEN conversation
+
+While the 60-second QWEN conversation window is active, YRobot now checks the
+already cached local camera JPEG once per second. A face identity must remain
+the same for three seconds before it is accepted. On confirmation, YRobot
+updates QWEN's session context with the local name and speaks one short local
+greeting such as “阿皮，你好！”. The same identity is greeted only once per
+YRobot/QWEN session.
+
+No additional image is sent to QWEN by this monitor. It uses only the local
+`FaceDB`; normal image upload remains limited to explicit visual questions.
+
+
+## 2026-08-13 15:20 - Dashboard local face management
+
+Dashboard now includes a “人脸识别” panel. It lists local profiles with sample
+counts and last-recognized time, captures a new named profile over about two
+seconds, and requires confirmation before deletion. Names and samples remain
+in `~/.config/yrobot/faces.json` on Reachy; the panel never sends face data to
+QWEN.
+
+Face registration now reads the Dashboard's existing `CameraStreamer` cache
+instead of calling `media.get_frame()` directly, preserving the single camera
+owner required for stable ASR and vision scheduling. Static-panel test,
+JavaScript syntax check, Python compilation, and live `/api/face` route check
+passed. Post-restart official daemon and QWEN remained connected.
+
+
+## 2026-08-13 15:30 - Face registry hot reload and match diagnostics
+
+The Dashboard FaceDB and QWEN FaceDB are separate in-process readers of the
+same local `faces.json`. FaceDB now watches the registry file modification time
+and refreshes before every recognition attempt, so a Dashboard add/delete is
+visible to QWEN without another restart. Recognition now also exposes the
+latest accepted name and template-match score through `GET /api/face`; the
+Dashboard panel displays either the current local identity or the latest
+unmatched score.
+
+This does not relax the recognition threshold. It makes sample quality visible
+and ensures a newly registered face can be tested immediately. Focused
+hot-reload and Dashboard tests passed, along with front-end syntax and Python
+compilation; only YRobot was restarted and QWEN reconnected successfully.
+
+
+## 2026-08-13 21:15 - One local face greeting per voice wake
+
+The local face greeting is now scoped to an explicit QWEN wake window, rather
+than to a single WebSocket connection. Each new “你好小白” wake clears the
+greeting gate; after the local face has remained stable for three seconds,
+that person is greeted once. Repeated face matches and a QWEN WebSocket
+reconnect during the same 60-second conversation window cannot produce another
+greeting.
+
+This remains entirely local and continues to read only the Dashboard camera
+cache; it does not send any additional image to QWEN. Verification: focused
+greeting-gate tests, Python compilation, and diff whitespace checks passed
+before deployment.

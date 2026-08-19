@@ -46,11 +46,21 @@ class KeywordWakeDetector:
         from sherpa_onnx import keyword_spotter as ks
 
         model_dir = Path(model_dir)
+
+        def _pick(pattern: str) -> Path:
+            # Model archives ship with epoch-specific names (12 for the
+            # wenetspeech-3.3M, 13 for the zh-en-3M-2025); probe instead of
+            # hard-coding. chunk-16 variants are preferred for KWS.
+            cands = sorted(model_dir.glob(pattern))
+            if not cands:
+                raise FileNotFoundError(f"{model_dir}/{pattern}")
+            return cands[0]
+
         self._kws = ks.KeywordSpotter(
             tokens=str(model_dir / "tokens.txt"),
-            encoder=str(model_dir / "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"),
-            decoder=str(model_dir / "decoder-epoch-12-avg-2-chunk-16-left-64.onnx"),
-            joiner=str(model_dir / "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"),
+            encoder=str(_pick("encoder-*chunk-16-left-64.int8.onnx")),
+            decoder=str(_pick("decoder-*chunk-16-left-64.onnx")),
+            joiner=str(_pick("joiner-*chunk-16-left-64.int8.onnx")),
             keywords_file=str(model_dir / "keywords.txt"),
             num_threads=num_threads,
             provider="cpu",

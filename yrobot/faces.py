@@ -278,6 +278,7 @@ class FaceDB:
         self._detector = detector or FaceDetector()
         self._lock = threading.Lock()
         self._profiles: dict[str, FaceProfile] = {}
+        self._disk_stamp: int | None = None
         self._load()
 
     @property
@@ -316,14 +317,19 @@ class FaceDB:
             return True
 
     def recognize(self, frame: np.ndarray) -> str | None:
+        name, _ = self.recognize_with_score(frame)
+        return name
+
+    def recognize_with_score(self, frame: np.ndarray) -> tuple[str | None, float]:
+        self.refresh_if_changed()
         with self._lock:
             if not self._profiles:
-                return None
+                return None, -1.0
             if self._recognizer._dirty:  # type: ignore[attr-defined]
                 self._recognizer.train({n: list(p.samples) for n, p in self._profiles.items()})
         boxes = self._detector.detect(frame)
         if not boxes:
-            return None
+            return None, -1.0
         # Use the largest (closest) face in the frame; future work can
         # pick the one nearest the centre of gaze if multiple people
         # are present and only the speaker matters.
@@ -335,8 +341,8 @@ class FaceDB:
         # it raises -215 Assertion failed and crashes the audio
         # loop, which is what bit us in production at 10:13 today.
         if face_crop is None or face_crop.size == 0:
-            return None
-        name, _ = self._recognizer.predict(face_crop)
+            return None, -1.0
+        name, score = self._recognizer.predict(face_crop)
         if name is not None:
             with self._lock:
                 profile = self._profiles.get(name)
@@ -345,7 +351,19 @@ class FaceDB:
 
                     profile.last_seen = _time.time()
                     self._save()
-        return name
+        return name, score
+
+    def refresh_if_changed(self) -> bool:
+        """Reload profiles when another local process updated the registry."""
+        try:
+            stamp = self._path.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        with self._lock:
+            if stamp == self._disk_stamp:
+                return False
+            self._load()
+            return True
 
     def _extract_face(self, frame: np.ndarray) -> np.ndarray | None:
         if frame is None or frame.size == 0:
@@ -375,12 +393,17 @@ class FaceDB:
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self._path)
         try:
+            self._disk_stamp = self._path.stat().st_mtime_ns
+        except OSError:
+            self._disk_stamp = None
+        try:
             os.chmod(self._path, 0o600)
         except OSError:  # pragma: no cover — best-effort on non-POSIX
             pass
 
     def _load(self) -> None:
         if not self._path.exists():
+            self._disk_stamp = None
             return
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
@@ -401,3 +424,7 @@ class FaceDB:
         self._profiles = loaded
         if self._profiles:
             self._recognizer.mark_dirty()
+        try:
+            self._disk_stamp = self._path.stat().st_mtime_ns
+        except OSError:
+            self._disk_stamp = None
