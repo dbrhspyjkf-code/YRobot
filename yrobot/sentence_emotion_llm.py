@@ -54,8 +54,11 @@ _SYSTEM_PROMPT = (
     "Reply with EXACTLY ONE English word from this set: "
     "happy, laughing, surprised, thinking, confused, sad, angry, scared, "
     "bored, lonely, embarrassed, loving, grateful, excited, confident, "
-    "sleepy, welcoming, none. Use none when the sentence carries no clear "
-    "emotion. No punctuation, no explanation, no Chinese."
+    "sleepy, welcoming, none. "
+    "Factual statements (time, weather, data, plans) are none even if "
+    "mildly positive. Use none when the sentence carries no clear emotion. "
+    "Never use synonyms (sorry/great/...) — only the exact words listed. "
+    "No punctuation, no explanation, no Chinese."
 )
 
 
