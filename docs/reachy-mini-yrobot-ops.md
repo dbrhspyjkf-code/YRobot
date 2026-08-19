@@ -1556,3 +1556,45 @@ Validated 2026-08-19: `--dry-run` correctly flagged the un-archived
 afternoon deploy (dirty robot tree, exit 3), passed after the archive
 commit `fec8cb3`, and caught two script bugs before any real use
 (untracked-dir false positive; macOS openrsync lacks `--info=stats1`).
+
+## 2026-08-19: XIAOZHI MQTT+UDP transport (tenclass WS 入口对家宽关闭)
+
+**故障**: tenclass 服务端变更后，家庭宽带出口对
+`wss://api.tenclass.net/xiaozhi/v1/` 的 WebSocket 握手一律 HTTP 426
+（与 token/header/子协议无关，重启无效）。M5Tab5（xiaozhi-esp32 新固件）
+不受影响——它走 OTA 下发的 MQTT+UDP（8883），与 YRobot 手写的 WS v1
+是两个入口。判断"服务器挂没挂"必须用不同出口（代理/蜂窝）+ 不同协议
+对照，单点 curl 结论会错。
+
+**修复**: `YROBOT_XZ_TRANSPORT=mqtt`（默认，可用 `ws` 回退）。新模块
+`yrobot/xiaozhi_ota.py`（OTA 动态凭证）+ `yrobot/xiaozhi_mqtt.py`
+（MQTT 控制通道 + UDP AES-CTR 音频），main.py 用 channel 适配器接入，
+KWS/VAD/aplay/choreo 零改动。
+
+**协议要点**（对照 mqtt_protocol.cc，均已实测）:
+- OTA `POST https://api.tenclass.net/xiaozhi/ota/` 的 Client-Id 必须
+  是 UUID 格式（否则 400 Invalid client ID）；MQTT password 动态签发，
+  不能缓存写死，连接失败删缓存重取。
+- **服务器在 hello 响应前就会推 mcp initialize，必须应答，否则会话
+  卡死无音频**（main.py 已有 deferred replay 处理）。
+- UDP 包前 16 字节 = 包头 = AES-CTR nonce（len@2, ssrc@4 保留服务器
+  原值, ts@8, seq@12）；key/nonce 在 server hello 下发，UDP 服务器
+  地址动态分配（api.tenclass.net:88xx / rtc.xiaozhi.me:88xx 都见过）。
+
+**今日踩坑与教训**:
+1. 重构调用点时丢参数/私有名：`enc.encode(bytes)` 丢了 frame_size=960
+   → 每帧上行 TypeError 被吞，零帧到达云端（点头但无应答）；
+   `tp.queue` 应为公开 property。**上/下行关键节点必须有打点日志**
+   （listen start + rms、send 失败 warning），一次实测就能定位。
+2. **官方 daemon 会 sporadically 重新抢占扬声器**（pcmC0D0p mmap），
+   aplay 全部 Broken pipe 秒死（对话正常但无声）。自愈：aplay 3 秒内
+   3 次死亡 → `reachy_mini.media.stop_playing()` 再重启。daemon 重启
+   后电机要重新 `set_mode/enabled`。
+3. mock.patch 要瞄准实际调用名（`from urllib.request import urlopen`
+   后 patch 模块级名字），测试意外打到真实 OTA 端点（只读无害）。
+4. worktree 落后 production 109 commits 且 production main.py 里嵌着
+   未解决冲突标记——merge 后必须 `grep -rln '<<<<<<<'` 全仓验证，
+   必要时以 production 为准整体同步。
+
+**验证状态**（2026-08-19 20:53, operator 在场）: 唤醒应答、多轮对话、
+音量控制（volume_up）、Sonos 音箱控制（control_sonos）全部实测通过。
