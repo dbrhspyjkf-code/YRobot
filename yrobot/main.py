@@ -1358,6 +1358,7 @@ class Yrobot(ReachyMiniApp):
         import websockets as _ws
 
         from yrobot.app_config import audio_input_controller_singleton
+        from yrobot.kws import KeywordWakeDetector
         from yrobot.audio import _publish_dashboard_mic
         from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
@@ -1565,6 +1566,19 @@ class Yrobot(ReachyMiniApp):
                     proc.kill()
                 except OSError:
                     pass
+
+        # Local keyword wake detector (sherpa-onnx KWS), sharing the same
+        # settings.wake_enabled switch as the QWEN path. A hit runs the
+        # exact same actions as the cloud-transcript wake match (_waked
+        # gate + nod), so wake no longer depends on tenclass streaming
+        # ambient stt (which has intermittent gaps).
+        _xz_kws: KeywordWakeDetector | None = None
+        if settings.wake_enabled:
+            try:
+                _xz_kws = KeywordWakeDetector(model_dir=Path(settings.kws_model_dir))
+                logger.info("XZ KWS wake armed: phrase=%r", settings.wake_phrase)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("XZ KWS init failed (falling back to cloud stt match): %s", exc)
 
         _xz_vol_ctx = {"last_at": 0.0}
 
@@ -1988,6 +2002,22 @@ class Yrobot(ReachyMiniApp):
                             if rms > rms_max:
                                 rms_max = rms
                             frames.append(buf)
+                            # Feed every mic frame to the local KWS while
+                            # idle; on a hit mirror the transcript-wake
+                            # actions exactly (_waked + nod + deadline).
+                            if _xz_kws is not None and not _waked:
+                                try:
+                                    _hit = _xz_kws.feed(buf)
+                                    if _hit:
+                                        _waked = True
+                                        _wake_deadline = time.time() + WAKE_TIMEOUT
+                                        choreo.play_move("nod")
+                                        logger.info(
+                                            "wake word detected (local KWS): %s", _hit
+                                        )
+                                        idle_show_last_activity[0] = time.monotonic()
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning("xz kws feed error: %s", exc)
                         if rms_max < SILENCE_RMS:
                             continue
                         # Refresh wake deadline on every speech burst.
