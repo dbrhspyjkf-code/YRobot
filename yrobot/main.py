@@ -1529,6 +1529,12 @@ class Yrobot(ReachyMiniApp):
             )
 
         def _audio_writer():
+            # The official daemon occasionally re-claims the speaker
+            # (pcmC0D0p, mmap) after startup — every aplay then dies on
+            # Broken-pipe within milliseconds. Three deaths inside 3 s
+            # means the card is gone again: ask the SDK to stop_playing()
+            # (same release the startup path does) before respawning.
+            _aplay_deaths: list[float] = []
             proc = None
             try:
                 while not _writer_stop.is_set():
@@ -1541,6 +1547,21 @@ class Yrobot(ReachyMiniApp):
                     for attempt in range(2):
                         try:
                             if proc is None or proc.poll() is not None:
+                                _now = time.monotonic()
+                                _aplay_deaths = [
+                                    t for t in _aplay_deaths if _now - t < 3.0
+                                ] + [_now]
+                                if len(_aplay_deaths) >= 3:
+                                    _aplay_deaths.clear()
+                                    try:
+                                        reachy_mini.media.stop_playing()
+                                        logger.warning(
+                                            "audio-out: daemon re-claimed the speaker; released again"
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        logger.warning(
+                                            "audio-out: speaker re-release failed", exc_info=True
+                                        )
                                 proc = _open_aplay()
                                 with _audio_proc_lock:
                                     _audio_proc[0] = proc
