@@ -2132,7 +2132,7 @@ class Yrobot(ReachyMiniApp):
                             if time.monotonic() > min_deadline:
                                 if rms < 1000:
                                     silence_run += 1
-                                    if silence_run >= 15:
+                                    if silence_run >= 25:
                                         break
                                 else:
                                     silence_run = 0
