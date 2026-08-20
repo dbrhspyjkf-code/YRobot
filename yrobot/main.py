@@ -1557,14 +1557,31 @@ class Yrobot(ReachyMiniApp):
                                 ] + [_now]
                                 if len(_aplay_deaths) >= 3:
                                     _aplay_deaths.clear()
+                                    # media.stop_playing() only stops the
+                                    # SDK client stream — it does NOT free
+                                    # pcmC0D0p when the daemon itself holds
+                                    # it. The daemon's /api/media/stop_sound
+                                    # does (validated 2026-08-20).
                                     try:
                                         reachy_mini.media.stop_playing()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    try:
+                                        import urllib.request as _urq
+
+                                        _urq.urlopen(
+                                            _urq.Request(
+                                                "http://127.0.0.1:8000/api/media/stop_sound",
+                                                method="POST",
+                                            ),
+                                            timeout=3.0,
+                                        ).read()
                                         logger.warning(
-                                            "audio-out: daemon re-claimed the speaker; released again"
+                                            "audio-out: daemon re-claimed the speaker; stop_sound released it"
                                         )
                                     except Exception:  # noqa: BLE001
                                         logger.warning(
-                                            "audio-out: speaker re-release failed", exc_info=True
+                                            "audio-out: stop_sound failed", exc_info=True
                                         )
                                 proc = _open_aplay()
                                 with _audio_proc_lock:
