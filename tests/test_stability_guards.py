@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
+from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog, UplinkResponseWatchdog
 from yrobot.env_store import update_env_value
 
 
@@ -57,3 +57,31 @@ def test_tts_watchdog_enforces_total_duration():
     watchdog.packet(now=11.0)
 
     assert watchdog.stalled(now=15.0)
+
+
+def test_uplink_response_watchdog_keeps_first_unanswered_deadline():
+    watchdog = UplinkResponseWatchdog(timeout_s=12.0)
+
+    watchdog.uplink_sent(now=100.0)
+    watchdog.uplink_sent(now=108.0)  # ambient-noise burst must not postpone it
+
+    assert not watchdog.expired(now=111.9)
+    assert watchdog.expired(now=112.0)
+
+
+def test_uplink_response_watchdog_clears_on_any_inbound_message():
+    watchdog = UplinkResponseWatchdog(timeout_s=12.0)
+
+    watchdog.uplink_sent(now=100.0)
+    watchdog.inbound_received(now=105.0)
+    assert not watchdog.expired(now=200.0)
+
+    watchdog.uplink_sent(now=210.0)
+    assert not watchdog.expired(now=221.9)
+    assert watchdog.expired(now=222.0)
+
+
+def test_uplink_response_watchdog_ignores_empty_uplink():
+    watchdog = UplinkResponseWatchdog(timeout_s=12.0)
+
+    assert not watchdog.expired(now=999.0)

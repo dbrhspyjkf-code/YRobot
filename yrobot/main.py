@@ -1377,7 +1377,11 @@ class Yrobot(ReachyMiniApp):
         from yrobot.app_config import audio_input_controller_singleton
         from yrobot.kws import KeywordWakeDetector
         from yrobot.audio import _publish_dashboard_mic
-        from yrobot.audio_runtime import BoundedLatestQueue, TtsWatchdog
+        from yrobot.audio_runtime import (
+            BoundedLatestQueue,
+            TtsWatchdog,
+            UplinkResponseWatchdog,
+        )
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
 
         settings = Settings.from_env()
@@ -1965,8 +1969,7 @@ class Yrobot(ReachyMiniApp):
                 # burst with stt within ~3 s). The tenclass broker can
                 # silently drop a session server-side while the MQTT TCP
                 # link stays alive — detect and rebuild (2026-08-20).
-                _last_rx_mono = [0.0]
-                _uplink_done_mono = [0.0]
+                uplink_response_watchdog = UplinkResponseWatchdog(timeout_s=12.0)
                 idle_show_last_activity = [time.monotonic()]
                 idle_show_last_fire = [time.monotonic()]
                 WAKE_TIMEOUT = _GATE_WAKE_TIMEOUT  # env YROBOT_WAKE_TIMEOUT_S
@@ -1979,8 +1982,8 @@ class Yrobot(ReachyMiniApp):
                             raw = await chan.recv()
                         except TimeoutError:
                             continue
+                        uplink_response_watchdog.inbound_received()
                         if isinstance(raw, bytes):
-                            _last_rx_mono[0] = time.monotonic()
                             if not _waked:
                                 continue
                             tts_packets += 1
@@ -2016,7 +2019,6 @@ class Yrobot(ReachyMiniApp):
                                     exc,
                                 )
                         else:
-                            _last_rx_mono[0] = time.monotonic()
                             RUNTIME_HEALTH.update(last_rx_at=time.time())
                             d = raw if isinstance(raw, dict) else _j.loads(raw)
                             t = d.get("type", "")
@@ -2266,11 +2268,7 @@ class Yrobot(ReachyMiniApp):
                         # Dead-session watchdog: an uplink burst went out
                         # >12 s ago and nothing has arrived since — the
                         # session is a zombie (server dropped it silently).
-                        if (
-                            _uplink_done_mono[0] > 0.0
-                            and _last_rx_mono[0] < _uplink_done_mono[0]
-                            and time.monotonic() - _uplink_done_mono[0] > 12.0
-                        ):
+                        if uplink_response_watchdog.expired():
                             raise _XiaozhiReconnect(
                                 "no server response 12s after uplink burst"
                             )
@@ -2451,7 +2449,7 @@ class Yrobot(ReachyMiniApp):
                         _user_speaking[0] = False
                         if sent:
                             logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
-                            _uplink_done_mono[0] = time.monotonic()
+                            uplink_response_watchdog.uplink_sent()
                         # No post-burst cooldown: the old 4 s blind window ate
                         # the start of a follow-up sentence. The gate loop
                         # resumes immediately and stays armed via preroll.

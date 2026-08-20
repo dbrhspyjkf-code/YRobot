@@ -283,3 +283,26 @@ class TtsWatchdog:
         if self.packets == 0:
             return current - self.started_at >= self.no_packet_timeout
         return current - self.last_packet_at >= self.packet_gap_timeout
+
+
+@dataclass
+class UplinkResponseWatchdog:
+    """Reconnect a cloud session after the first unanswered audio burst."""
+
+    timeout_s: float = 12.0
+    pending_since: float = 0.0
+
+    def uplink_sent(self, now: float | None = None) -> None:
+        """Record only the first burst waiting for an inbound acknowledgement."""
+        if self.pending_since == 0.0:
+            self.pending_since = time.monotonic() if now is None else now
+
+    def inbound_received(self, now: float | None = None) -> None:
+        """Clear the pending burst after any MQTT or UDP inbound message."""
+        self.pending_since = 0.0
+
+    def expired(self, now: float | None = None) -> bool:
+        if self.pending_since == 0.0:
+            return False
+        current = time.monotonic() if now is None else now
+        return current - self.pending_since >= self.timeout_s
