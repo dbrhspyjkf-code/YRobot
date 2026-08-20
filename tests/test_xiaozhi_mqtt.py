@@ -21,6 +21,7 @@ from yrobot.xiaozhi_mqtt import (
     UdpChannelInfo,
     build_nonce,
     hello_request,
+    is_xiaozhi_conversation_response,
 )
 
 KEY = "0123456789ABCDEF0123456789ABCDEF"          # 32 hex chars = 16 bytes
@@ -109,6 +110,16 @@ class TestSequenceGuard(unittest.TestCase):
         g = SequenceGuard()
         g.accept(1)
         self.assertTrue(g.accept(4))  # logged as warning upstream, still taken
+
+
+class TestConversationResponseClassification(unittest.TestCase):
+    def test_accepts_only_stt_tts_or_udp_audio(self) -> None:
+        self.assertTrue(is_xiaozhi_conversation_response(b"opus-frame"))
+        self.assertTrue(is_xiaozhi_conversation_response({"type": "stt", "text": "你好"}))
+        self.assertTrue(is_xiaozhi_conversation_response({"type": "tts", "state": "start"}))
+        self.assertFalse(is_xiaozhi_conversation_response({"type": "mcp", "payload": {}}))
+        self.assertFalse(is_xiaozhi_conversation_response({"type": "llm", "emotion": "happy"}))
+        self.assertFalse(is_xiaozhi_conversation_response({"type": "hello"}))
 
 
 class TestUdpChannelInfo(unittest.TestCase):

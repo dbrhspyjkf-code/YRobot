@@ -297,9 +297,16 @@ class UplinkResponseWatchdog:
         if self.pending_since == 0.0:
             self.pending_since = time.monotonic() if now is None else now
 
-    def inbound_received(self, now: float | None = None) -> None:
-        """Clear the pending burst after any MQTT or UDP inbound message."""
-        self.pending_since = 0.0
+    def inbound_received(
+        self, *, is_conversation_response: bool, now: float | None = None
+    ) -> None:
+        """Clear only after STT/TTS or a UDP audio response.
+
+        MQTT control traffic proves the broker is alive, but cannot prove the
+        cloud received or processed the pending audio uplink.
+        """
+        if is_conversation_response:
+            self.pending_since = 0.0
 
     def expired(self, now: float | None = None) -> bool:
         if self.pending_since == 0.0:

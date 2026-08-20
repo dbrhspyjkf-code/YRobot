@@ -69,11 +69,21 @@ def test_uplink_response_watchdog_keeps_first_unanswered_deadline():
     assert watchdog.expired(now=112.0)
 
 
-def test_uplink_response_watchdog_clears_on_any_inbound_message():
+def test_uplink_response_watchdog_keeps_deadline_for_control_traffic():
     watchdog = UplinkResponseWatchdog(timeout_s=12.0)
 
     watchdog.uplink_sent(now=100.0)
-    watchdog.inbound_received(now=105.0)
+    watchdog.inbound_received(is_conversation_response=False, now=105.0)
+
+    assert not watchdog.expired(now=111.9)
+    assert watchdog.expired(now=112.0)
+
+
+def test_uplink_response_watchdog_clears_on_conversation_response():
+    watchdog = UplinkResponseWatchdog(timeout_s=12.0)
+
+    watchdog.uplink_sent(now=100.0)
+    watchdog.inbound_received(is_conversation_response=True, now=105.0)
     assert not watchdog.expired(now=200.0)
 
     watchdog.uplink_sent(now=210.0)

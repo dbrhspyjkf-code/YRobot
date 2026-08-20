@@ -42,6 +42,18 @@ done
 say() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[deploy] ABORT:\033[0m %s\n' "$*" >&2; exit 1; }
 
+run_local_pytest() {
+  if [ -x .venv/bin/python ] && .venv/bin/python -c 'import pytest, cryptography' 2>/dev/null; then
+    .venv/bin/python -m pytest "$@"
+  elif python3 -c 'import pytest, cryptography' 2>/dev/null; then
+    python3 -m pytest "$@"
+  elif command -v uvx >/dev/null 2>&1; then
+    uvx --from pytest --with cryptography pytest "$@"
+  else
+    die "pytest+cryptography unavailable; install them or make uvx available"
+  fi
+}
+
 cd "$LOCAL_DIR"
 
 # ── 0. preflight ─────────────────────────────────────────────────────────
@@ -83,13 +95,11 @@ say "drift check OK (robot @ ${ROBOT_SHA:0:9} is an ancestor-or-equal of local h
 # ── 2. local tests ───────────────────────────────────────────────────────
 if [ "$SKIP_TESTS" = 0 ]; then
   say "local: py_compile + focused tests"
-  python3 -m py_compile yrobot/main.py yrobot/config.py yrobot/uplink_vad.py
-  if [ -x .venv/bin/python ] && .venv/bin/python -c 'import pytest' 2>/dev/null; then
-    PY=.venv/bin/python
-  else
-    PY=python3  # system python must have pytest (see docs runbook)
-  fi
-  $PY -m pytest tests/test_uplink_vad.py -q
+  python3 -m py_compile \
+    yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
+    yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py
+  run_local_pytest tests/test_uplink_vad.py tests/test_stability_guards.py \
+    tests/test_xiaozhi_mqtt.py -q
 else
   say "local: tests SKIPPED"
 fi
@@ -97,7 +107,7 @@ fi
 # ── 3+4. backup + rsync ──────────────────────────────────────────────────
 RSYNC_OPTS=(-c -r -v
   --exclude .git --exclude .venv --exclude __pycache__ --exclude '*.pyc'
-  --exclude .pytest_cache --exclude .worktrees --exclude ios
+  --exclude .pytest_cache --exclude .worktrees --exclude ios --exclude desktop-app
   --exclude .claude --exclude '*.egg-info' --exclude .ruff_cache
   --exclude .env --exclude '*.env' --exclude .DS_Store
   --exclude secrets --exclude '*.secret' --exclude '*.key')
@@ -127,10 +137,12 @@ rsync "${RSYNC_OPTS[@]}" "$LOCAL_DIR"/ "$ROBOT_HOST:$ROBOT_DIR/"
 # ── 5. robot-side verification ───────────────────────────────────────────
 say "robot: py_compile"
 ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m py_compile \
-  yrobot/main.py yrobot/config.py yrobot/uplink_vad.py"
+  yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
+  yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py"
 if [ "$SKIP_TESTS" = 0 ]; then
   say "robot: focused pytest"
-  ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m pytest tests/test_uplink_vad.py -q"
+  ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m pytest \
+    tests/test_uplink_vad.py tests/test_stability_guards.py tests/test_xiaozhi_mqtt.py -q"
 fi
 
 # ── 6. orphan-safe restart ───────────────────────────────────────────────

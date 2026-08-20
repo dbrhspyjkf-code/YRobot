@@ -37,6 +37,18 @@ class PacketFormatError(ValueError):
     """Malformed or non-audio UDP datagram."""
 
 
+def is_xiaozhi_conversation_response(message: object) -> bool:
+    """Whether an inbound item proves the pending audio uplink was handled.
+
+    MQTT control messages such as MCP and LLM emotions can continue even when
+    the cloud's UDP/STT path has silently stalled. Only an audio packet or a
+    speech event is a valid liveness acknowledgement for an uplink burst.
+    """
+    if isinstance(message, bytes):
+        return True
+    return isinstance(message, dict) and message.get("type") in {"stt", "tts"}
+
+
 def build_nonce(
     base: bytes, *, payload_len: int, timestamp: int, sequence: int
 ) -> bytes:

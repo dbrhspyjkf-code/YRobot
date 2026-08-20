@@ -55,6 +55,7 @@ from yrobot.xiaozhi_mqtt import (
     XiaozhiMqttTransport,
     XiaozhiUdpAudio,
     hello_request,
+    is_xiaozhi_conversation_response,
 )
 from yrobot.xiaozhi_ota import (
     OTAError,
@@ -1982,7 +1983,9 @@ class Yrobot(ReachyMiniApp):
                             raw = await chan.recv()
                         except TimeoutError:
                             continue
-                        uplink_response_watchdog.inbound_received()
+                        uplink_response_watchdog.inbound_received(
+                            is_conversation_response=is_xiaozhi_conversation_response(raw)
+                        )
                         if isinstance(raw, bytes):
                             if not _waked:
                                 continue
