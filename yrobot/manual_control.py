@@ -256,6 +256,9 @@ class ManualCoordinator:
                 raise PermissionError("session_id does not match the active lease")
             self._session_id = None
             self._target = None
+            # Clear the per-session slew baseline so the next acquire does
+            # not rate-limit against an unrelated previous session.
+            self._previous = None
             self._deadline_monotonic = 0.0
             return self._public_status_locked()
 
