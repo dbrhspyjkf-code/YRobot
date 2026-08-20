@@ -1662,3 +1662,36 @@ journalctl -u yrobot.service --since "5 min" | grep -E "packets=|aplay|fuser"
 
 **待做（设备端兜底，统一切面）**: TTS start 后 N 秒 packets=0、或唤醒后 M 秒
 无任何云端下行 → 静默重建 MQTT 会话（自动 restart 连接层，不打断 UI）。
+
+## 2026-08-20：XIAOZHI 上行死会话严格回包判定
+
+**故障证据（15:39 Asia/Shanghai）**：本地 KWS 已识别 `你好小白`，随后连续
+`xz sent ...`，但没有 STT/TTS。MQTT 仍保持 connected，因此机器人持续表现为
+“不能唤醒”。之前的 watchdog 将任意入站 MQTT/UDP 队列项都当作回包，导致
+`mcp`、`llm` 等控制消息会错误清除 12 秒 deadline，掩盖音频/STT 链路已死。
+
+**修复**：
+- 生产 MQTT+UDP runtime 先被受控迁回本地 feature worktree（`df6044b`），不再
+  以机器人作为未来开发或发布源。
+- `UplinkResponseWatchdog` 仅在下行 UDP 音频或控制事件 `stt` / `tts` 时清除
+  首个未回复上行的 12 秒 deadline；后续环境噪声上行不会推迟该 deadline。
+- `mcp`、`llm`、`hello` 等控制消息不再能掩盖死会话。
+- `scripts/deploy.sh` 的本地和机器人测试门禁已覆盖
+  `test_uplink_vad.py`、`test_stability_guards.py`、`test_xiaozhi_mqtt.py`；
+  local Python 没有 pytest/cryptography 时可安全回退到 `uvx`，并排除无关
+  `desktop-app/`，避免把桌面端文件同步到机器人。
+
+**验证与部署（16:00 Asia/Shanghai）**：
+- local 与 robot focused pytest 均通过（31 tests）；Python compile 通过。
+- `scripts/deploy.sh --dry-run` 仅列出 6 个已审查文件；正式部署创建备份
+  `/home/pollen/.local/state/yrobot/backups/deploy-20260820-160015`，其
+  `runtime-code.tar` SHA-256 manifest 已验证。
+- 部署后，16:00:58 的一段无云端回复上行在 16:01:10 精确触发
+  `no server response 12s after uplink burst`，3 秒后新 MQTT+UDP session
+  `bb890ba6` 已在 16:01:14 ready。这是修复路径的真实运行时验证。
+- 当时 `yrobot.service` 与 `reachy-mini-daemon.service` 均为 active；
+  status 为 connected、`wake_enabled=true`、`last_error=null`。
+
+**物理 acceptance**：2026-08-20 16:18 Asia/Shanghai，operator 已确认新
+session 的明确唤醒与提问语音验证通过。该部署验收完成；日志与服务状态仍只作为
+后续故障诊断证据，不替代未来变更的现场确认。

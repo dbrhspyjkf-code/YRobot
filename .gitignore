@@ -1,6 +1,20 @@
 # Local backup directories (created during cherry-pick sync)
 ios/local-ios-backup/
 
+# Xcode per-user workspace state (not iOS application source)
+xcuserdata/
+*.xcuserstate
+
+# iPad app: generated Xcode project (project.yml is the source of truth)
+ios/YRobotRemote/YRobotRemote.xcodeproj/
+
+# iPad app: machine-local signing configuration
+ios/YRobotRemote/Config/Local.xcconfig
+
+# iPad app: generated web bundle copied into app resources
+ios/YRobotRemote/YRobotRemote/Resources/Cockpit/*
+!ios/YRobotRemote/YRobotRemote/Resources/Cockpit/.gitkeep
+
 # Local runtime secrets and generated files
 .env
 *.env

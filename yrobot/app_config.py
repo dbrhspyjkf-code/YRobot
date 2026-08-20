@@ -75,6 +75,48 @@ class MotionController:
         with self._lock:
             return self._choreo
 
+    def is_manual_active(self) -> bool:
+        choreo = self.get()
+        if choreo is None:
+            return False
+        try:
+            return bool(choreo.is_manual_active())
+        except Exception:
+            return False
+
+    def manual_status(self) -> dict[str, Any]:
+        choreo = self.get()
+        if choreo is None:
+            return {"active": False, "remaining_ms": 0, "limits": {}}
+        try:
+            return dict(choreo.manual_status() or {})
+        except Exception:
+            return {"active": False, "remaining_ms": 0, "limits": {}}
+
+    def begin_manual(self, document: dict[str, Any]) -> str:
+        choreo = self.get()
+        if choreo is None:
+            raise HTTPException(status_code=503, detail="机器人动作系统尚未就绪")
+        return choreo.begin_manual(document)
+
+    def update_manual(self, document: dict[str, Any], *, session_id: str) -> None:
+        choreo = self.get()
+        if choreo is None:
+            raise HTTPException(status_code=503, detail="机器人动作系统尚未就绪")
+        choreo.update_manual(document, session_id=session_id)
+
+    def renew_manual(self, session_id: str) -> None:
+        choreo = self.get()
+        if choreo is None:
+            raise HTTPException(status_code=503, detail="机器人动作系统尚未就绪")
+        choreo.renew_manual(session_id)
+
+    def end_manual(self, session_id: str) -> None:
+        choreo = self.get()
+        if choreo is None:
+            return
+        choreo.end_manual(session_id)
+
     def play(self, name: str) -> tuple[bool, str]:
         choreo = self.get()
         if choreo is None:
@@ -102,10 +144,15 @@ class MotionController:
         if choreo is None:
             return {"ready": False}
         try:
-            return {"ready": True, **choreo.get_status()}
+            snapshot = choreo.get_status()
         except Exception as exc:
             logger.debug("motion status unavailable: %s", exc)
             return {"ready": False, "error": str(exc)}
+        manual = snapshot.pop("manual_control", None) or {}
+        manual_active = bool(snapshot.pop("manual_active", False))
+        snapshot["control_owner"] = "manual" if manual_active else "autonomous"
+        snapshot["manual_remaining_ms"] = int(manual.get("remaining_ms", 0))
+        return {"ready": True, **snapshot}
 
     def list_moves(self) -> list[str]:
         from yrobot.motion import MOVES
@@ -1293,10 +1340,54 @@ def register_settings_routes(
         name = str(document.get("move") or document.get("name") or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail="missing 'move'")
+        if motion.is_manual_active():
+            raise HTTPException(
+                status_code=409,
+                detail="手动控制进行中，请先释放控制权 (release manual lease)",
+            )
         ok, msg = motion.play(name)
         if not ok:
             raise HTTPException(status_code=422, detail=msg)
         return {"ok": True, "message": msg, "current": motion.current()}
+
+    # ---- manual control lease (plan Task 12) ----------------------
+
+    @app.get("/api/manual-control/session")
+    def get_manual_control_session() -> dict[str, Any]:
+        return {"ok": True, **motion.manual_status()}
+
+    @app.post("/api/manual-control/session")
+    def post_manual_control_session(document: dict[str, Any]) -> dict[str, Any]:
+        try:
+            session_id = motion.begin_manual(document or {})
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return {"ok": True, "session_id": session_id, **motion.manual_status()}
+
+    @app.put("/api/manual-control/session/{session_id}/target")
+    def put_manual_control_target(session_id: str, document: dict[str, Any]) -> dict[str, Any]:
+        try:
+            motion.update_manual(document or {}, session_id=session_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return {"ok": True, **motion.manual_status()}
+
+    @app.put("/api/manual-control/session/{session_id}/heartbeat")
+    def put_manual_control_heartbeat(session_id: str) -> dict[str, Any]:
+        try:
+            motion.renew_manual(session_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {"ok": True, **motion.manual_status()}
+
+    @app.delete("/api/manual-control/session/{session_id}")
+    def delete_manual_control_session(session_id: str) -> dict[str, Any]:
+        motion.end_manual(session_id)
+        return {"ok": True, **motion.manual_status()}
 
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:

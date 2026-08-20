@@ -70,6 +70,25 @@ Observed results:
 - Sync: the same files were copied to `/home/pollen/YRobot`; remote checks for
   `AGENT_HANDOFF.md`, `PROJECT_MEMORY.md`, and the deployment runbook passed.
 
+- 2026-08-20 16:00 Asia/Shanghai: reconciled the deployed MQTT+UDP Xiaozhi
+  runtime into local commit `df6044b`, then deployed liveness commits
+  `f4873e7` and `ff4c083` through `scripts/deploy.sh`. The robot archive
+  fingerprint is `752c947`; backup and verified SHA-256 manifest are at
+  `/home/pollen/.local/state/yrobot/backups/deploy-20260820-160015`.
+- The watchdog now ignores `mcp`, `llm`, and other control traffic. Only UDP
+  audio, `stt`, or `tts` clears the first unanswered uplink deadline. Focused
+  local and robot tests both passed: 31 tests across `test_uplink_vad.py`,
+  `test_stability_guards.py`, and `test_xiaozhi_mqtt.py`.
+- Deployment acceptance evidence: an unsolicited/noisy burst ended at
+  16:00:58 without a cloud reply; at 16:01:10 the robot logged
+  `no server response 12s after uplink burst`, rebuilt its MQTT+UDP session,
+  and connected a new session at 16:01:14. Both YRobot and the official
+  daemon were active; current status was connected with `last_error=null`.
+- **Physical acceptance:** at 2026-08-20 16:18 Asia/Shanghai, the operator
+  confirmed acceptance of the deployed Xiaozhi liveness fix after the spoken
+  wake/query check. This closes the voice acceptance gate; retain log-based
+  checks as diagnostics, not as a substitute for future physical checks.
+
 ## Working commands
 
 Run local focused tests from the repository root:
@@ -91,9 +110,39 @@ cd ios/YRobotRemote
 Deployment specifics, service restart cautions, and health checks are in
 [`docs/runbooks/deploy-yrobot.md`](docs/runbooks/deploy-yrobot.md).
 
+## Stage log: iPad cockpit (feature/ipad-cockpit, started 2026-08-20)
+
+- Worktree `.worktrees/ipad-cockpit`, branch `feature/ipad-cockpit`, base
+  `b8e35d804c3b` (= planning baseline). Plan: `docs/plans/2026-08-20-yrobot-ipad-cockpit.md`.
+- Task 1 complete: plan copied, parity baseline recorded in
+  `docs/verification/ipad-parity-baseline.md`.
+- Baseline test state (pre-existing, not caused by this branch): Python
+  collectable subset 320 passed / 6 failed / 11 errors plus 12 uncollectable
+  stale test files (list in parity doc); desktop-app `npm run typecheck` PASS
+  and Vitest 102/102 PASS. `desktop-app` installs with
+  `yarn install --frozen-lockfile` (yarn.lock only, no package-lock.json).
+- The notes above about `ios/YRobotRemote` + `./scripts/build.sh` refer to an
+  earlier Xcode experiment outside this branch's scope; the iPad branch uses
+  XcodeGen under `ios/YRobotRemote` per the 2026-08-20 plan.
+
 ## Handoff update rule
 
 After every completed stage, update this file with: affected files, the exact
 verification command and result, live acceptance status, remaining work, and
 the new commit. Remove superseded dynamic facts; keep durable facts in
 `PROJECT_MEMORY.md` or a decision record instead.
+
+## 2026-08-20 — iPad cockpit development (16 tasks) handoff
+
+- Branch: `feature/ipad-cockpit` (worktree `.worktrees/ipad-cockpit`).
+- Plan: `docs/plans/2026-08-20-yrobot-ipad-cockpit.md`.
+- Acceptance: `docs/verification/ipad-acceptance-report.md` (operator
+  gates still pending; deploy was **not** run).
+- All 16 plan tasks have a checkpoint commit. iPad bundle has zero
+  Tauri runtime, zero daemon `set_target`, zero secret leakage; the
+  Choreographer is the only `set_target` writer via the manual lease.
+- Local gates green: desktop 174 tests / 0 TS errors, iOS tests green,
+  Python focused tests green, `scripts/deploy.sh --dry-run` clean.
+- **Operator must confirm before any actual deploy.** See
+  `docs/verification/ipad-testflight-checklist.md` for TestFlight
+  inputs that only the user can provide.

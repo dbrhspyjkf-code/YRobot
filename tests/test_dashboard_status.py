@@ -15,6 +15,10 @@ class HTTPException(Exception):
 
 fastapi_module.HTTPException = HTTPException
 sys.modules.setdefault("fastapi", fastapi_module)
+# websockets is only used by qwen_realtime at import time; the dashboard status
+# tests never touch it. Provide a stub so the import chain does not pull in
+# the real dependency in this narrow test environment.
+sys.modules.setdefault("websockets", types.ModuleType("websockets"))
 from yrobot import app_config
 
 
@@ -112,3 +116,22 @@ def test_system_power_runs_pre_power_hook_before_command(monkeypatch):
     )
 
     assert calls == ["sleep", ["sudo", "-n", "systemctl", "poweroff"]]
+
+
+def test_status_motion_section_exposes_control_owner_and_remaining():
+    """The /api/status motion section must surface control_owner +
+    manual_remaining_ms but never the lease id (plan Task 12.8)."""
+    controller = app_config.motion_controller_singleton()
+    fake_choreo = types.SimpleNamespace(
+        is_manual_active=lambda: False,
+        manual_status=lambda: {"active": False, "remaining_ms": 0, "limits": {}},
+        get_status=lambda: {"manual_control": {"active": False, "remaining_ms": 0, "limits": {}}, "manual_active": False, "thread_alive": True},
+    )
+    controller.set(fake_choreo)
+    snap = controller.status()
+    assert "control_owner" in snap
+    assert snap["control_owner"] in {"autonomous", "manual"}
+    assert snap["manual_remaining_ms"] == 0
+    # Lease id may live on the coordinator but must not surface here.
+    assert "session_id" not in snap
+    assert "kid" not in snap
