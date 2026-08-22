@@ -245,6 +245,8 @@ class VolumeController:
 CAMERA_LONG_EDGE = 640
 CAMERA_JPEG_QUALITY = 70
 CAMERA_INTERVAL_S = 0.5
+PHOTO_CAPTURE_ATTEMPTS = 3
+PHOTO_CAPTURE_RETRY_DELAY_S = 0.05
 SYSTEM_SERVICE_NAME = "yrobot.service"
 REACHY_DAEMON_BASE_URL = "http://127.0.0.1:8000"
 REACHY_DAEMON_ENDPOINTS = (
@@ -597,23 +599,31 @@ class CameraStreamer:
         return encoded.tobytes() if ok else None
 
     def capture_photo_jpeg(self, *, long_edge: int = 1280, jpeg_quality: int = 85) -> bytes | None:
-        """Capture one fresh JPEG without racing the preview reader."""
+        """Capture a fresh JPEG, tolerating a bounded number of empty frames."""
         if long_edge < 1:
             raise ValueError("long_edge must be positive")
         if not 1 <= jpeg_quality <= 100:
             raise ValueError("jpeg_quality must be between 1 and 100")
-        media = self._media_holder.media
-        if media is None:
-            return None
-        try:
-            with self._capture_lock:
-                frame = media.get_frame()
-                if frame is None:
-                    return None
-                return self._encode(frame, long_edge=long_edge, jpeg_quality=jpeg_quality)
-        except Exception as exc:  # noqa: BLE001 — camera capture is best effort
-            logger.debug("photo camera capture raised: %s", exc)
-            return None
+        for attempt in range(PHOTO_CAPTURE_ATTEMPTS):
+            media = self._media_holder.media
+            if media is None:
+                return None
+            try:
+                with self._capture_lock:
+                    frame = media.get_frame()
+                    jpeg = (
+                        None
+                        if frame is None
+                        else self._encode(frame, long_edge=long_edge, jpeg_quality=jpeg_quality)
+                    )
+            except Exception as exc:  # noqa: BLE001 — camera capture is best effort
+                logger.debug("photo camera capture raised: %s", exc)
+                jpeg = None
+            if jpeg is not None:
+                return jpeg
+            if attempt + 1 < PHOTO_CAPTURE_ATTEMPTS:
+                time.sleep(PHOTO_CAPTURE_RETRY_DELAY_S)
+        return None
 
     def _run(self) -> None:
         next_attempt = 0.0

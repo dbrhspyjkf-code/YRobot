@@ -103,6 +103,28 @@ def test_camera_photo_capture_returns_none_without_a_media_frame():
     assert camera.capture_photo_jpeg() is None
 
 
+class _TransientEmptyFrameMedia:
+    def __init__(self, frame):
+        self._frame = frame
+        self.calls = 0
+
+    def get_frame(self):
+        self.calls += 1
+        return None if self.calls == 1 else self._frame.copy()
+
+
+def test_camera_photo_capture_retries_a_transient_empty_frame():
+    holder = _MediaHolder()
+    holder.media = _TransientEmptyFrameMedia(np.full((40, 60, 3), 80, dtype=np.uint8))
+    camera = CameraStreamer(holder)
+
+    photo = camera.capture_photo_jpeg()
+
+    assert photo is not None
+    assert photo.startswith(b"\xff\xd8")
+    assert holder.media.calls == 2
+
+
 class _BlockingMedia:
     def __init__(self, frame):
         self._frame = frame
