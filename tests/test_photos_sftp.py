@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 from yrobot.config import Settings
+from yrobot.photos import install_askpass_script
 from yrobot.photos_sftp import OpensshSftpRunner
 
 
@@ -96,3 +99,29 @@ def test_fetch_accepts_protocol_arguments_and_uses_one_get_command(tmp_path, mon
     assert kwargs["input"].splitlines() == [
         f"get /srv/reachy-photos/2026/08/22/capture.thumb.jpg {destination}"
     ]
+
+
+def _assert_askpass_accepts_openssh_prompt(script_path: Path) -> None:
+    result = subprocess.run(
+        [str(script_path), "photo-uploader@example.test's password:"],
+        capture_output=True,
+        env={**os.environ, "YROBOT_PHOTO_SFTP_PASSWORD": "test-only-password"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "test-only-password"
+    assert result.stderr == ""
+
+
+def test_generated_askpass_accepts_openssh_prompt_argument(tmp_path):
+    script_path = install_askpass_script(tmp_path / "askpass")
+
+    _assert_askpass_accepts_openssh_prompt(script_path)
+
+
+def test_versioned_askpass_script_accepts_openssh_prompt_argument():
+    script_path = Path(__file__).parents[1] / "scripts" / "yrobot_photo_askpass.sh"
+
+    _assert_askpass_accepts_openssh_prompt(script_path)

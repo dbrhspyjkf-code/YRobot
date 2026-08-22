@@ -2,12 +2,12 @@
 # OpenSSH askpass helper for Reachy photo uploads.
 #
 # Reads the password from the inherited YROBOT_PHOTO_SFTP_PASSWORD environment
-# variable and writes it once to stdout. Invoked only by the SFTP worker via
-# SSH_ASKPASS_REQUIRE=force; the script does not accept any positional
-# argument and never echoes anything but the password itself.
+# variable and writes it once to stdout. OpenSSH supplies one prompt argument
+# when SSH_ASKPASS_REQUIRE=force is used; the prompt is intentionally ignored.
+# The script never echoes anything but the password itself.
 set -eu
 
-if [[ "$#" -ne 0 ]]; then
+if [[ "$#" -gt 1 ]]; then
   exit 64
 fi
 

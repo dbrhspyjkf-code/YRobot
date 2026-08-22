@@ -119,6 +119,28 @@ Observed results:
     Reachy-side spool cleanup on success, retry path while offline, dashboard
     delete after explicit confirm, both XIAOZHI and QWEN backends.
 
+- 2026-08-22 23:48 Asia/Shanghai: deployed follow-up photo hotfixes through
+  `scripts/deploy.sh`; current source commit `a6aa056`, robot archive
+  fingerprint `7cfb771`, backup
+  `/home/pollen/.local/state/yrobot/backups/deploy-20260822-234654`.
+  - Fixes: `/api/status` now reads the same `PhotoLibrary` as the album
+    routes; OpenSSH SFTP batch construction now uses valid one-line commands,
+    incremental directory creation, a compatible `fetch` signature, and no
+    conflicting `subprocess.run(input=..., stdin=...)` arguments.
+  - Validation: local and robot focused suites passed with
+    `tests/test_photos.py` and `tests/test_photos_sftp.py`; service and
+    official daemon are both `active`; Dashboard `/api/status` and
+    `/api/photos/status` agree on the photo queue state.
+  - Current block as of that time: systemd loads
+    `/home/pollen/.config/yrobot/ha.env` (mode `0600`), but it has no
+    `YROBOT_PHOTO_SFTP_*` entries and the manually verified
+    `orangepi_known_hosts` file does not exist. Photo upload therefore remains
+    disabled. One dashboard-origin pending spool item exists; it is retained
+    locally and has not attempted an upload.
+  - Do not resume SFTP preflight or physical acceptance until an operator has
+    entered the private settings and verified host key locally. Do not put
+    those values in Git, logs, Dashboard, handoff files, or chat.
+
 ## Working commands
 
 Run local focused tests from the repository root:
