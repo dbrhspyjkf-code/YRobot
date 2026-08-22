@@ -142,7 +142,6 @@ class PhotoState:
             "height": self.height,
             "bytes_total": self.bytes_total,
             "sha256": self.sha256,
-            "remote_rel": self.remote_rel,
             "uploaded_at": uploaded_iso,
         }
 
@@ -469,23 +468,22 @@ class PhotoLibrary:
         return [(str(r["photo_id"]), int(r["attempts"])) for r in rows]
 
     def enqueue_retry(self, photo_id: str) -> bool:
+        """Requeue a failed upload only; pending/uploaded records are immutable."""
         if not self._is_valid_id(photo_id):
             return False
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT status FROM photos WHERE photo_id = ?", (photo_id,)
-            ).fetchone()
-            if row is None:
-                return False
-            conn.execute(
+            result = conn.execute(
                 "UPDATE photos SET status = ?, last_error = NULL,"
-                " next_attempt_at = ? WHERE photo_id = ?",
+                " next_attempt_at = ? WHERE photo_id = ? AND status = ?",
                 (
                     PhotoStatus.PENDING.value,
                     self._clock(),
                     photo_id,
+                    PhotoStatus.FAILED.value,
                 ),
             )
+            if result.rowcount != 1:
+                return False
         with self._lock:
             self._wake_event.set()
         return True

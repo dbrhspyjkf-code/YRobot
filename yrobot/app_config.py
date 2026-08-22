@@ -1546,7 +1546,7 @@ def register_settings_routes(
 
 def register_photo_routes(
     app: FastAPI,
-    photo_library: "PhotoLibrary | None",
+    photo_library: PhotoLibrary | None,
 ) -> None:
     """Attach the photo album routes to ``app``.
 
@@ -1627,8 +1627,13 @@ def register_photo_routes(
     @app.post("/api/photos/{photo_id}/retry")
     def post_photos_retry(photo_id: str) -> dict[str, Any]:
         lib = _require_library()
-        if not lib.enqueue_retry(photo_id):
+        state = lib.get(photo_id)
+        if state is None:
             raise HTTPException(status_code=404, detail="photo not found")
+        if state.status != PhotoStatus.FAILED:
+            raise HTTPException(status_code=409, detail="only failed photos can be retried")
+        if not lib.enqueue_retry(photo_id):
+            raise HTTPException(status_code=409, detail="photo is no longer retryable")
         return {"photo_id": photo_id, "status": PhotoStatus.PENDING.value}
 
     @app.delete("/api/photos/{photo_id}")

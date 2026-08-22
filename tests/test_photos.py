@@ -245,6 +245,7 @@ def test_photo_metadata_never_contains_password_or_local_temp_path(tmp_path):
         assert forbidden.lower() not in payload
     assert "test-only-photo-password" not in repr(serialized)
     assert "remote_path" not in serialized
+    assert "remote_rel" not in serialized
 
 
 def test_pending_bytes_cap_rejects_new_capture_without_disk_growth(tmp_path):
@@ -385,7 +386,14 @@ def test_photo_list_returns_metadata_without_credentials(tmp_path):
     assert body["limit"] == 5
     assert body["photos"]
     entry = body["photos"][0]
-    for forbidden in ("password", "host", "remote_host", "remote_path", "orangepi"):
+    for forbidden in (
+        "password",
+        "host",
+        "remote_host",
+        "remote_path",
+        "remote_rel",
+        "orangepi",
+    ):
         assert forbidden not in entry
     assert entry["status"] == PhotoStatus.UPLOADED.value
 
@@ -434,6 +442,21 @@ def test_photo_retry_requeues_only_known_photo_id(tmp_path):
 
     missing_response = client.post("/api/photos/00000000000000000000000000000000/retry")
     assert missing_response.status_code == 404
+
+
+def test_photo_retry_rejects_pending_and_uploaded_photo(tmp_path):
+    client, library = _photo_client(tmp_path, runner=_FakeRunner())
+    record = library.capture_from_voice(source="dashboard")
+
+    pending_response = client.post(f"/api/photos/{record.photo_id}/retry")
+    assert pending_response.status_code == 409
+    assert library.get(record.photo_id).status == PhotoStatus.PENDING
+
+    library._run_once_for_test(record.photo_id)  # noqa: SLF001
+    assert library.get(record.photo_id).status == PhotoStatus.UPLOADED
+    uploaded_response = client.post(f"/api/photos/{record.photo_id}/retry")
+    assert uploaded_response.status_code == 409
+    assert library.get(record.photo_id).status == PhotoStatus.UPLOADED
 
 
 def test_photo_delete_keeps_metadata_when_remote_delete_fails(tmp_path):
