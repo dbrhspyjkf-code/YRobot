@@ -263,6 +263,28 @@ input[type="text"]:focus, textarea:focus { border-color: rgba(49, 108, 255, 0.7)
 .face-register-row { display: flex; gap: 8px; }
 .face-register-row input { flex: 1; min-width: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.8); color: var(--ink); font: inherit; }
 .face-register-row button { padding: 10px 14px; font-size: 12px; }
+
+.photo-panel { display: grid; gap: 14px; }
+#photo-status.pill.mint { color: #23795b; border-color: rgba(35, 121, 91, 0.16); background: rgba(94, 227, 182, 0.13); }
+#photo-status.pill.warning { color: var(--danger); border-color: rgba(168, 102, 0, 0.2); background: rgba(255, 190, 83, 0.13); }
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.photo-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255, 255, 255, 0.78); }
+.photo-card .photo-thumb { width: 100%; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden; background: rgba(17, 35, 29, 0.06); display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.photo-card .photo-thumb img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.photo-card .photo-meta { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.photo-card .photo-meta b { color: var(--ink); font-size: 12px; }
+.photo-card .photo-meta .photo-status { font-weight: 700; letter-spacing: 0.04em; }
+.photo-card .photo-meta .photo-status.uploaded { color: #23795b; }
+.photo-card .photo-meta .photo-status.pending,
+.photo-card .photo-meta .photo-status.uploading { color: var(--muted); }
+.photo-card .photo-meta .photo-status.failed { color: var(--danger); }
+.photo-card .photo-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.photo-card .photo-actions button { flex: 1 1 auto; padding: 6px 8px; font-size: 11px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.85); color: var(--ink); cursor: pointer; }
+.photo-card .photo-actions button.danger { color: var(--danger); border-color: rgba(168, 102, 0, 0.25); }
+.photo-card .photo-actions button:disabled { opacity: 0.55; cursor: wait; }
+.photo-preview { position: fixed; inset: 0; background: rgba(17, 35, 29, 0.78); display: grid; place-items: center; z-index: 1000; padding: 32px; }
+.photo-preview img { max-width: min(960px, 90vw); max-height: 90vh; border-radius: 12px; box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45); background: white; }
+.photo-preview.hidden { display: none; }
 .face-list { display: grid; gap: 8px; margin-top: 12px; }
 .face-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255, 255, 255, 0.62); }
 .face-item b { display: block; font-size: 13px; }

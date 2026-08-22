@@ -27,8 +27,6 @@ from queue import Empty, Full, Queue
 from typing import Any
 
 import numpy as np
-
-from yrobot.manual_control import ManualCoordinator, ManualTarget, Limits, ValidationError
 try:
     from scipy.spatial.transform import Rotation as R
 except ImportError:  # pragma: no cover - scipy is a hard dep of the SDK
@@ -313,29 +311,6 @@ def weighted_circular_mean(samples: list[tuple[float, float]]) -> float:
     )
 
 
-
-def _slew_step(current: float, target: float, max_delta_per_tick: float, dt: float) -> float:
-    """Step from `current` toward `target` with at most `max_delta_per_tick * dt` per call."""
-    step = max_delta_per_tick * dt
-    if abs(target - current) <= step:
-        return target
-    return current + step if target > current else current - step
-
-
-def _dict_to_manual_target(payload: dict, *, session_id: str = "") -> ManualTarget:
-    """Coerce an API payload into a `ManualTarget`. Validation lives in `validate_target`."""
-    antennas = payload.get("antennas") or (0.0, 0.0)
-    antennas_tuple = (float(antennas[0]), float(antennas[1]))
-    return ManualTarget(
-        roll=float(payload.get("roll", 0.0)),
-        pitch=float(payload.get("pitch", 0.0)),
-        yaw=float(payload.get("yaw", 0.0)),
-        z=float(payload.get("z", 0.0)),
-        antennas=antennas_tuple,
-        session_id=str(payload.get("session_id") or session_id),
-    )
-
-
 def _wrap(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
@@ -410,14 +385,6 @@ class Choreographer(threading.Thread):
         self._recorded_name = None
         self._recorded_start = -1e9
         self._recorded_duration = 0.0
-        # Manual control lease: managed by ManualCoordinator; the run loop
-        # bypasses _compose() entirely while a lease is alive so only the
-        # server-side slew + clamp can write set_target.
-        self._manual_coordinator = ManualCoordinator()
-        self._manual_active = False
-        self._manual_slew_pose: np.ndarray | None = None
-        self._manual_slew_antennas: tuple[float, float] | None = None
-
         # Explicit body yaw: when the gaze target drifts far from the current
         # head yaw, the body slowly turns to carry the head (like a human
         # turning toward a speaker) so the head never has to crank past ~35°.
@@ -493,8 +460,6 @@ class Choreographer(threading.Thread):
 
     def play_move(self, name: str, now: float | None = None) -> bool:
         """Queue a one-shot expressive move; return whether it was accepted."""
-        if self._manual_active:
-            return False  # manual control owns the pose; record/spontaneous suppressed
         if name not in MOVE_SPECS:
             return False
         start = time.monotonic() if now is None else now
@@ -502,8 +467,6 @@ class Choreographer(threading.Thread):
 
     def play_recorded(self, name: str, recorded_moves: Any = None) -> bool:
         """Validate and queue a recorded emotion move."""
-        if self._manual_active:
-            return False
         if recorded_moves is None:
             return False
         try:
@@ -514,8 +477,6 @@ class Choreographer(threading.Thread):
 
     def play_dance(self, name: str) -> bool:
         """Validate and queue a dance move from the optional library."""
-        if self._manual_active:
-            return False
         try:
             from reachy_mini_dances_library.dance_move import DanceMove
             move = DanceMove(name)
@@ -576,19 +537,6 @@ class Choreographer(threading.Thread):
                 self._still_until = max(self._still_until, float(payload))
             elif command == "release_still":
                 self._still_until = 0.0
-            elif command == "enter_manual":
-                self._manual_active = True
-                self._manual_slew_pose = None
-                self._manual_slew_antennas = None
-            elif command == "update_manual":
-                # Pose and antennas are pulled from the coordinator on every
-                # loop tick; here we just clear the slew so the first frame
-                # after a big jump does not skip.
-                self._manual_slew_pose = None
-            elif command == "release_manual":
-                self._manual_active = False
-                self._manual_slew_pose = None
-                self._manual_slew_antennas = None
             else:
                 logger.warning("Unknown motion command: %s", command)
 
@@ -659,46 +607,6 @@ class Choreographer(threading.Thread):
     def current_yaw(self) -> float:
         return self._gaze.pos
 
-    # ---- manual control API (plan Task 12) -------------------------
-
-    def begin_manual(self, target: dict | ManualTarget) -> str:
-        """Acquire the manual lease and seed the slew from the target."""
-        if isinstance(target, dict):
-            target = _dict_to_manual_target(target)
-        coordinator = self._manual_coordinator
-        session_id, _ = coordinator.acquire(target)
-        # Apply the flag synchronously so play_move/play_recorded/play_dance
-        # refuse immediately; the run loop's enter_manual command is the
-        # signal to flip the slew state.
-        self._manual_active = True
-        self._enqueue_command("enter_manual")
-        return session_id
-
-    def update_manual(self, target: dict | ManualTarget, *, session_id: str | None = None) -> None:
-        """Submit a follow-up manual setpoint; validated server-side."""
-        if isinstance(target, dict):
-            target = _dict_to_manual_target(target, session_id=session_id or "")
-        if session_id is None:
-            session_id = target.session_id
-        coordinator = self._manual_coordinator
-        if not coordinator.is_active(session_id):
-            raise PermissionError("manual lease is not active for this session_id")
-        coordinator.update(target)
-        self._enqueue_command("update_manual")
-
-    def renew_manual(self, session_id: str) -> None:
-        self._manual_coordinator.renew(session_id)
-
-    def end_manual(self, session_id: str) -> None:
-        self._manual_coordinator.release(session_id)
-        self._enqueue_command("release_manual")
-
-    def is_manual_active(self) -> bool:
-        return self._manual_coordinator.is_active()
-
-    def manual_status(self) -> dict:
-        return self._manual_coordinator.public_status()
-
     def hold_still(self, until: float) -> None:
         """Queue a smooth freeze request for the motion thread."""
         self._enqueue_command("hold_still", until)
@@ -708,64 +616,6 @@ class Choreographer(threading.Thread):
 
     def close(self) -> None:
         self._halt.set()
-
-    def _manual_compose(self, dt: float) -> tuple[np.ndarray, list[float]]:
-        """Server-side slew + clamp for the manual lease.
-
-        The slew rate matches the per-tick rate limit from `validate_target`
-        (≈250°/s on yaw) so even a fully-spiked client cannot jerk the
-        servo stack. The first frame after enter/update uses the validated
-        target directly; subsequent frames step toward it.
-        """
-        from yrobot.manual_control import (
-            DEFAULT_LIMITS,
-            DEFAULT_MAX_DELTA_PER_TICK,
-        )
-
-        coordinator = self._manual_coordinator
-        target = coordinator.current_target()
-        if target is None:
-            # Active lease with no target yet — hold the last slew.
-            if self._manual_slew_pose is None or self._manual_slew_antennas is None:
-                return np.eye(4), [self.ANTENNA_NEUTRAL, self.ANTENNA_NEUTRAL]
-            return self._manual_slew_pose, list(self._manual_slew_antennas)
-
-        limits = DEFAULT_LIMITS
-        max_delta = DEFAULT_MAX_DELTA_PER_TICK
-
-        # Clamp into envelope.
-        roll = max(-limits.roll_rad, min(limits.roll_rad, target.roll))
-        pitch = max(-limits.pitch_rad, min(limits.pitch_rad, target.pitch))
-        yaw = max(-limits.yaw_rad, min(limits.yaw_rad, target.yaw))
-        z = max(-limits.z_m, min(limits.z_m, target.z))
-        antennas = tuple(
-            max(-limits.antenna_rad, min(limits.antenna_rad, a)) for a in target.antennas
-        )
-
-        # Slew toward the clamped target from the previous slew output so the
-        # 50 Hz loop never writes a delta larger than the per-tick budget.
-        if self._manual_slew_pose is None:
-            slew_pose = rpy_pose(roll, pitch, yaw, z)
-            slew_antennas = antennas
-        else:
-            # Decode previous slew pose back into RPY for the comparison.
-            prev_roll = math.atan2(self._manual_slew_pose[2, 1], self._manual_slew_pose[2, 2])
-            prev_pitch = math.asin(max(-1.0, min(1.0, -self._manual_slew_pose[2, 0])))
-            prev_yaw = math.atan2(self._manual_slew_pose[1, 0], self._manual_slew_pose[0, 0])
-            prev_z = self._manual_slew_pose[2, 3]
-            step_r = _slew_step(prev_roll, roll, max_delta["roll"], dt)
-            step_p = _slew_step(prev_pitch, pitch, max_delta["pitch"], dt)
-            step_y = _slew_step(prev_yaw, yaw, max_delta["yaw"], dt)
-            step_z = _slew_step(prev_z, z, max_delta["roll"], dt)
-            slew_pose = rpy_pose(step_r, step_p, step_y, step_z)
-            slew_antennas = tuple(
-                _slew_step(self._manual_slew_antennas[i], antennas[i], max_delta["antenna"], dt)
-                for i in range(2)
-            )
-
-        self._manual_slew_pose = slew_pose
-        self._manual_slew_antennas = slew_antennas
-        return slew_pose, list(slew_antennas)
 
     def get_status(self) -> dict[str, Any]:
         """Return a lightweight, thread-safe motion health snapshot."""
@@ -796,8 +646,6 @@ class Choreographer(threading.Thread):
                     else None
                 ),
                 "tracking": tracking,
-                "manual_control": self._manual_coordinator.public_status(),
-                "manual_active": self._manual_coordinator.is_active(),
             }
 
     def run(self) -> None:
@@ -822,14 +670,7 @@ class Choreographer(threading.Thread):
             previous_tick = loop_start
             self._apply_commands()
             self._blend_modes(dt)
-            # During manual control, only the validated client target is
-            # written; autonomous composed pose + recorded layers are
-            # suppressed and re-enter on release.
-            if self._manual_coordinator.is_active():
-                pose, antennas = self._manual_compose(dt)
-                self._still = 0.0  # manual input is the new stillness anchor
-            else:
-                pose, antennas = self._compose(t, now, dt)
+            pose, antennas = self._compose(t, now, dt)
             # Body yaw follows the gaze target: turn the body (gently) so the
             # head only needs a small relative yaw.  Automatic body yaw on the
             # daemon still keeps us inside mechanical limits; this explicit

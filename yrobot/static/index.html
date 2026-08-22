@@ -126,6 +126,21 @@
           </p>
         </div>
       </section>
+      <section id="photo-panel" class="panel photo-panel">
+        <div class="panel-heading compact">
+          <div><p class="step">PHOTO ALBUM</p><h2>远端相册</h2></div>
+          <div class="camera-controls">
+            <span id="photo-status" class="pill">同步未启用</span>
+            <button id="photo-capture" class="icon-button" type="button" title="拍摄并上传到相册">拍摄并上传</button>
+            <button id="photo-refresh" class="icon-button" type="button" title="刷新相册">刷新</button>
+          </div>
+        </div>
+        <p id="photo-meta" class="hint">点击“拍摄并上传”即向 OrangePi 上传一张当前画面。同步未启用时照片仅暂存于 Reachy。</p>
+        <div id="photo-grid" class="photo-grid">
+          <p class="muted">加载中…</p>
+        </div>
+        <p id="photo-note" class="hint"></p>
+      </section>
       <section id="motion-panel" class="panel motion-panel">
         <div class="panel-heading compact">
           <div><p class="step">MOTION</p><h2>动作面板</h2></div>

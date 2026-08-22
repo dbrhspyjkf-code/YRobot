@@ -233,6 +233,19 @@ class Settings:
     qwen_voice: str = "Ethan"
     command_recognizer_enabled: bool = False
     command_recognizer_url: str = ""
+    photo_upload_enabled: bool = False
+    photo_sftp_host: str = ""
+    photo_sftp_port: int = 22
+    photo_sftp_username: str = ""
+    photo_sftp_password: str | None = field(default=None, repr=False)
+    photo_sftp_remote_dir: str = ""
+    photo_sftp_known_hosts: str = "~/.config/yrobot/orangepi_known_hosts"
+    photo_spool_dir: str = "~/.local/state/yrobot/photo-spool"
+    photo_metadata_path: str = "~/.local/state/yrobot/photos.sqlite3"
+    photo_pending_max_bytes: int = 64 * 1024 * 1024
+    photo_retry_initial_s: float = 5.0
+    photo_retry_max_s: float = 300.0
+    photo_command_cooldown_s: float = 4.0
 
     def __post_init__(self) -> None:
         if self.conversation_backend not in SUPPORTED_CONVERSATION_BACKENDS:
@@ -278,6 +291,26 @@ class Settings:
             raise ValueError("YROBOT_UTTERANCE_MAX_S must be between 6 and 30")
         if not 0.0 <= self.head_tracking_weight <= 1.0:
             raise ValueError("YROBOT_HEAD_TRACKING_WEIGHT must be between 0 and 1")
+        if self.photo_sftp_port < 1 or self.photo_sftp_port > 65535:
+            raise ValueError("YROBOT_PHOTO_SFTP_PORT must be between 1 and 65535")
+        if self.photo_pending_max_bytes < 1:
+            raise ValueError("YROBOT_PHOTO_PENDING_MAX_BYTES must be positive")
+        if self.photo_command_cooldown_s < 0:
+            raise ValueError("YROBOT_PHOTO_COMMAND_COOLDOWN_S must be non-negative")
+        if not 0 < self.photo_retry_initial_s <= self.photo_retry_max_s:
+            raise ValueError("YROBOT_PHOTO_RETRY values must be positive and ordered")
+        if self.photo_upload_enabled:
+            required = (
+                self.photo_sftp_host,
+                self.photo_sftp_username,
+                self.photo_sftp_password,
+                self.photo_sftp_remote_dir,
+                self.photo_sftp_known_hosts,
+            )
+            if not all(required):
+                raise ValueError("YROBOT_PHOTO_SFTP configuration is incomplete")
+            if not self.photo_sftp_remote_dir.startswith("/"):
+                raise ValueError("YROBOT_PHOTO_SFTP_REMOTE_DIR must be absolute")
 
     @property
     def realtime_mode(self) -> str:
@@ -386,4 +419,26 @@ class Settings:
             command_recognizer_url=(env.get("YROBOT_COMMAND_RECOGNIZER_URL") or "")
             .strip()
             .rstrip("/"),
+            photo_upload_enabled=_flag("YROBOT_PHOTO_UPLOAD_ENABLED", False, env),
+            photo_sftp_host=(env.get("YROBOT_PHOTO_SFTP_HOST") or "").strip(),
+            photo_sftp_port=int(_num("YROBOT_PHOTO_SFTP_PORT", 22, env)),
+            photo_sftp_username=(env.get("YROBOT_PHOTO_SFTP_USERNAME") or "").strip(),
+            photo_sftp_password=env.get("YROBOT_PHOTO_SFTP_PASSWORD") or None,
+            photo_sftp_remote_dir=(env.get("YROBOT_PHOTO_SFTP_REMOTE_DIR") or "").strip(),
+            photo_sftp_known_hosts=(
+                env.get("YROBOT_PHOTO_SFTP_KNOWN_HOSTS")
+                or "~/.config/yrobot/orangepi_known_hosts"
+            ).strip(),
+            photo_spool_dir=(
+                env.get("YROBOT_PHOTO_SPOOL_DIR") or "~/.local/state/yrobot/photo-spool"
+            ).strip(),
+            photo_metadata_path=(
+                env.get("YROBOT_PHOTO_METADATA_PATH") or "~/.local/state/yrobot/photos.sqlite3"
+            ).strip(),
+            photo_pending_max_bytes=int(
+                _num("YROBOT_PHOTO_PENDING_MAX_BYTES", 64 * 1024 * 1024, env)
+            ),
+            photo_retry_initial_s=_num("YROBOT_PHOTO_RETRY_INITIAL_S", 5.0, env),
+            photo_retry_max_s=_num("YROBOT_PHOTO_RETRY_MAX_S", 300.0, env),
+            photo_command_cooldown_s=_num("YROBOT_PHOTO_COMMAND_COOLDOWN_S", 4.0, env),
         )

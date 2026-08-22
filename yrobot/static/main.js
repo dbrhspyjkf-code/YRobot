@@ -1177,3 +1177,273 @@ document.querySelectorAll(".motion-tab").forEach((tab) => {
 });
 document.getElementById("motion-refresh").addEventListener("click", loadMotions);
 loadMotions();
+
+// ── Photo album (synced to remote SFTP) ────────────────────────────────
+const photoPanel = document.getElementById("photo-panel");
+const photoGrid = document.getElementById("photo-grid");
+const photoStatus = document.getElementById("photo-status");
+const photoMeta = document.getElementById("photo-meta");
+const photoNote = document.getElementById("photo-note");
+const photoCapture = document.getElementById("photo-capture");
+const photoRefresh = document.getElementById("photo-refresh");
+
+const photoPreviewOverlay = document.createElement("div");
+photoPreviewOverlay.className = "photo-preview hidden";
+photoPreviewOverlay.setAttribute("role", "dialog");
+photoPreviewOverlay.setAttribute("aria-label", "照片预览");
+const previewImage = document.createElement("img");
+photoPreviewOverlay.appendChild(previewImage);
+document.body.appendChild(photoPreviewOverlay);
+photoPreviewOverlay.addEventListener("click", () => {
+  photoPreviewOverlay.classList.add("hidden");
+  previewImage.removeAttribute("src");
+});
+
+function photoStatusLabel(value) {
+  if (value === "uploaded") return "已同步";
+  if (value === "pending") return "待同步";
+  if (value === "uploading") return "同步中";
+  if (value === "failed") return "同步失败";
+  return value || "--";
+}
+
+function photoSourceLabel(source) {
+  if (!source) return "--";
+  if (source === "voice-xz") return "XIAOZHI 语音";
+  if (source === "voice-qwen") return "QWEN 语音";
+  if (source === "dashboard") return "Dashboard";
+  return source;
+}
+
+function formatPhotoTimestamp(value) {
+  if (!value) return "--";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("zh-CN", { hour12: false });
+}
+
+function setPhotoStatusPill(snapshot) {
+  if (!snapshot) {
+    photoStatus.textContent = "不可用";
+    photoStatus.classList.remove("mint", "warning");
+    return;
+  }
+  if (!snapshot.enabled) {
+    photoStatus.textContent = "同步未启用";
+    photoStatus.classList.remove("mint");
+    photoStatus.classList.add("warning");
+    return;
+  }
+  if (snapshot.queue_depth > 0 || snapshot.pending_bytes > 0) {
+    photoStatus.textContent = `同步中 ${snapshot.queue_depth}`;
+    photoStatus.classList.remove("warning");
+    photoStatus.classList.add("mint");
+    return;
+  }
+  photoStatus.textContent = "同步已就绪";
+  photoStatus.classList.remove("warning");
+  photoStatus.classList.add("mint");
+}
+
+async function loadPhotoStatus({ silent = false } = {}) {
+  if (photoPanel.classList.contains("hidden")) return;
+  try {
+    const response = await fetch("/api/photos/status", { cache: "no-store" });
+    if (response.status === 503) {
+      setPhotoStatusPill(null);
+      if (!silent) photoMeta.textContent = "相册服务尚未就绪，请稍候。";
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const snapshot = await response.json();
+    setPhotoStatusPill(snapshot);
+    if (!snapshot.enabled) {
+      photoMeta.textContent = "同步未启用：照片仅暂存于 Reachy。";
+    } else if (snapshot.queue_depth > 0) {
+      photoMeta.textContent = `同步中：${snapshot.queue_depth} 张待上传。`;
+    } else if (snapshot.last_error) {
+      photoMeta.textContent = `上次同步失败：${snapshot.last_error}`;
+    } else if (snapshot.last_success_at) {
+      photoMeta.textContent = `上次同步：${formatPhotoTimestamp(new Date(snapshot.last_success_at * 1000).toISOString())}`;
+    } else {
+      photoMeta.textContent = "点击“拍摄并上传”向 OrangePi 上传一张当前画面。";
+    }
+  } catch (error) {
+    if (!silent) photoMeta.textContent = `无法读取相册状态：${error.message}`;
+  }
+}
+
+function renderPhotoCard(photo) {
+  const card = document.createElement("div");
+  card.className = "photo-card";
+
+  const thumb = document.createElement("div");
+  thumb.className = "photo-thumb";
+  if (photo.status === "uploaded") {
+    const img = document.createElement("img");
+    img.alt = "相册缩略图";
+    img.loading = "lazy";
+    img.src = `/api/photos/${encodeURIComponent(photo.id)}/image?variant=thumb`;
+    img.addEventListener("load", () => {
+      img.addEventListener("click", () => {
+        previewImage.src = `/api/photos/${encodeURIComponent(photo.id)}/image?variant=full`;
+        photoPreviewOverlay.classList.remove("hidden");
+      });
+    });
+    img.addEventListener("error", () => {
+      thumb.textContent = "缩略图加载失败";
+    });
+    thumb.appendChild(img);
+  } else if (photo.status === "failed") {
+    thumb.textContent = "同步失败";
+  } else {
+    thumb.textContent = "等待同步";
+  }
+  card.appendChild(thumb);
+
+  const meta = document.createElement("div");
+  meta.className = "photo-meta";
+  const time = document.createElement("b");
+  time.textContent = formatPhotoTimestamp(photo.created_at);
+  meta.appendChild(time);
+  const status = document.createElement("span");
+  status.className = `photo-status ${photo.status || ""}`;
+  status.textContent = photoStatusLabel(photo.status);
+  meta.appendChild(status);
+  const source = document.createElement("span");
+  source.textContent = photoSourceLabel(photo.source);
+  meta.appendChild(source);
+  if (photo.last_error) {
+    const errorLine = document.createElement("span");
+    errorLine.textContent = `${photo.last_error}`;
+    meta.appendChild(errorLine);
+  }
+  card.appendChild(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "photo-actions";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "重试";
+  retry.disabled = !(photo.status === "failed");
+  retry.addEventListener("click", () => retryPhoto(photo.id, retry));
+  actions.appendChild(retry);
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.textContent = "删除";
+  deleteBtn.className = "danger";
+  deleteBtn.disabled = !(photo.status === "uploaded");
+  deleteBtn.addEventListener("click", () => deletePhoto(photo.id, deleteBtn));
+  actions.appendChild(deleteBtn);
+  card.appendChild(actions);
+
+  return card;
+}
+
+async function loadPhotos({ silent = false } = {}) {
+  if (photoPanel.classList.contains("hidden")) return;
+  try {
+    const response = await fetch("/api/photos?limit=24", { cache: "no-store" });
+    if (response.status === 503) {
+      photoGrid.innerHTML = '<p class="muted">相册服务尚未就绪</p>';
+      if (!silent) photoNote.textContent = "";
+      return;
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    const photos = Array.isArray(data.photos) ? data.photos : [];
+    photoGrid.innerHTML = "";
+    if (!photos.length) {
+      photoGrid.innerHTML = '<p class="muted">尚无照片</p>';
+    } else {
+      const fragment = document.createDocumentFragment();
+      for (const photo of photos) {
+        fragment.appendChild(renderPhotoCard(photo));
+      }
+      photoGrid.appendChild(fragment);
+    }
+    photoNote.textContent = `共 ${photos.length} 条记录`;
+  } catch (error) {
+    if (!silent) photoNote.textContent = `读取相册失败：${error.message}`;
+  }
+}
+
+async function captureDashboardPhoto() {
+  photoCapture.disabled = true;
+  const original = photoCapture.textContent;
+  photoCapture.textContent = "拍摄中…";
+  try {
+    const response = await fetch("/api/photos/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+    photoNote.textContent = "已加入同步队列";
+    await loadPhotos({ silent: true });
+    await loadPhotoStatus({ silent: true });
+  } catch (error) {
+    photoNote.textContent = `拍摄失败：${error.message}`;
+  } finally {
+    photoCapture.textContent = original;
+    photoCapture.disabled = false;
+  }
+}
+
+async function retryPhoto(photoId, button) {
+  if (!photoId) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/photos/${encodeURIComponent(photoId)}/retry`, {
+      method: "POST",
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+    photoNote.textContent = "已重新加入同步队列";
+    await loadPhotos({ silent: true });
+    await loadPhotoStatus({ silent: true });
+  } catch (error) {
+    photoNote.textContent = `重试失败：${error.message}`;
+    button.disabled = false;
+  }
+}
+
+async function deletePhoto(photoId, button) {
+  if (!photoId) return;
+  if (!window.confirm("将永久删除 OrangePi 中的这张照片，且无法恢复。继续吗？")) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/photos/${encodeURIComponent(photoId)}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.detail || `HTTP ${response.status}`);
+    }
+    photoNote.textContent = "已删除";
+    await loadPhotos({ silent: true });
+    await loadPhotoStatus({ silent: true });
+  } catch (error) {
+    photoNote.textContent = `删除失败：${error.message}`;
+    button.disabled = false;
+  }
+}
+
+photoCapture.addEventListener("click", captureDashboardPhoto);
+photoRefresh.addEventListener("click", () => {
+  loadPhotos();
+  loadPhotoStatus();
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    loadPhotos({ silent: true });
+    loadPhotoStatus({ silent: true });
+  }
+});
+
+if (photoPanel && !photoPanel.classList.contains("hidden")) {
+  loadPhotos();
+  loadPhotoStatus();
+}

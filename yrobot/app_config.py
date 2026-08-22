@@ -19,7 +19,7 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
@@ -30,6 +30,9 @@ from yrobot.config import QWEN_VOICES, SUPPORTED_CONVERSATION_BACKENDS, Settings
 from yrobot.env_store import update_env_value
 from yrobot.qwen_realtime import _model_url
 from yrobot.state import RUNTIME_HEALTH
+
+if TYPE_CHECKING:
+    from yrobot.photos import PhotoLibrary
 
 logger = logging.getLogger(__name__)
 
@@ -75,48 +78,6 @@ class MotionController:
         with self._lock:
             return self._choreo
 
-    def is_manual_active(self) -> bool:
-        choreo = self.get()
-        if choreo is None:
-            return False
-        try:
-            return bool(choreo.is_manual_active())
-        except Exception:
-            return False
-
-    def manual_status(self) -> dict[str, Any]:
-        choreo = self.get()
-        if choreo is None:
-            return {"active": False, "remaining_ms": 0, "limits": {}}
-        try:
-            return dict(choreo.manual_status() or {})
-        except Exception:
-            return {"active": False, "remaining_ms": 0, "limits": {}}
-
-    def begin_manual(self, document: dict[str, Any]) -> str:
-        choreo = self.get()
-        if choreo is None:
-            raise HTTPException(status_code=503, detail="机器人动作系统尚未就绪")
-        return choreo.begin_manual(document)
-
-    def update_manual(self, document: dict[str, Any], *, session_id: str) -> None:
-        choreo = self.get()
-        if choreo is None:
-            raise HTTPException(status_code=503, detail="机器人动作系统尚未就绪")
-        choreo.update_manual(document, session_id=session_id)
-
-    def renew_manual(self, session_id: str) -> None:
-        choreo = self.get()
-        if choreo is None:
-            raise HTTPException(status_code=503, detail="机器人动作系统尚未就绪")
-        choreo.renew_manual(session_id)
-
-    def end_manual(self, session_id: str) -> None:
-        choreo = self.get()
-        if choreo is None:
-            return
-        choreo.end_manual(session_id)
-
     def play(self, name: str) -> tuple[bool, str]:
         choreo = self.get()
         if choreo is None:
@@ -144,15 +105,10 @@ class MotionController:
         if choreo is None:
             return {"ready": False}
         try:
-            snapshot = choreo.get_status()
+            return {"ready": True, **choreo.get_status()}
         except Exception as exc:
             logger.debug("motion status unavailable: %s", exc)
             return {"ready": False, "error": str(exc)}
-        manual = snapshot.pop("manual_control", None) or {}
-        manual_active = bool(snapshot.pop("manual_active", False))
-        snapshot["control_owner"] = "manual" if manual_active else "autonomous"
-        snapshot["manual_remaining_ms"] = int(manual.get("remaining_ms", 0))
-        return {"ready": True, **snapshot}
 
     def list_moves(self) -> list[str]:
         from yrobot.motion import MOVES
@@ -562,6 +518,7 @@ class CameraStreamer:
     def __init__(self, media_holder: _MediaHolder) -> None:
         self._media_holder = media_holder
         self._lock = threading.Lock()
+        self._capture_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest: bytes | None = None
@@ -622,11 +579,11 @@ class CameraStreamer:
         with self._lock:
             return self._latest
 
-    def _encode(self, bgr_frame: np.ndarray) -> bytes | None:
+    def _encode(self, bgr_frame: np.ndarray, *, long_edge: int, jpeg_quality: int) -> bytes | None:
         height, width = bgr_frame.shape[:2]
-        long_edge = max(height, width)
-        if long_edge > CAMERA_LONG_EDGE:
-            scale = CAMERA_LONG_EDGE / long_edge
+        source_long_edge = max(height, width)
+        if source_long_edge > long_edge:
+            scale = long_edge / source_long_edge
             bgr_frame = cv2.resize(
                 bgr_frame,
                 (max(1, round(width * scale)), max(1, round(height * scale))),
@@ -635,9 +592,28 @@ class CameraStreamer:
         ok, encoded = cv2.imencode(
             ".jpg",
             bgr_frame,
-            [cv2.IMWRITE_JPEG_QUALITY, CAMERA_JPEG_QUALITY],
+            [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality],
         )
         return encoded.tobytes() if ok else None
+
+    def capture_photo_jpeg(self, *, long_edge: int = 1280, jpeg_quality: int = 85) -> bytes | None:
+        """Capture one fresh JPEG without racing the preview reader."""
+        if long_edge < 1:
+            raise ValueError("long_edge must be positive")
+        if not 1 <= jpeg_quality <= 100:
+            raise ValueError("jpeg_quality must be between 1 and 100")
+        media = self._media_holder.media
+        if media is None:
+            return None
+        try:
+            with self._capture_lock:
+                frame = media.get_frame()
+                if frame is None:
+                    return None
+                return self._encode(frame, long_edge=long_edge, jpeg_quality=jpeg_quality)
+        except Exception as exc:  # noqa: BLE001 — camera capture is best effort
+            logger.debug("photo camera capture raised: %s", exc)
+            return None
 
     def _run(self) -> None:
         next_attempt = 0.0
@@ -650,7 +626,17 @@ class CameraStreamer:
             if media is None:
                 continue
             try:
-                frame = media.get_frame()
+                with self._capture_lock:
+                    frame = media.get_frame()
+                    jpeg = (
+                        None
+                        if frame is None
+                        else self._encode(
+                            frame,
+                            long_edge=CAMERA_LONG_EDGE,
+                            jpeg_quality=CAMERA_JPEG_QUALITY,
+                        )
+                    )
             except Exception as exc:  # noqa: BLE001 — capture is best effort
                 logger.debug("dashboard camera capture raised: %s", exc)
                 with self._lock:
@@ -660,7 +646,6 @@ class CameraStreamer:
                 with self._lock:
                     self._stats["failures"] += 1
                 continue
-            jpeg = self._encode(frame)
             if jpeg is None:
                 with self._lock:
                     self._stats["failures"] += 1
@@ -999,6 +984,7 @@ def _read_pi_power_state() -> dict[str, Any]:
 def build_status(
     environ: Mapping[str, str],
     audio_input_controller: AudioInputController | None = None,
+    photo_library: PhotoLibrary | None = None,
 ) -> dict[str, Any]:
     """Return safe runtime status for the dashboard."""
     settings = Settings.from_env(environ)
@@ -1008,8 +994,16 @@ def build_status(
     volume_error: str | None = None
     try:
         volume_percent = volume_controller_singleton().read_percent()
+    except FileNotFoundError:
+        # ``amixer`` is unavailable (e.g. inside unit tests). Continue with no
+        # volume data so the dashboard partition still loads.
+        volume_error = "amixer unavailable"
     except Exception as exc:  # noqa: BLE001 — volume is best-effort status
         volume_error = str(exc)
+    try:
+        volume_range = list(volume_controller_singleton().range)
+    except Exception:
+        volume_range = [0, 100]
     mic_state = dashboard_mic_signal()
     mic_state["available"] = mic_state.get("updated_at", 0.0) > 0.0
     runtime = RUNTIME_HEALTH.snapshot()
@@ -1067,7 +1061,7 @@ def build_status(
         "audio": {
             "volume_percent": volume_percent,
             "control": VolumeController.PCM_CONTROL,
-            "range": list(volume_controller_singleton().range),
+            "range": volume_range,
             "volume_error": volume_error,
             "mic": mic_state,
             "input_enabled": input_enabled,
@@ -1092,6 +1086,24 @@ def build_status(
             "path": "N/A",
             "environment_overrides": [],
         },
+        "photos": _safe_photos_summary(photo_library),
+    }
+
+
+def _safe_photos_summary(photo_library: PhotoLibrary | None) -> dict[str, Any]:
+    if photo_library is None:
+        return {"enabled": False, "pending_bytes": 0, "queue_depth": 0}
+    try:
+        snapshot = photo_library.status()
+    except Exception as exc:  # noqa: BLE001 - dashboard is best-effort
+        logger.debug("photo status unavailable: %s", exc)
+        return {"enabled": False, "pending_bytes": 0, "queue_depth": 0}
+    return {
+        "enabled": snapshot.enabled,
+        "pending_bytes": snapshot.pending_bytes,
+        "queue_depth": snapshot.queue_depth,
+        "last_success_at": snapshot.last_success_at,
+        "last_error": snapshot.last_error,
     }
 
 
@@ -1340,60 +1352,18 @@ def register_settings_routes(
         name = str(document.get("move") or document.get("name") or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail="missing 'move'")
-        if motion.is_manual_active():
-            raise HTTPException(
-                status_code=409,
-                detail="手动控制进行中，请先释放控制权 (release manual lease)",
-            )
         ok, msg = motion.play(name)
         if not ok:
             raise HTTPException(status_code=422, detail=msg)
         return {"ok": True, "message": msg, "current": motion.current()}
 
-    # ---- manual control lease (plan Task 12) ----------------------
-
-    @app.get("/api/manual-control/session")
-    def get_manual_control_session() -> dict[str, Any]:
-        return {"ok": True, **motion.manual_status()}
-
-    @app.post("/api/manual-control/session")
-    def post_manual_control_session(document: dict[str, Any]) -> dict[str, Any]:
-        try:
-            session_id = motion.begin_manual(document or {})
-        except PermissionError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
-        return {"ok": True, "session_id": session_id, **motion.manual_status()}
-
-    @app.put("/api/manual-control/session/{session_id}/target")
-    def put_manual_control_target(session_id: str, document: dict[str, Any]) -> dict[str, Any]:
-        try:
-            motion.update_manual(document or {}, session_id=session_id)
-        except PermissionError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
-        return {"ok": True, **motion.manual_status()}
-
-    @app.put("/api/manual-control/session/{session_id}/heartbeat")
-    def put_manual_control_heartbeat(session_id: str) -> dict[str, Any]:
-        try:
-            motion.renew_manual(session_id)
-        except PermissionError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        return {"ok": True, **motion.manual_status()}
-
-    @app.delete("/api/manual-control/session/{session_id}")
-    def delete_manual_control_session(session_id: str) -> dict[str, Any]:
-        motion.end_manual(session_id)
-        return {"ok": True, **motion.manual_status()}
-
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:
         return {
             "ok": True,
-            "status": build_status(os.environ, audio_input_controller=audio_input),
+            "status": build_status(
+                os.environ, audio_input_controller=audio_input, photo_library=library
+            ),
         }
 
     volume_controller = VolumeController()
@@ -1568,3 +1538,97 @@ def register_settings_routes(
         }
 
     return camera
+
+
+def register_photo_routes(
+    app: FastAPI,
+    photo_library: "PhotoLibrary | None",
+) -> None:
+    """Attach the photo album routes to ``app``.
+
+    ``photo_library`` is created lazily by ``Yrobot`` so test fixtures and
+    scripts can register the app first and inject the library later; when the
+    argument is ``None`` the routes answer with ``503`` instead of crashing.
+    """
+
+    from yrobot.photos import PhotoStatus
+
+    library: PhotoLibrary | None = photo_library
+
+    def _require_library() -> PhotoLibrary:
+        if library is None:
+            raise HTTPException(status_code=503, detail="photo library not ready")
+        return library
+
+    @app.post("/api/photos/capture")
+    def post_photos_capture() -> Response:
+        lib = _require_library()
+        outcome = lib.capture_from_dashboard()
+        if not outcome.accepted:
+            raise HTTPException(status_code=503, detail=outcome.message)
+        payload = json.dumps(
+            {"photo_id": outcome.photo_id, "message": outcome.message}
+        )
+        return Response(
+            content=payload,
+            media_type="application/json",
+            status_code=202,
+        )
+
+    @app.get("/api/photos")
+    def get_photos(limit: int = 24) -> dict[str, Any]:
+        lib = _require_library()
+        items = lib.list_metadata(limit=limit)
+        return {
+            "photos": [item.as_public_dict() for item in items],
+            "limit": min(200, max(1, int(limit))),
+        }
+
+    @app.get("/api/photos/status")
+    def get_photos_status() -> dict[str, Any]:
+        lib = _require_library()
+        snapshot = lib.status()
+        return {
+            "enabled": snapshot.enabled,
+            "pending_bytes": snapshot.pending_bytes,
+            "queue_depth": snapshot.queue_depth,
+            "last_success_at": snapshot.last_success_at,
+            "last_error": snapshot.last_error,
+        }
+
+    @app.get("/api/photos/{photo_id}/image")
+    def get_photos_image(photo_id: str, variant: str = "thumb") -> Response:
+        lib = _require_library()
+        if variant not in {"full", "thumb"}:
+            raise HTTPException(status_code=422, detail="variant must be 'thumb' or 'full'")
+        try:
+            payload = lib.fetch_remote_bytes(photo_id, variant)
+        except Exception as exc:  # noqa: BLE001 - map transport failures
+            raise HTTPException(
+                status_code=502, detail=f"photo fetch failed: {type(exc).__name__}"
+            ) from exc
+        if payload is None:
+            raise HTTPException(
+                status_code=404,
+                detail="photo not found or not yet uploaded",
+            )
+        return Response(
+            content=payload,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
+    @app.post("/api/photos/{photo_id}/retry")
+    def post_photos_retry(photo_id: str) -> dict[str, Any]:
+        lib = _require_library()
+        if not lib.enqueue_retry(photo_id):
+            raise HTTPException(status_code=404, detail="photo not found")
+        return {"photo_id": photo_id, "status": PhotoStatus.PENDING.value}
+
+    @app.delete("/api/photos/{photo_id}")
+    def delete_photos(photo_id: str) -> dict[str, Any]:
+        lib = _require_library()
+        outcome = lib.delete_remote(photo_id)
+        if not outcome.ok:
+            raise HTTPException(status_code=502, detail=outcome.error or "delete failed")
+        return {"deleted": True, "photo_id": photo_id}

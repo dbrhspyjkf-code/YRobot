@@ -20,9 +20,13 @@ import time
 import wave
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import asyncio
 import cv2
+
+if TYPE_CHECKING:
+    from yrobot.audio_runtime import WakeGate
 import numpy as np
 from dotenv import load_dotenv
 from reachy_mini.apps.app import ReachyMiniApp
@@ -32,6 +36,7 @@ from yrobot.xiaozhi_mcp import XiaozhiMcpServer
 from yrobot.app_config import (
     _MediaHolder,
     audio_input_controller_singleton,
+    register_photo_routes,
     register_settings_routes,
     volume_controller_singleton,
 )
@@ -39,6 +44,11 @@ from yrobot.audio import apply_audio_startup_config
 from yrobot.audio_runtime import WAKE_TIMEOUT as _GATE_WAKE_TIMEOUT
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
+from yrobot.photos import (
+    PhotoCommandController,
+    PhotoLibrary,
+    openssh_runner,
+)
 from yrobot.qwen_emotion import (
     IdentityStabilizer,
     WakeGreetingGate,
@@ -273,6 +283,46 @@ def _qwen_should_request_response_after_local_control(
     local_matched: bool, command_recognizer_matched: bool
 ) -> bool:
     return not local_matched and not command_recognizer_matched
+
+
+_qwen_photo_controller = PhotoCommandController()
+
+
+async def _qwen_dispatch_photo_command(
+    candidates: list[str],
+    photo_library: PhotoLibrary,
+    client: Any,
+) -> bool | None:
+    """Dispatch a photo capture from the most recent matching STT fragment.
+
+    Returns ``True`` when the photo path answered (so the model should NOT
+    speak), ``None`` when no candidate contained a photo trigger.
+    """
+    for candidate in reversed(candidates):
+        if not _qwen_photo_controller.observe(candidate):
+            continue
+        outcome = await asyncio.to_thread(
+            photo_library.capture_from_voice, source="voice-qwen"
+        )
+        if outcome.accepted:
+            short_id = outcome.photo_id[:12]
+            message = (
+                f"[系统] 本地工具刚刚拍摄一张照片，photo_id={short_id}。"
+                "请用一句自然语言告知用户已拍照，正在同步到相册，"
+                "不要杜撰上传结果。"
+            )
+            logger.info(
+                "qwen photo accepted id=%s source=voice-qwen", outcome.photo_id
+            )
+        else:
+            message = (
+                f"[系统] 本地拍照请求未执行，原因：{outcome.message}。"
+                "请如实告诉用户发生了什么，不要编造已拍摄或上传。"
+            )
+            logger.info("qwen photo rejected reason=%s", outcome.message)
+        await client.cancel_and_inject(message)
+        return True
+    return None
 
 
 def _qwen_should_resume_wake_after_reconnect(gate: WakeGate) -> bool:
@@ -619,25 +669,78 @@ class Yrobot(ReachyMiniApp):
         self._camera_streamer = register_settings_routes(
             self.settings_app, media_holder=self._media_holder
         )
+        self._photo_voice_controller = PhotoCommandController()
+        self._photo_library = self._build_photo_library()
+        register_photo_routes(self.settings_app, self._photo_library)
+
+    def _schedule_xiaozhi_photo(self, transcript: str) -> None:
+        async def _capture_and_inject() -> None:
+            outcome = await asyncio.to_thread(
+                self._photo_library.capture_from_voice, source="voice-xz"
+            )
+            if outcome.accepted:
+                logger.info(
+                    "xz photo accepted id=%s transcript=%r",
+                    outcome.photo_id,
+                    transcript,
+                )
+            else:
+                logger.info(
+                    "xz photo rejected reason=%s transcript=%r",
+                    outcome.message,
+                    transcript,
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            loop.create_task(_capture_and_inject())
+        else:
+            threading.Thread(
+                target=lambda: self._photo_library.capture_from_voice(source="voice-xz"),
+                name="yrobot-xz-photo-capture",
+                daemon=True,
+            ).start()
+
+    def _build_photo_library(self) -> PhotoLibrary:
+        settings = Settings.from_env()
+        runner = openssh_runner(settings) if settings.photo_upload_enabled else None
+        return PhotoLibrary(
+            settings=settings,
+            camera=self._camera_streamer,
+            media_holder=self._media_holder,
+            sftp=runner,
+        )
+
+    @property
+    def photo_library(self) -> PhotoLibrary:
+        return self._photo_library
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Run exactly one configured conversation backend."""
+        self._media_holder.media = reachy_mini.media
+        self._photo_library.start()
         try:
-            self._media_holder.media = reachy_mini.media
             settings = Settings.from_env()
             RUNTIME_HEALTH.update(
                 backend=settings.conversation_backend,
                 last_error=None,
             )
-            if settings.conversation_backend == "qwen":
-                self._run_qwen(reachy_mini, stop_event, settings)
-            else:
-                self._run_xiaozhi(reachy_mini, stop_event)
-            _clear_startup_failure_counter()
+            try:
+                if settings.conversation_backend == "qwen":
+                    self._run_qwen(reachy_mini, stop_event, settings)
+                else:
+                    self._run_xiaozhi(reachy_mini, stop_event, settings)
+                _clear_startup_failure_counter()
+            finally:
+                self._photo_library.stop()
         except Exception as exc:
             logger.exception("YRobot startup failed: %s", exc)
             RUNTIME_HEALTH.update(ws_state="error", last_error=str(exc))
             ROBOT_STATE.set("safe_mode")
+            self._photo_library.stop()
             _enter_safe_mode(self._media_holder, exc, stop_event)
 
     def _run_qwen(
@@ -1018,6 +1121,11 @@ class Yrobot(ReachyMiniApp):
                 # or returned ok=False) and we tell the model what really
                 # happened. No match is silent: QWEN often streams ASR
                 # fragments, and the next fragment may complete the command.
+                photo_dispatch = await _qwen_dispatch_photo_command(
+                    candidates, self._photo_library, client
+                )
+                if photo_dispatch is not None:
+                    return photo_dispatch
                 for candidate in candidates:
                     result = await asyncio.to_thread(
                         tool_executor.execute_spoken_control, candidate
@@ -1046,6 +1154,7 @@ class Yrobot(ReachyMiniApp):
                     return True
                 logger.info("qwen local spoken control: no match candidates=%r", candidates)
                 return False
+
 
             async def execute_command_recognizer(wav_bytes: bytes) -> bool:
                 command = await asyncio.to_thread(command_recognizer.recognize, wav_bytes)
@@ -1364,6 +1473,7 @@ class Yrobot(ReachyMiniApp):
         self,
         reachy_mini: ReachyMini,
         stop_event: threading.Event,
+        settings: Settings,
     ) -> None:
         """Xiaozhi — sounddevice mic + OutputStream TTS."""
         import asyncio as _a
@@ -2101,6 +2211,8 @@ class Yrobot(ReachyMiniApp):
                                             vol,
                                             text,
                                         )
+                                if _waked and self._photo_voice_controller.observe(text):
+                                    self._schedule_xiaozhi_photo(text)
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:

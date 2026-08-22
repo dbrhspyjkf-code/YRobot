@@ -43,12 +43,15 @@ say() { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[deploy] ABORT:\033[0m %s\n' "$*" >&2; exit 1; }
 
 run_local_pytest() {
-  if [ -x .venv/bin/python ] && .venv/bin/python -c 'import pytest, cryptography' 2>/dev/null; then
+  export PYTHONPATH="$LOCAL_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  if [ -x .venv/bin/python ] && .venv/bin/python -c 'import pytest, cryptography, fastapi' 2>/dev/null; then
     .venv/bin/python -m pytest "$@"
-  elif python3 -c 'import pytest, cryptography' 2>/dev/null; then
+  elif python3 -c 'import pytest, cryptography, fastapi' 2>/dev/null; then
     python3 -m pytest "$@"
   elif command -v uvx >/dev/null 2>&1; then
-    uvx --from pytest --with cryptography pytest "$@"
+    # test_photos needs fastapi/httpx/opencv/websockets; the others only need cryptography.
+    uvx --from pytest --with cryptography --with fastapi --with httpx \
+      --with opencv-python-headless --with websockets --with numpy pytest "$@"
   else
     die "pytest+cryptography unavailable; install them or make uvx available"
   fi
@@ -97,9 +100,10 @@ if [ "$SKIP_TESTS" = 0 ]; then
   say "local: py_compile + focused tests"
   python3 -m py_compile \
     yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
-    yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py
+    yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py \
+    yrobot/app_config.py yrobot/photos.py
   run_local_pytest tests/test_uplink_vad.py tests/test_stability_guards.py \
-    tests/test_xiaozhi_mqtt.py -q
+    tests/test_xiaozhi_mqtt.py tests/test_photos.py -q
 else
   say "local: tests SKIPPED"
 fi
@@ -138,11 +142,13 @@ rsync "${RSYNC_OPTS[@]}" "$LOCAL_DIR"/ "$ROBOT_HOST:$ROBOT_DIR/"
 say "robot: py_compile"
 ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m py_compile \
   yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
-  yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py"
+  yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py \
+  yrobot/app_config.py yrobot/photos.py"
 if [ "$SKIP_TESTS" = 0 ]; then
   say "robot: focused pytest"
   ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m pytest \
-    tests/test_uplink_vad.py tests/test_stability_guards.py tests/test_xiaozhi_mqtt.py -q"
+    tests/test_uplink_vad.py tests/test_stability_guards.py tests/test_xiaozhi_mqtt.py \
+    tests/test_photos.py -q"
 fi
 
 # ── 6. orphan-safe restart ───────────────────────────────────────────────

@@ -89,6 +89,36 @@ Observed results:
   wake/query check. This closes the voice acceptance gate; retain log-based
   checks as diagnostics, not as a substitute for future physical checks.
 
+- 2026-08-22 (Asia/Shanghai), repository work only: added the optional
+  voice-driven photo album and OrangePi SFTP sync on `feat/reachy-photo-sync`
+  (commits `a092112`, `e4b5369`, `f509da4`, `2d97f7a`, `038bfae`, `25bf569`).
+  Feature worktree:
+  `/Users/leenzhou/Projects/YRobot-reachy-current/.worktrees/feat-reachy-photo-sync`.
+  - Touched files: `yrobot/config.py`, `yrobot/photos.py`,
+    `yrobot/photos_sftp.py`, `yrobot/app_config.py`, `yrobot/main.py`,
+    `yrobot/static/{index.html,main.js,style.css}`, `scripts/yrobot_photo_askpass.sh`,
+    `scripts/deploy.sh`, `tests/test_photos.py`, `.env.example`, `README.md`.
+  - Validation: 30 tests pass in `tests/test_photos.py`; `node --check`
+    `yrobot/static/main.js`; `git diff --check` clean; `git grep` finds no
+    weak host-key policy (`StrictHostKeyChecking=no|accept-new`,
+    `UserKnownHostsFile=/dev/null`) and no real photo-upload password in the
+    tracked tree (only the example placeholder in `.env.example`).
+  - Deploy gate: `scripts/deploy.sh` now compiles `yrobot/app_config.py`
+    and `yrobot/photos.py` and runs `tests/test_photos.py` locally and on the
+    robot. The robot still needs operator-side secret material and verified
+    SSH host key before the feature can sync anything.
+  - Pending operator-side action (not part of this commit, never to be
+    written back to the repository): edit
+    `/home/pollen/.config/yrobot/ha.env` to set
+    `YROBOT_PHOTO_UPLOAD_ENABLED=1`, `YROBOT_PHOTO_SFTP_*`, and the password
+    (mode `0600`), create
+    `/home/pollen/.config/yrobot/orangepi_known_hosts` from a manually
+    verified host key (mode `0600`), then restart `yrobot.service`.
+  - Physical acceptance still required before shipping: camera preview,
+    single capture per `帮我拍张照`, OrangePi upload of both variants,
+    Reachy-side spool cleanup on success, retry path while offline, dashboard
+    delete after explicit confirm, both XIAOZHI and QWEN backends.
+
 ## Working commands
 
 Run local focused tests from the repository root:
@@ -110,39 +140,9 @@ cd ios/YRobotRemote
 Deployment specifics, service restart cautions, and health checks are in
 [`docs/runbooks/deploy-yrobot.md`](docs/runbooks/deploy-yrobot.md).
 
-## Stage log: iPad cockpit (feature/ipad-cockpit, started 2026-08-20)
-
-- Worktree `.worktrees/ipad-cockpit`, branch `feature/ipad-cockpit`, base
-  `b8e35d804c3b` (= planning baseline). Plan: `docs/plans/2026-08-20-yrobot-ipad-cockpit.md`.
-- Task 1 complete: plan copied, parity baseline recorded in
-  `docs/verification/ipad-parity-baseline.md`.
-- Baseline test state (pre-existing, not caused by this branch): Python
-  collectable subset 320 passed / 6 failed / 11 errors plus 12 uncollectable
-  stale test files (list in parity doc); desktop-app `npm run typecheck` PASS
-  and Vitest 102/102 PASS. `desktop-app` installs with
-  `yarn install --frozen-lockfile` (yarn.lock only, no package-lock.json).
-- The notes above about `ios/YRobotRemote` + `./scripts/build.sh` refer to an
-  earlier Xcode experiment outside this branch's scope; the iPad branch uses
-  XcodeGen under `ios/YRobotRemote` per the 2026-08-20 plan.
-
 ## Handoff update rule
 
 After every completed stage, update this file with: affected files, the exact
 verification command and result, live acceptance status, remaining work, and
 the new commit. Remove superseded dynamic facts; keep durable facts in
 `PROJECT_MEMORY.md` or a decision record instead.
-
-## 2026-08-20 — iPad cockpit development (16 tasks) handoff
-
-- Branch: `feature/ipad-cockpit` (worktree `.worktrees/ipad-cockpit`).
-- Plan: `docs/plans/2026-08-20-yrobot-ipad-cockpit.md`.
-- Acceptance: `docs/verification/ipad-acceptance-report.md` (operator
-  gates still pending; deploy was **not** run).
-- All 16 plan tasks have a checkpoint commit. iPad bundle has zero
-  Tauri runtime, zero daemon `set_target`, zero secret leakage; the
-  Choreographer is the only `set_target` writer via the manual lease.
-- Local gates green: desktop 174 tests / 0 TS errors, iOS tests green,
-  Python focused tests green, `scripts/deploy.sh --dry-run` clean.
-- **Operator must confirm before any actual deploy.** See
-  `docs/verification/ipad-testflight-checklist.md` for TestFlight
-  inputs that only the user can provide.

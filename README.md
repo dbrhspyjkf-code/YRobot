@@ -78,7 +78,7 @@ The Reachy Mini dashboard is served at port `8042` in the deployment. It exposes
 - motion mode, current action, loop frequency and deadline misses;
 - Xiaozhi WebSocket/session and TTS health;
 - bounded audio queue depth and dropped-frame count;
-- camera preview and face tracking;
+- camera preview, face tracking and the remote photo album;
 - speaker volume, microphone enablement and VAD threshold;
 - recent conversation and service logs.
 
@@ -135,8 +135,32 @@ docs/plans/          implementation plans
 
 Microphone audio is sent to the configured Xiaozhi service while audio input is
 enabled. Camera frames are used by the local tracker and dashboard according to the
-current camera setting. Do not commit Xiaozhi, Home Assistant, or any other service
-tokens.
+current camera setting. When optional photo upload is enabled, captured images are
+spooled locally only until a verified SFTP upload succeeds, then the image files are
+removed from Reachy while non-secret metadata remains for the Dashboard. Verify the
+remote SSH host key before enabling it; store the SFTP password only in a robot-local
+mode-0600 environment file. Do not commit Xiaozhi, Home Assistant, photo-upload, or
+any other service tokens/passwords.
+
+## Voice photo album (optional)
+
+When the photo upload is configured, the user can say “帮我拍张照” (or press the
+*拍摄并上传* button on the Dashboard) to:
+
+1. Capture a fresh archive-quality JPEG from the camera.
+2. Atomically save the full image and a 320px thumbnail to the local spool
+   (`~/.local/state/yrobot/photo-spool`, mode `0700`).
+3. Upload both files to the configured remote album via the system OpenSSH
+   `sftp` client (`StrictHostKeyChecking=yes` against the operator-verified
+   known_hosts file, `SSH_ASKPASS_REQUIRE=force`).
+4. Once both remote files are atomically renamed, unlink the Reachy-side
+   spool copies and keep only non-secret metadata in SQLite.
+
+Failures keep the local files and retry with exponential backoff. The Dashboard
+album, retry, and delete actions are scoped to opaque photo IDs; the operator's
+remote host, directory, username, and password never leave the robot-local
+environment file. Disable the feature at any time by unsetting
+`YROBOT_PHOTO_UPLOAD_ENABLED` and restarting YRobot.
 
 ## License
 
