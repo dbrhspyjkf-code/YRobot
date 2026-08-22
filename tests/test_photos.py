@@ -14,6 +14,7 @@ from yrobot.app_config import (
     _MediaHolder,
     build_status,
     register_photo_routes,
+    register_settings_routes,
 )
 from yrobot.config import Settings
 from yrobot.photos import (
@@ -479,21 +480,24 @@ def test_build_status_includes_photos_partition_without_secrets(tmp_path):
         assert forbidden not in repr(photos).lower()
 
 
-def test_register_settings_routes_and_register_photo_routes_share_library(tmp_path, monkeypatch):
-    """Regression: ``/api/status`` must surface photos even when the library is injected after routes."""
-    monkeypatch.setenv("YROBOT_PHOTO_SPOOL_DIR", str(tmp_path / "spool"))
-    monkeypatch.setenv("YROBOT_PHOTO_METADATA_PATH", str(tmp_path / "meta.sqlite3"))
-    from yrobot.app_config import register_settings_routes, register_photo_routes
-    from yrobot.photos import PhotoLibrary
-
+def test_register_settings_routes_and_register_photo_routes_share_library(tmp_path):
+    """Regression: `/api/status` must use the library injected into photo routes."""
+    environment = {
+        **_COMPLETE_UPLOAD_ENV,
+        "YROBOT_PHOTO_SPOOL_DIR": str(tmp_path / "spool"),
+        "YROBOT_PHOTO_METADATA_PATH": str(tmp_path / "meta.sqlite3"),
+    }
+    enabled_library = PhotoLibrary(
+        settings=Settings.from_env(environment),
+        camera=CameraStreamer(_MediaHolder()),
+        sftp=_FakeRunner(),
+    )
     app = FastAPI()
     register_settings_routes(app, media_holder=_MediaHolder())
-    register_photo_routes(app, PhotoLibrary(settings=Settings.from_env()))
+    register_photo_routes(app, enabled_library)
 
-    client = TestClient(app)
-    response = client.get("/api/status")
+    response = TestClient(app).get("/api/status")
 
     assert response.status_code == 200
     body = response.json()
-    assert "photos" in body["status"]
-    assert body["status"]["photos"]["enabled"] is False
+    assert body["status"]["photos"]["enabled"] is True

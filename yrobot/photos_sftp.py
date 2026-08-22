@@ -52,7 +52,7 @@ class OpensshSftpRunner:
         self._command_timeout_s = command_timeout_s
         self._binary = binary
         self._known_hosts = Path(os.path.expanduser(settings.photo_sftp_known_hosts))
-        self._remote_dir = settings.photo_sftp_remote_dir.rstrip("/")
+        self._remote_dir = settings.photo_sftp_remote_dir.rstrip("/") or "/"
         if askpass_path is None:
             self._askpass_path = install_askpass_script(
                 Path(os.path.expanduser("~/.local/state/yrobot/yrobot_photo_askpass.sh"))
@@ -78,12 +78,11 @@ class OpensshSftpRunner:
     ) -> SftpResult:
         if variant not in {"full", "thumb"}:
             raise SftpTransportError(f"unsupported variant: {variant}")
-        target = f"{self._remote_dir}/{remote_rel}.{variant}.jpg"
+        target = self._remote_path(f"{remote_rel}.{variant}.jpg")
         tmp_target = f"{target}.part"
         self._ensure_remote_dir(remote_rel)
         commands = [
-            "-rm",
-            tmp_target,
+            f"-rm {_quote(tmp_target)}",
             f"put {_quote(local_path)} {_quote(tmp_target)}",
             f"rename {_quote(tmp_target)} {_quote(target)}",
             f"ls -l {_quote(target)}",
@@ -93,18 +92,27 @@ class OpensshSftpRunner:
         return SftpResult(remote_rel=f"{remote_rel}.{variant}.jpg", byte_count=size)
 
     def delete(self, *, photo_id: str, remote_rel: str) -> None:
-        target = f"{self._remote_dir}/{remote_rel}"
+        target = self._remote_path(remote_rel)
         self._run_batch([f"rm {_quote(target)}"])
 
     # ---------------------------------------------------------------- helpers
 
+    def _remote_path(self, relative_path: str) -> str:
+        relative_path = relative_path.lstrip("/")
+        if self._remote_dir == "/":
+            return f"/{relative_path}"
+        return f"{self._remote_dir}/{relative_path}"
+
     def _ensure_remote_dir(self, remote_rel: str) -> None:
         parts = remote_rel.split("/")[:-1]
-        if not parts:
-            return
-        target = f"{self._remote_dir}/" + "/".join(parts)
-        # ``sftp`` has no native mkdir -p; ask the server via shell.
-        self._run_batch([f"mkdir -p {_quote(target)}"])
+        target = self._remote_dir
+        commands = [f"-mkdir {_quote(target)}"]
+        current: list[str] = []
+        for part in parts:
+            current.append(part)
+            target = self._remote_path("/".join(current))
+            commands.append(f"-mkdir {_quote(target)}")
+        self._run_batch(commands)
 
     def _run_batch(self, commands: Sequence[str]) -> None:
         argv = [
@@ -134,7 +142,6 @@ class OpensshSftpRunner:
                 timeout=self._command_timeout_s,
                 env=env,
                 check=False,
-                stdin=subprocess.PIPE,
             )
         except subprocess.TimeoutExpired as exc:
             raise SftpTransportError(f"sftp timed out: {exc}") from exc
@@ -144,19 +151,18 @@ class OpensshSftpRunner:
                 f"sftp failed: code={result.returncode} stderr={sanitised}"
             )
 
-    def fetch(self, remote_rel: str, local_path: Path) -> None:
+    def fetch(self, *, photo_id: str, remote_rel: str, local_path: Path) -> None:
         commands = [
-            f"get {_quote(f'{self._remote_dir}/{remote_rel}')} {_quote(local_path)}"
+            f"get {_quote(self._remote_path(remote_rel))} {_quote(local_path)}"
         ]
         self._run_batch(commands)
 
 
 def _quote(value: str | Path) -> str:
-    """Quote an argument so a single ``sftp`` line can be parsed by the shell.
+    """Quote one value for the SFTP client's command parser.
 
-    OpenSSH ``sftp`` parses each line through the user's shell when invoked in
-    batch mode, so values that may contain spaces or shell metacharacters must
-    be escaped. The password is never passed through here.
+    This quote handling is local to the OpenSSH SFTP client; it never invokes
+    a remote shell. The password is never passed through here.
     """
     return shlex.quote(str(value))
 

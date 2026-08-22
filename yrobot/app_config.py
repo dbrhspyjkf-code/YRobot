@@ -1122,10 +1122,6 @@ def register_settings_routes(
     configured_backend = Settings.from_env(os.environ).conversation_backend
     configured_voice = Settings.from_env(os.environ).qwen_voice
 
-    # ``library`` is populated by ``register_photo_routes``; it lives in this
-    # enclosing scope so ``get_status`` can hand the PhotoLibrary to
-    # ``build_status`` without crashing before Yrobot injects it.
-    library: PhotoLibrary | None = None
 
     @app.get("/api/conversation/backend")
     def get_conversation_backend() -> dict[str, Any]:
@@ -1364,10 +1360,13 @@ def register_settings_routes(
 
     @app.get("/api/status")
     def get_status() -> dict[str, Any]:
+        photo_library = getattr(app.state, "photo_library", None)
         return {
             "ok": True,
             "status": build_status(
-                os.environ, audio_input_controller=audio_input, photo_library=library
+                os.environ,
+                audio_input_controller=audio_input,
+                photo_library=photo_library,
             ),
         }
 
@@ -1559,6 +1558,8 @@ def register_photo_routes(
     from yrobot.photos import PhotoStatus
 
     library: PhotoLibrary | None = photo_library
+    app.state.photo_library = library
+
 
     def _require_library() -> PhotoLibrary:
         if library is None:

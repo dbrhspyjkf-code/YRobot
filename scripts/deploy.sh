@@ -101,9 +101,9 @@ if [ "$SKIP_TESTS" = 0 ]; then
   python3 -m py_compile \
     yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
     yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py \
-    yrobot/app_config.py yrobot/photos.py
+    yrobot/app_config.py yrobot/photos.py yrobot/photos_sftp.py
   run_local_pytest tests/test_uplink_vad.py tests/test_stability_guards.py \
-    tests/test_xiaozhi_mqtt.py tests/test_photos.py -q
+    tests/test_xiaozhi_mqtt.py tests/test_photos.py tests/test_photos_sftp.py -q
 else
   say "local: tests SKIPPED"
 fi
@@ -143,12 +143,12 @@ say "robot: py_compile"
 ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m py_compile \
   yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
   yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py \
-  yrobot/app_config.py yrobot/photos.py"
+  yrobot/app_config.py yrobot/photos.py yrobot/photos_sftp.py"
 if [ "$SKIP_TESTS" = 0 ]; then
   say "robot: focused pytest"
   ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m pytest \
     tests/test_uplink_vad.py tests/test_stability_guards.py tests/test_xiaozhi_mqtt.py \
-    tests/test_photos.py -q"
+    tests/test_photos.py tests/test_photos_sftp.py -q"
 fi
 
 # ── 6. orphan-safe restart ───────────────────────────────────────────────
