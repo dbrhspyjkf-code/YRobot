@@ -228,6 +228,25 @@ def test_failed_upload_keeps_pending_images_and_marks_retryable_failure(tmp_path
     assert state.thumb_path.exists()
 
 
+def test_pending_retry_schedule_survives_process_restart(tmp_path, monkeypatch):
+    wall_time = [1_700_000_000.0]
+    monotonic_time = [10_000.0]
+    monkeypatch.setattr("yrobot.photos.time.time", lambda: wall_time[0])
+    monkeypatch.setattr("yrobot.photos.time.monotonic", lambda: monotonic_time[0])
+    library = _library(tmp_path)
+
+    record = library.capture_from_dashboard()
+    assert record.accepted is True
+
+    # Simulate a process/device restart: monotonic time starts over while wall
+    # time advances beyond the scheduled five-second retry delay.
+    monotonic_time[0] = 1.0
+    wall_time[0] += 6.0
+    restarted = _library(tmp_path)
+
+    assert (record.photo_id, 0) in restarted._ready_photo_ids()  # noqa: SLF001
+
+
 def test_photo_metadata_never_contains_password_or_local_temp_path(tmp_path):
     library = _library(tmp_path)
 

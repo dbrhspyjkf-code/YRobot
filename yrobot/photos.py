@@ -254,7 +254,9 @@ class PhotoLibrary:
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._settings = settings
-        self._clock = clock or time.monotonic
+        # next_attempt_at is persisted in SQLite, so its default clock must
+        # remain comparable after a process or device restart.
+        self._clock = clock or time.time
         self._wall_clock = time.time
         self._camera = camera
         self._media_holder = media_holder
