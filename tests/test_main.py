@@ -1,21 +1,14 @@
 """Unit tests for app-level helpers (no hardware, no network)."""
 
-import asyncio
 import queue
 import threading
 import time
 
 import numpy as np
+from yrobot.config import Settings
+from yrobot.main import Conversation, UplinkPacket
 from yrobot.realtime import Delta
 from yrobot.turn import QUIET_S, TurnGate
-
-from yrobot.config import Settings
-from yrobot.main import (
-    Conversation,
-    UplinkPacket,
-    _abort_xiaozhi_for_local_photo,
-    _XiaozhiReconnect,
-)
 
 
 def test_urgent_uplink_discards_stale_backlog():
@@ -399,28 +392,6 @@ def test_late_callbacks_from_rotated_session_cannot_poison_current_session():
 
     assert conversation._speaker._q.empty()
     assert not conversation._session_dead.is_set()
-
-
-def test_local_photo_command_aborts_current_xiaozhi_channel_before_reconnect():
-    class FakeChannel:
-        def __init__(self):
-            self.closed = False
-
-        async def close(self):
-            self.closed = True
-
-    channel = FakeChannel()
-
-    async def abort_and_assert():
-        try:
-            await _abort_xiaozhi_for_local_photo(channel)
-        except _XiaozhiReconnect:
-            return
-        raise AssertionError("local photo command must request a reconnect")
-
-    asyncio.run(abort_and_assert())
-
-    assert channel.closed is True
 
 
 def test_startup_wake_up_enables_motors_before_movement():

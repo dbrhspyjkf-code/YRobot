@@ -67,6 +67,7 @@ from yrobot.xiaozhi_mqtt import (
     hello_request,
     is_xiaozhi_conversation_response,
 )
+from yrobot.xiaozhi_photo import close_channel_for_local_photo
 from yrobot.xiaozhi_ota import (
     OTAError,
     OtaCredentialCache,
@@ -421,18 +422,6 @@ def _qwen_wants_visual_snapshot(transcript: str) -> bool:
 
 class _XiaozhiReconnect(Exception):
     """Expected Xiaozhi session close that should reconnect without traceback."""
-
-
-async def _abort_xiaozhi_for_local_photo(chan: Any) -> None:
-    """Stop the cloud turn before it can run a model-selected tool.
-
-    Xiaozhi emits the STT event after it has received the audio but before the
-    model/tool response necessarily reaches the device. Closing the active
-    channel here is the protocol-supported interruption boundary; the outer
-    run loop reconnects immediately after the local photo capture is queued.
-    """
-    await chan.close()
-    raise _XiaozhiReconnect("local photo command handled on device")
 
 
 class _XiaozhiPaused(Exception):
@@ -2228,7 +2217,13 @@ class Yrobot(ReachyMiniApp):
                                     logger.info(
                                         "xz local photo command accepted; aborting cloud turn"
                                     )
-                                    await _abort_xiaozhi_for_local_photo(chan)
+                                    # Xiaozhi emits STT while its model response
+                                    # is still pending. Close now to stop a
+                                    # rewritten visual-tool call before it runs.
+                                    await close_channel_for_local_photo(chan)
+                                    raise _XiaozhiReconnect(
+                                        "local photo command handled on device"
+                                    )
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:

@@ -1,5 +1,6 @@
 """Photo capture and OrangePi sync configuration tests."""
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -23,6 +24,7 @@ from yrobot.photos import (
     PhotoStatus,
     SftpResult,
 )
+from yrobot.xiaozhi_photo import close_channel_for_local_photo
 
 _COMPLETE_UPLOAD_ENV = {
     "YROBOT_PHOTO_UPLOAD_ENABLED": "1",
@@ -334,6 +336,21 @@ def test_photo_command_accepts_bare_photo_word_from_xiaozhi_stt():
     controller = PhotoCommandController(cooldown_s=4.0)
 
     assert controller.observe("拍照。") is True
+
+
+def test_local_photo_command_closes_xiaozhi_channel_before_cloud_tool_can_run():
+    class FakeChannel:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    channel = FakeChannel()
+
+    asyncio.run(close_channel_for_local_photo(channel))
+
+    assert channel.closed is True
 
 
 def test_photo_command_strips_extra_whitespace_and_normalises_unicode():
