@@ -30,6 +30,7 @@ from yrobot.photos import (
     PhotoCommandController,
     PhotoLibrary,
     PhotoStatus,
+    SftpRemoteMissingError,
     SftpResult,
 )
 from yrobot.xiaozhi_photo import close_channel_for_local_photo, start_local_photo_flow
@@ -267,8 +268,10 @@ class _FakeRunner:
     def __init__(self):
         self.uploads: list[tuple[str, bytes]] = []
         self.deletes: list[str] = []
+        self.delete_attempts: list[str] = []
         self.fetches: list[str] = []
         self.failures: set[str] = set()
+        self.missing_deletes: set[str] = set()
         self.payloads: dict[str, bytes] = {}
 
     def upload(self, *, photo_id, variant, local_path, remote_rel):
@@ -281,6 +284,9 @@ class _FakeRunner:
         return SftpResult(remote_rel=rel, byte_count=len(data))
 
     def delete(self, *, photo_id, remote_rel):
+        self.delete_attempts.append(remote_rel)
+        if remote_rel in self.missing_deletes:
+            raise SftpRemoteMissingError("remote photo file is already missing")
         if remote_rel in self.failures:
             raise RuntimeError("simulated delete failure")
         self.deletes.append(remote_rel)
@@ -470,6 +476,24 @@ def test_remote_delete_requires_success_before_metadata_is_removed(tmp_path):
     assert library.get(record.photo_id) is None
 
 
+def test_remote_delete_cleans_stale_record_when_full_file_is_already_missing(tmp_path):
+    runner = _FakeRunner()
+    library = _library(tmp_path, runner=runner)
+    record = library.capture_from_voice(source="voice-xz")
+    library._run_once_for_test(record.photo_id)  # noqa: SLF001
+    state = library.get(record.photo_id)
+    assert state is not None and state.remote_rel is not None
+
+    full_rel = f"{state.remote_rel}.full.jpg"
+    runner.missing_deletes.add(full_rel)
+
+    outcome = library.delete_remote(record.photo_id)
+
+    assert outcome.ok is True
+    assert runner.delete_attempts == [full_rel]
+    assert library.get(record.photo_id) is None
+
+
 def test_legacy_photo_keeps_thumbnail_delete_behavior(tmp_path):
     runner = _FakeRunner()
     library = _library(tmp_path, runner=runner)
@@ -492,6 +516,32 @@ def test_legacy_photo_keeps_thumbnail_delete_behavior(tmp_path):
 
     assert outcome.ok is True
     assert runner.deletes == [f"{state.remote_rel}.full.jpg", legacy_thumb]
+
+
+def test_legacy_delete_keeps_going_after_a_missing_full_file(tmp_path):
+    runner = _FakeRunner()
+    library = _library(tmp_path, runner=runner)
+    record = library.capture_from_voice(source="voice-xz")
+    library._run_once_for_test(record.photo_id)  # noqa: SLF001
+    state = library.get(record.photo_id)
+    assert state is not None and state.remote_rel is not None
+
+    full_rel = f"{state.remote_rel}.full.jpg"
+    thumb_rel = f"{state.remote_rel}.thumb.jpg"
+    runner.payloads[thumb_rel] = b"legacy-thumb"
+    with library._connect() as conn:  # noqa: SLF001 - migration compatibility
+        conn.execute(
+            "UPDATE photos SET has_thumbnail = 1 WHERE photo_id = ?",
+            (record.photo_id,),
+        )
+    runner.missing_deletes.add(full_rel)
+
+    outcome = library.delete_remote(record.photo_id)
+
+    assert outcome.ok is True
+    assert runner.delete_attempts == [full_rel, thumb_rel]
+    assert runner.deletes == [thumb_rel]
+    assert library.get(record.photo_id) is None
 
 
 def test_photo_command_accepts_user_phrase_but_not_unrelated_camera_talk():
@@ -819,6 +869,22 @@ def test_photo_delete_keeps_metadata_when_remote_delete_fails(tmp_path):
     runner.failures.clear()
     ok_response = client.delete(f"/api/photos/{record.photo_id}")
     assert ok_response.status_code == 200
+    assert library.get(record.photo_id) is None
+
+
+def test_photo_delete_endpoint_cleans_a_stale_missing_remote_record(tmp_path):
+    runner = _FakeRunner()
+    client, library = _photo_client(tmp_path, runner=runner)
+    record = library.capture_from_voice(source="voice-xz")
+    library._run_once_for_test(record.photo_id)  # noqa: SLF001
+    state = library.get(record.photo_id)
+    assert state is not None and state.remote_rel is not None
+    runner.missing_deletes.add(f"{state.remote_rel}.full.jpg")
+
+    response = client.delete(f"/api/photos/{record.photo_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True, "photo_id": record.photo_id}
     assert library.get(record.photo_id) is None
 
 

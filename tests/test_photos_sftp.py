@@ -7,9 +7,11 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from yrobot.config import Settings
-from yrobot.photos import install_askpass_script
-from yrobot.photos_sftp import OpensshSftpRunner
+from yrobot.photos import SftpRemoteMissingError, install_askpass_script
+from yrobot.photos_sftp import OpensshSftpRunner, SftpTransportError
 
 
 def _settings(tmp_path):
@@ -99,6 +101,59 @@ def test_root_level_upload_creates_no_date_subdirectories(tmp_path, monkeypatch)
     assert calls[0][1]["input"].splitlines() == ["-mkdir /srv/reachy-photos"]
     assert "/2026/" not in calls[1][1]["input"]
     assert "/srv/reachy-photos/20260823T111700_aaaaaaaaaaaa.full.jpg" in calls[1][1]["input"]
+
+
+def test_delete_maps_only_remote_no_such_file_to_missing_error(tmp_path, monkeypatch):
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stderr=(
+                'remote delete "/srv/reachy-photos/missing.full.jpg": '
+                "No such file or directory\n"
+            ),
+            stdout="",
+        )
+
+    monkeypatch.setattr("yrobot.photos_sftp.subprocess.run", fake_run)
+    runner = OpensshSftpRunner(
+        _settings(tmp_path),
+        askpass_path=tmp_path / "askpass",
+    )
+
+    with pytest.raises(SftpRemoteMissingError, match="already missing"):
+        runner.delete(photo_id="a" * 32, remote_rel="missing.full.jpg")
+
+
+def test_delete_keeps_permission_errors_as_transport_failures(tmp_path, monkeypatch):
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stderr="Permission denied\n", stdout="")
+
+    monkeypatch.setattr("yrobot.photos_sftp.subprocess.run", fake_run)
+    runner = OpensshSftpRunner(
+        _settings(tmp_path),
+        askpass_path=tmp_path / "askpass",
+    )
+
+    with pytest.raises(SftpTransportError, match="Permission denied"):
+        runner.delete(photo_id="a" * 32, remote_rel="protected.full.jpg")
+
+
+def test_delete_does_not_mask_a_local_missing_configuration_file(tmp_path, monkeypatch):
+    def fake_run(argv, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stderr="load_hostkeys: fopen /missing/known_hosts: No such file or directory\n",
+            stdout="",
+        )
+
+    monkeypatch.setattr("yrobot.photos_sftp.subprocess.run", fake_run)
+    runner = OpensshSftpRunner(
+        _settings(tmp_path),
+        askpass_path=tmp_path / "askpass",
+    )
+
+    with pytest.raises(SftpTransportError, match="No such file"):
+        runner.delete(photo_id="a" * 32, remote_rel="protected.full.jpg")
 
 
 def test_fetch_accepts_protocol_arguments_and_uses_one_get_command(tmp_path, monkeypatch):

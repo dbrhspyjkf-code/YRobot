@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from yrobot.config import Settings
-from yrobot.photos import SftpResult, install_askpass_script
+from yrobot.photos import SftpRemoteMissingError, SftpResult, install_askpass_script
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,12 @@ class OpensshSftpRunner:
 
     def delete(self, *, photo_id: str, remote_rel: str) -> None:
         target = self._remote_path(remote_rel)
-        self._run_batch([f"rm {_quote(target)}"])
+        try:
+            self._run_batch([f"rm {_quote(target)}"])
+        except SftpTransportError as exc:
+            if _is_remote_file_missing(str(exc)):
+                raise SftpRemoteMissingError("remote photo file is already missing") from exc
+            raise
 
     # ---------------------------------------------------------------- helpers
 
@@ -156,6 +161,22 @@ class OpensshSftpRunner:
             f"get {_quote(self._remote_path(remote_rel))} {_quote(local_path)}"
         ]
         self._run_batch(commands)
+
+
+def _is_remote_file_missing(message: str) -> bool:
+    """Recognize only OpenSSH's unambiguous absent-file response.
+
+    This is called exclusively by ``delete``. Do not broaden it to generic
+    server failures: permissions, host verification, connectivity, and all
+    other errors must keep the Dashboard record intact for safe retry.
+    """
+    normalised = message.casefold()
+    if "no such file" not in normalised:
+        return False
+    return (
+        "remote delete" in normalised
+        or "couldn't stat remote file" in normalised
+    )
 
 
 def _quote(value: str | Path) -> str:

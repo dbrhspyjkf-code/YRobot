@@ -178,6 +178,15 @@ class SftpResult:
     byte_count: int
 
 
+class SftpRemoteMissingError(RuntimeError):
+    """A requested remote photo file has already been removed.
+
+    This narrow condition is safe to treat as a successful delete because the
+    desired postcondition (the remote file is absent) is already true. Other
+    transport, host-key, permission, and path errors must remain failures.
+    """
+
+
 class SftpRunner(Protocol):
     """Pluggable SFTP transport used by ``PhotoLibrary``.
 
@@ -650,14 +659,18 @@ class PhotoLibrary:
             return DeleteOutcome(ok=False, error="unknown photo")
         if state.status != PhotoStatus.UPLOADED or not state.remote_rel:
             return DeleteOutcome(ok=False, error="photo not uploaded")
-        rel_full = f"{state.remote_rel}.full.jpg"
+        remote_files = [f"{state.remote_rel}.full.jpg"]
+        if state.has_thumbnail:
+            remote_files.append(f"{state.remote_rel}.thumb.jpg")
         try:
-            self.sftp_runner.delete(photo_id=photo_id, remote_rel=rel_full)
-            if state.has_thumbnail:
-                self.sftp_runner.delete(
-                    photo_id=photo_id,
-                    remote_rel=f"{state.remote_rel}.thumb.jpg",
-                )
+            for remote_rel in remote_files:
+                try:
+                    self.sftp_runner.delete(photo_id=photo_id, remote_rel=remote_rel)
+                except SftpRemoteMissingError:
+                    # A user may have manually removed an album file. Continue
+                    # through a legacy thumbnail and then clear only the stale
+                    # local record; no other SFTP failure is masked here.
+                    logger.info("photo remote file already absent id=%s", photo_id)
         except Exception as exc:  # noqa: BLE001
             message = str(exc)[:200] or exc.__class__.__name__
             return DeleteOutcome(ok=False, error=message)

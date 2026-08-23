@@ -179,6 +179,24 @@ Observed results:
     and returned correctly. Both `yrobot.service` and the official daemon
     were active with no startup traceback.
 
+- 2026-08-23 11:30 Asia/Shanghai: deployed root-level single-JPEG storage
+  from `5bf0d48` (`feat(photos): store one root-level jpeg`); code backup:
+  `/home/pollen/.local/state/yrobot/backups/deploy-20260823-112757`.
+  - The robot-local mode-0600 `ha.env` now has exactly one
+    `YROBOT_PHOTO_SFTP_REMOTE_DIR=/home/orangepi/图片/Reachy` line. Do not read,
+    print, commit, or otherwise copy its other contents.
+  - New captures create and upload only one root-level
+    `<timestamp>_<opaque-id>.full.jpg`; no date directories or `thumb.jpg`
+    files are generated. The Dashboard requests the full JPEG for a card and
+    its preview.
+  - Existing rows migrate with `has_thumbnail=1`, so old two-file records
+    remain readable and only delete their old thumbnail if the user explicitly
+    deletes that photo. Do not bulk-delete historical remote thumbnails.
+  - Local and robot focused suites passed, the SQLite migration column exists,
+    both services are active, and the Dashboard continues to render existing
+    photos. No physical test photo was taken during this deployment; any live
+    capture/upload confirmation must be explicitly approved first.
+
 ## Working commands
 
 Run local focused tests from the repository root:

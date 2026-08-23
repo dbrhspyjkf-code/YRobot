@@ -1444,7 +1444,7 @@ async function retryPhoto(photoId, button) {
 
 async function deletePhoto(photoId, button) {
   if (!photoId) return;
-  if (!window.confirm("将永久删除 OrangePi 中的这张照片，且无法恢复。继续吗？")) {
+  if (!window.confirm("将删除 OrangePi 中的这张照片；若已被手动移除，则仅清理失效相册记录。继续吗？")) {
     return;
   }
   button.disabled = true;
@@ -1456,7 +1456,7 @@ async function deletePhoto(photoId, button) {
       const result = await response.json().catch(() => ({}));
       throw new Error(result.detail || `HTTP ${response.status}`);
     }
-    photoNote.textContent = "已删除";
+    photoNote.textContent = "已删除或清理失效相册记录";
     await loadPhotos({ silent: true });
     await loadPhotoStatus({ silent: true });
   } catch (error) {
