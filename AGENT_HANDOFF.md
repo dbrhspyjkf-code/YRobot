@@ -141,6 +141,30 @@ Observed results:
     entered the private settings and verified host key locally. Do not put
     those values in Git, logs, Dashboard, handoff files, or chat.
 
+- 2026-08-23 10:59 Asia/Shanghai: completed physical acceptance of the secure
+  Xiaozhi local-photo flow on feature branch `feat/reachy-photo-sync`.
+  - Reachy source: `1d516a6` (`fix(xiaozhi): preserve active wake across reconnects`),
+    deployed through `scripts/deploy.sh`; final backup is
+    `/home/pollen/.local/state/yrobot/backups/deploy-20260823-105207`.
+  - Hermes source: `a8a17b3` (`fix(vision): block delayed local-photo tool retries`),
+    deployed on OrangePi. The known OrangePi-only full-suite failure in
+    `tests/test_mac_bridge.py` requires a Mac-only token and is unrelated;
+    relevant focused tests passed.
+  - The local command has a fixed sequence: locally play “好的，现在拍”, capture
+    and SFTP-sync, then locally play “拍好啦”. Xiaozhi uses the same dmix-backed
+    `plug:reachymini_audio_sink` device as the fixed clips.
+  - Security: a 10-second post-photo microphone quarantine drops residual
+    frames before the reconnect; Hermes blocks Reachy `analyze_image` calls for
+    90 seconds after a signed photo intent. Do not weaken either guard without
+    a separate security review.
+  - Conversation continuity: the active, verified wake state is leased across
+    a short normal Xiaozhi transport reconnect; the photo quarantine still
+    defers restoration until it expires.
+  - Live acceptance: two local photos played both fixed prompts and uploaded;
+    the final multi-turn session completed 12 TTS stops (3044 enqueued / 3034
+    written frames) with no `aplay` errors and no `analyze_image`/Qwen-VL
+    markers. `yrobot.service`, the official daemon, and Hermes were active.
+
 ## Working commands
 
 Run local focused tests from the repository root:

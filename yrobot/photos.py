@@ -598,14 +598,22 @@ class PhotoLibrary:
 
     # ------------------------------------------------------------------ public ops
 
-    def list_metadata(self, *, limit: int = 50) -> list[PhotoState]:
+    def list_metadata(self, *, limit: int = 50, offset: int = 0) -> list[PhotoState]:
+        """Return a bounded, newest-first slice of public album metadata."""
         limit = max(1, min(200, int(limit)))
+        offset = max(0, min(1_000_000, int(offset)))
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM photos ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM photos ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
         return [self._row_to_state(r) for r in rows]
+
+    def metadata_count(self) -> int:
+        """Return the number of locally indexed remote-album records."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM photos").fetchone()
+        return int(row["count"] if row else 0)
 
     def get(self, photo_id: str) -> PhotoState | None:
         if not self._is_valid_id(photo_id):

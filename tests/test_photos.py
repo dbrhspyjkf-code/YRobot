@@ -634,6 +634,22 @@ def test_photo_list_returns_metadata_without_credentials(tmp_path):
     assert entry["status"] == PhotoStatus.UPLOADED.value
 
 
+def test_photo_list_paginates_and_reports_total(tmp_path):
+    client, library = _photo_client(tmp_path, runner=_FakeRunner())
+    for _ in range(7):
+        outcome = library.capture_from_voice(source="voice-xz")
+        assert outcome.accepted is True
+
+    response = client.get("/api/photos?limit=6&offset=6")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["limit"] == 6
+    assert body["offset"] == 6
+    assert body["total"] == 7
+    assert len(body["photos"]) == 1
+
+
 def test_photo_capture_endpoint_returns_202_and_queue_row(tmp_path):
     client, library = _photo_client(tmp_path)
 

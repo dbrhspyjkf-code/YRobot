@@ -1186,6 +1186,12 @@ const photoMeta = document.getElementById("photo-meta");
 const photoNote = document.getElementById("photo-note");
 const photoCapture = document.getElementById("photo-capture");
 const photoRefresh = document.getElementById("photo-refresh");
+const photoPagination = document.getElementById("photo-pagination");
+const photoPrevious = document.getElementById("photo-previous");
+const photoPageLabel = document.getElementById("photo-page");
+const photoNext = document.getElementById("photo-next");
+const PHOTO_PAGE_SIZE = 6;
+let photoPage = 0;
 
 const photoPreviewOverlay = document.createElement("div");
 photoPreviewOverlay.className = "photo-preview hidden";
@@ -1340,18 +1346,45 @@ function renderPhotoCard(photo) {
   return card;
 }
 
-async function loadPhotos({ silent = false } = {}) {
+function renderPhotoPagination(total, limit, offset) {
+  const pageCount = total > 0 ? Math.ceil(total / limit) : 0;
+  const currentPage = total > 0 ? Math.floor(offset / limit) : 0;
+  photoPage = currentPage;
+  photoPagination.classList.toggle("hidden", total === 0);
+  photoPrevious.disabled = currentPage === 0;
+  photoNext.disabled = pageCount === 0 || currentPage >= pageCount - 1;
+  photoPageLabel.textContent = pageCount ? `第 ${currentPage + 1} / ${pageCount} 页` : "暂无照片";
+}
+
+async function loadPhotos({ silent = false, resetPage = false } = {}) {
   if (photoPanel.classList.contains("hidden")) return;
+  if (resetPage) photoPage = 0;
   try {
-    const response = await fetch("/api/photos?limit=24", { cache: "no-store" });
+    const offset = photoPage * PHOTO_PAGE_SIZE;
+    const response = await fetch(
+      `/api/photos?limit=${PHOTO_PAGE_SIZE}&offset=${offset}`,
+      { cache: "no-store" },
+    );
     if (response.status === 503) {
       photoGrid.innerHTML = '<p class="muted">相册服务尚未就绪</p>';
+      photoPagination.classList.add("hidden");
       if (!silent) photoNote.textContent = "";
       return;
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     const photos = Array.isArray(data.photos) ? data.photos : [];
+    const limit = Math.max(1, Number(data.limit) || PHOTO_PAGE_SIZE);
+    const total = Math.max(0, Number(data.total) || photos.length);
+    const pageOffset = Math.max(0, Number(data.offset) || 0);
+
+    // A remote deletion may have removed the last item on the final page.
+    // Return to the new final page instead of leaving a blank page behind.
+    if (total > 0 && photos.length === 0 && photoPage > 0) {
+      photoPage = Math.ceil(total / limit) - 1;
+      return loadPhotos({ silent });
+    }
+
     photoGrid.innerHTML = "";
     if (!photos.length) {
       photoGrid.innerHTML = '<p class="muted">尚无照片</p>';
@@ -1362,7 +1395,8 @@ async function loadPhotos({ silent = false } = {}) {
       }
       photoGrid.appendChild(fragment);
     }
-    photoNote.textContent = `共 ${photos.length} 条记录`;
+    renderPhotoPagination(total, limit, pageOffset);
+    photoNote.textContent = total ? `共 ${total} 条记录 · 每页 6 张` : "尚无照片";
   } catch (error) {
     if (!silent) photoNote.textContent = `读取相册失败：${error.message}`;
   }
@@ -1380,7 +1414,7 @@ async function captureDashboardPhoto() {
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
     photoNote.textContent = "已加入同步队列";
-    await loadPhotos({ silent: true });
+    await loadPhotos({ silent: true, resetPage: true });
     await loadPhotoStatus({ silent: true });
   } catch (error) {
     photoNote.textContent = `拍摄失败：${error.message}`;
@@ -1432,6 +1466,16 @@ async function deletePhoto(photoId, button) {
 }
 
 photoCapture.addEventListener("click", captureDashboardPhoto);
+photoPrevious.addEventListener("click", () => {
+  if (photoPage <= 0) return;
+  photoPage -= 1;
+  loadPhotos();
+});
+photoNext.addEventListener("click", () => {
+  if (photoNext.disabled) return;
+  photoPage += 1;
+  loadPhotos();
+});
 photoRefresh.addEventListener("click", () => {
   loadPhotos();
   loadPhotoStatus();

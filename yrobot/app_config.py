@@ -1592,12 +1592,16 @@ def register_photo_routes(
         )
 
     @app.get("/api/photos")
-    def get_photos(limit: int = 24) -> dict[str, Any]:
+    def get_photos(limit: int = 24, offset: int = 0) -> dict[str, Any]:
         lib = _require_library()
-        items = lib.list_metadata(limit=limit)
+        page_limit = min(200, max(1, int(limit)))
+        page_offset = min(1_000_000, max(0, int(offset)))
+        items = lib.list_metadata(limit=page_limit, offset=page_offset)
         return {
             "photos": [item.as_public_dict() for item in items],
-            "limit": min(200, max(1, int(limit))),
+            "limit": page_limit,
+            "offset": page_offset,
+            "total": lib.metadata_count(),
         }
 
     @app.get("/api/photos/status")
