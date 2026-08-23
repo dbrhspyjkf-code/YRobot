@@ -764,6 +764,10 @@ _PHOTO_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"拍\s*张\s*照"),
     re.compile(r"拍\s*一\s*张\s*照"),
     re.compile(r"拍\s*個\s*照"),
+    # Xiaozhi ASR often emits the complete command as just “拍照。”.
+    # Keep this anchored so unrelated sentences containing the word do not
+    # silently capture a photo.
+    re.compile(r"^拍\s*照$"),
 )
 
 

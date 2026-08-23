@@ -330,6 +330,12 @@ def test_photo_command_accepts_user_phrase_but_not_unrelated_camera_talk():
     assert c is False
 
 
+def test_photo_command_accepts_bare_photo_word_from_xiaozhi_stt():
+    controller = PhotoCommandController(cooldown_s=4.0)
+
+    assert controller.observe("拍照。") is True
+
+
 def test_photo_command_strips_extra_whitespace_and_normalises_unicode():
     controller = PhotoCommandController(cooldown_s=4.0)
 

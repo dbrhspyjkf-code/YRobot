@@ -423,6 +423,18 @@ class _XiaozhiReconnect(Exception):
     """Expected Xiaozhi session close that should reconnect without traceback."""
 
 
+async def _abort_xiaozhi_for_local_photo(chan: Any) -> None:
+    """Stop the cloud turn before it can run a model-selected tool.
+
+    Xiaozhi emits the STT event after it has received the audio but before the
+    model/tool response necessarily reaches the device. Closing the active
+    channel here is the protocol-supported interruption boundary; the outer
+    run loop reconnects immediately after the local photo capture is queued.
+    """
+    await chan.close()
+    raise _XiaozhiReconnect("local photo command handled on device")
+
+
 class _XiaozhiPaused(Exception):
     """Local mic gate paused Xiaozhi; reconnect after input is enabled."""
 
@@ -2213,6 +2225,10 @@ class Yrobot(ReachyMiniApp):
                                         )
                                 if _waked and self._photo_voice_controller.observe(text):
                                     self._schedule_xiaozhi_photo(text)
+                                    logger.info(
+                                        "xz local photo command accepted; aborting cloud turn"
+                                    )
+                                    await _abort_xiaozhi_for_local_photo(chan)
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
@@ -2376,6 +2392,8 @@ class Yrobot(ReachyMiniApp):
                                 raise RuntimeError("xiaozhi receive task was cancelled")
                             recv_error = rt.exception()
                             if recv_error is not None:
+                                if isinstance(recv_error, _XiaozhiReconnect):
+                                    raise recv_error
                                 if _is_expected_xiaozhi_disconnect(recv_error):
                                     raise _XiaozhiReconnect(str(recv_error)) from recv_error
                                 raise RuntimeError("xiaozhi receive task failed") from recv_error
@@ -2576,7 +2594,9 @@ class Yrobot(ReachyMiniApp):
                     except _a.CancelledError:
                         pass
                     except Exception as exc:
-                        if _is_expected_xiaozhi_disconnect(exc):
+                        if isinstance(exc, _XiaozhiReconnect):
+                            logger.info("xiaozhi receive task requested reconnect: %s", exc)
+                        elif _is_expected_xiaozhi_disconnect(exc):
                             logger.warning("xiaozhi receive task closed, reconnecting: %s", exc)
                         else:
                             logger.warning("xiaozhi receive task closed with error: %s", exc)
