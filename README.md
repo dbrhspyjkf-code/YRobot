@@ -148,13 +148,14 @@ When the photo upload is configured, the user can say “帮我拍张照” (or 
 *拍摄并上传* button on the Dashboard) to:
 
 1. Capture a fresh archive-quality JPEG from the camera.
-2. Atomically save the full image and a 320px thumbnail to the local spool
+2. Atomically save that one full image to the local spool
    (`~/.local/state/yrobot/photo-spool`, mode `0700`).
-3. Upload both files to the configured remote album via the system OpenSSH
+3. Upload the JPEG directly into the configured remote album root (no
+   date-based subdirectories and no thumbnail JPEG) via the system OpenSSH
    `sftp` client (`StrictHostKeyChecking=yes` against the operator-verified
    known_hosts file, `SSH_ASKPASS_REQUIRE=force`).
-4. Once both remote files are atomically renamed, unlink the Reachy-side
-   spool copies and keep only non-secret metadata in SQLite.
+4. Once the remote file is atomically renamed, unlink the Reachy-side spool
+   copy and keep only non-secret metadata in SQLite.
 
 Failures keep the local files and retry with exponential backoff. The Dashboard
 album, retry, and delete actions are scoped to opaque photo IDs; the operator's

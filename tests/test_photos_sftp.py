@@ -73,6 +73,34 @@ def test_upload_constructs_safe_sftp_batches_without_conflicting_stdin(tmp_path,
     ]
 
 
+def test_root_level_upload_creates_no_date_subdirectories(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("yrobot.photos_sftp.subprocess.run", fake_run)
+    local_path = tmp_path / "capture.jpg"
+    local_path.write_bytes(b"jpeg")
+    runner = OpensshSftpRunner(
+        _settings(tmp_path),
+        askpass_path=tmp_path / "askpass",
+    )
+
+    result = runner.upload(
+        photo_id="a" * 32,
+        variant="full",
+        local_path=local_path,
+        remote_rel="20260823T111700_aaaaaaaaaaaa",
+    )
+
+    assert result.remote_rel == "20260823T111700_aaaaaaaaaaaa.full.jpg"
+    assert calls[0][1]["input"].splitlines() == ["-mkdir /srv/reachy-photos"]
+    assert "/2026/" not in calls[1][1]["input"]
+    assert "/srv/reachy-photos/20260823T111700_aaaaaaaaaaaa.full.jpg" in calls[1][1]["input"]
+
+
 def test_fetch_accepts_protocol_arguments_and_uses_one_get_command(tmp_path, monkeypatch):
     calls = []
 

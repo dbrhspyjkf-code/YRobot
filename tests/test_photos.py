@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -302,7 +303,7 @@ class _FakeRunner:
         ]
 
 
-def test_successful_upload_removes_only_local_images_after_both_remote_renames(tmp_path):
+def test_successful_upload_removes_the_local_full_image_after_remote_rename(tmp_path):
     library = _library(tmp_path)
 
     record = library.capture_from_voice(source="voice-xz")
@@ -317,7 +318,37 @@ def test_successful_upload_removes_only_local_images_after_both_remote_renames(t
     assert library.sftp_runner.uploads  # already collected via _FakeRunner
 
 
-def test_failed_upload_keeps_pending_images_and_marks_retryable_failure(tmp_path):
+def test_new_photo_uses_one_root_level_full_jpeg_without_thumbnail(tmp_path):
+    runner = _FakeRunner()
+    library = _library(tmp_path, runner=runner)
+
+    record = library.capture_from_voice(source="voice-xz")
+    pending = library.get(record.photo_id)
+
+    assert pending is not None
+    assert pending.full_path is not None
+    assert pending.full_path.name == f"{record.photo_id}.full.jpg"
+    assert pending.thumb_path is None
+    assert pending.has_thumbnail is False
+    assert pending.remote_rel is not None
+    assert "/" not in pending.remote_rel
+    assert pending.bytes_total == pending.full_path.stat().st_size
+
+    library._run_once_for_test(record.photo_id)  # noqa: SLF001
+
+    uploaded = library.get(record.photo_id)
+    assert uploaded is not None and uploaded.status == PhotoStatus.UPLOADED
+    assert uploaded.full_path is None
+    assert uploaded.thumb_path is None
+    assert [rel for rel, _ in runner.uploads] == [f"{pending.remote_rel}.full.jpg"]
+    assert library.fetch_remote_bytes(record.photo_id, "thumb") is None
+
+    outcome = library.delete_remote(record.photo_id)
+    assert outcome.ok is True
+    assert runner.deletes == [f"{pending.remote_rel}.full.jpg"]
+
+
+def test_failed_upload_keeps_the_pending_full_image_and_marks_retryable_failure(tmp_path):
     runner = _FakeRunner()
     runner.failures.add("full")
     library = _library(tmp_path, runner=runner)
@@ -328,9 +359,9 @@ def test_failed_upload_keeps_pending_images_and_marks_retryable_failure(tmp_path
 
     assert state.status == PhotoStatus.FAILED
     assert state.full_path is not None
-    assert state.thumb_path is not None
+    assert state.thumb_path is None
+    assert state.has_thumbnail is False
     assert state.full_path.exists()
-    assert state.thumb_path.exists()
 
 
 def test_pending_retry_schedule_survives_process_restart(tmp_path, monkeypatch):
@@ -361,15 +392,53 @@ def test_photo_metadata_never_contains_password_or_local_temp_path(tmp_path):
     entry = listing[0]
     serialized = entry.as_public_dict()
     state = library.get(record.photo_id)
-    forbidden_paths = {str(state.full_path.parent), str(state.thumb_path.parent)}
     assert state.full_path is not None
-    assert state.thumb_path is not None
+    assert state.thumb_path is None
+    forbidden_paths = {str(state.full_path.parent)}
     payload = repr(serialized).lower()
     for forbidden in forbidden_paths:
         assert forbidden.lower() not in payload
     assert "test-only-photo-password" not in repr(serialized)
     assert "remote_path" not in serialized
     assert "remote_rel" not in serialized
+
+
+def test_schema_migration_marks_existing_records_as_legacy_thumbnails(tmp_path):
+    metadata_path = tmp_path / "photos.sqlite3"
+    with sqlite3.connect(metadata_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE photos (
+                photo_id TEXT PRIMARY KEY,
+                created_at REAL NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at REAL NOT NULL DEFAULT 0,
+                last_error TEXT,
+                full_path TEXT,
+                thumb_path TEXT,
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                bytes_total INTEGER NOT NULL DEFAULT 0,
+                sha256 TEXT,
+                remote_rel TEXT,
+                uploaded_at REAL,
+                last_access_at REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO photos (photo_id, created_at, source, status, remote_rel)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("a" * 32, 1.0, "voice-xz", PhotoStatus.UPLOADED.value, "2026/08/23/legacy"),
+        )
+
+    library = _library(tmp_path)
+
+    state = library.get("a" * 32)
+    assert state is not None
+    assert state.has_thumbnail is True
 
 
 def test_pending_bytes_cap_rejects_new_capture_without_disk_growth(tmp_path):
@@ -390,7 +459,6 @@ def test_remote_delete_requires_success_before_metadata_is_removed(tmp_path):
     assert state is not None and state.remote_rel is not None
 
     runner.failures.add(f"{state.remote_rel}.full.jpg")
-    runner.failures.add(f"{state.remote_rel}.thumb.jpg")
 
     outcome = library.delete_remote(record.photo_id)
     assert outcome.ok is False
@@ -400,6 +468,30 @@ def test_remote_delete_requires_success_before_metadata_is_removed(tmp_path):
     outcome = library.delete_remote(record.photo_id)
     assert outcome.ok is True
     assert library.get(record.photo_id) is None
+
+
+def test_legacy_photo_keeps_thumbnail_delete_behavior(tmp_path):
+    runner = _FakeRunner()
+    library = _library(tmp_path, runner=runner)
+    record = library.capture_from_voice(source="voice-xz")
+    library._run_once_for_test(record.photo_id)  # noqa: SLF001
+    state = library.get(record.photo_id)
+    assert state is not None and state.remote_rel is not None
+
+    # A pre-migration row had two remote files. Keep deleting both only for
+    # those explicit legacy rows; new single-JPEG rows never create this file.
+    legacy_thumb = f"{state.remote_rel}.thumb.jpg"
+    runner.payloads[legacy_thumb] = b"legacy-thumb"
+    with library._connect() as conn:  # noqa: SLF001 - migration compatibility
+        conn.execute(
+            "UPDATE photos SET has_thumbnail = 1 WHERE photo_id = ?",
+            (record.photo_id,),
+        )
+
+    outcome = library.delete_remote(record.photo_id)
+
+    assert outcome.ok is True
+    assert runner.deletes == [f"{state.remote_rel}.full.jpg", legacy_thumb]
 
 
 def test_photo_command_accepts_user_phrase_but_not_unrelated_camera_talk():
@@ -556,17 +648,17 @@ def test_photo_command_rejects_long_unrelated_sentence():
     assert controller.observe("你看前面那个东西是什么") is False
 
 
-def test_fetch_remote_bytes_returns_payload_and_cleans_up(tmp_path):
+def test_fetch_remote_full_bytes_returns_payload_and_cleans_up(tmp_path):
     runner = _FakeRunner()
     library = _library(tmp_path, runner=runner)
     record = library.capture_from_voice(source="voice-xz")
     library._run_once_for_test(record.photo_id)  # noqa: SLF001
 
-    payload = library.fetch_remote_bytes(record.photo_id, "thumb")
+    payload = library.fetch_remote_bytes(record.photo_id, "full")
 
     assert payload is not None
     assert payload.startswith(b"\xff\xd8")
-    assert runner.fetches and runner.fetches[0].endswith(".thumb.jpg")
+    assert runner.fetches and runner.fetches[0].endswith(".full.jpg")
     # Spool directory is empty again after the fetch temp file cleanup
     leftover = list((tmp_path / "spool").glob(".fetch-*"))
     assert leftover == []
@@ -662,13 +754,13 @@ def test_photo_capture_endpoint_returns_202_and_queue_row(tmp_path):
     assert listing and listing[0].source == "dashboard"
 
 
-def test_photo_image_returns_jpeg_with_private_no_store_headers(tmp_path):
+def test_photo_image_defaults_to_full_jpeg_with_private_no_store_headers(tmp_path):
     runner = _FakeRunner()
     client, library = _photo_client(tmp_path, runner=runner)
     record = library.capture_from_voice(source="voice-xz")
     library._run_once_for_test(record.photo_id)  # noqa: SLF001
 
-    response = client.get(f"/api/photos/{record.photo_id}/image?variant=thumb")
+    response = client.get(f"/api/photos/{record.photo_id}/image")
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"

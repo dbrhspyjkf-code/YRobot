@@ -1287,9 +1287,9 @@ function renderPhotoCard(photo) {
   thumb.className = "photo-thumb";
   if (photo.status === "uploaded") {
     const img = document.createElement("img");
-    img.alt = "相册缩略图";
+    img.alt = "相册照片";
     img.loading = "lazy";
-    img.src = `/api/photos/${encodeURIComponent(photo.id)}/image?variant=thumb`;
+    img.src = `/api/photos/${encodeURIComponent(photo.id)}/image?variant=full`;
     img.addEventListener("load", () => {
       img.addEventListener("click", () => {
         previewImage.src = `/api/photos/${encodeURIComponent(photo.id)}/image?variant=full`;
@@ -1297,7 +1297,7 @@ function renderPhotoCard(photo) {
       });
     });
     img.addEventListener("error", () => {
-      thumb.textContent = "缩略图加载失败";
+      thumb.textContent = "照片加载失败";
     });
     thumb.appendChild(img);
   } else if (photo.status === "failed") {

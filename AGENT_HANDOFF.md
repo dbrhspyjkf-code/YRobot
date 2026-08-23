@@ -165,6 +165,20 @@ Observed results:
     written frames) with no `aplay` errors and no `analyze_image`/Qwen-VL
     markers. `yrobot.service`, the official daemon, and Hermes were active.
 
+- 2026-08-23 11:13 Asia/Shanghai: deployed Dashboard remote-album pagination
+  from `f7d4f8d` (`feat(dashboard): paginate remote photo album`); backup:
+  `/home/pollen/.local/state/yrobot/backups/deploy-20260823-111113`.
+  - `GET /api/photos` accepts bounded `limit` and `offset`, and returns the
+    public `photos` slice plus `total`, `limit`, and `offset`. It must never
+    include any SFTP host/path/credential metadata.
+  - The Dashboard requests six records per page, shows previous/next controls
+    and `第 N / M 页`, resets to page one after a new capture, and falls back
+    to the final valid page after a deletion empties the current page.
+  - Production verification: seven records returned six at offset zero and one
+    at offset six; the UI rendered `第 1 / 2 页`, then one card on `第 2 / 2 页`,
+    and returned correctly. Both `yrobot.service` and the official daemon
+    were active with no startup traceback.
+
 ## Working commands
 
 Run local focused tests from the repository root:

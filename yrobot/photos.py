@@ -3,15 +3,15 @@
 The library owns the only mutable copy of a photo for as short as possible:
 
 * When a user or dashboard asks for a new capture, the library atomically writes
-  a high-quality JPEG and a 320px thumbnail to the local spool directory and
-  records their non-secret metadata in SQLite.
+  one high-quality JPEG to the local spool directory and records non-secret
+  metadata in SQLite.
 * A single background worker drains a SQLite-backed queue. Each retry uses an
-  exponential backoff and re-uploads both variants; only after the verified
-  SFTP server has renamed both files to their final names does the worker
-  unlink the Reachy-side spool files.
+  exponential backoff and uploads the full JPEG; only after the verified SFTP
+  server has renamed that file does the worker unlink the Reachy-side spool
+  file. Migrated legacy records retain their thumbnail behavior.
 * Operators can replay a failed photo through the Dashboard retry action.
   Delete uses the same verified SFTP transport; metadata is only removed when
-  both remote files are gone.
+  the files recorded for that photo are gone.
 
 The library keeps no password on disk, never embeds the operator's host name
 or remote directory in metadata, and refuses to start any new capture when the
@@ -51,7 +51,6 @@ from yrobot.config import Settings
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_THUMB_LONG_EDGE = 320
 PHOTO_JPEG_QUALITY = 85
 PHOTO_LONG_EDGE = 1280
 _PENDING_STATUSES: tuple[str, ...] = ("pending", "uploading", "failed")
@@ -69,6 +68,7 @@ _METADATA_SCHEMA = (
         last_error TEXT,
         full_path TEXT,
         thumb_path TEXT,
+        has_thumbnail INTEGER NOT NULL DEFAULT 1,
         width INTEGER NOT NULL DEFAULT 0,
         height INTEGER NOT NULL DEFAULT 0,
         bytes_total INTEGER NOT NULL DEFAULT 0,
@@ -82,6 +82,9 @@ _METADATA_SCHEMA = (
 
 _METADATA_COLUMNS = (
     "last_access_at REAL",
+    # Existing rows came from the two-file layout, so the migration default
+    # deliberately retains their thumbnail fetch/delete behavior.
+    "has_thumbnail INTEGER NOT NULL DEFAULT 1",
 )
 
 
@@ -112,6 +115,7 @@ class PhotoState:
     last_error: str | None
     full_path: Path | None
     thumb_path: Path | None
+    has_thumbnail: bool
     width: int
     height: int
     bytes_total: int
@@ -201,24 +205,6 @@ def _utc_iso(timestamp: float) -> str:
         .astimezone()
         .isoformat(timespec="seconds")
     )
-
-
-def _format_thumb_jpeg(bgr_frame: np.ndarray) -> bytes | None:
-    height, width = bgr_frame.shape[:2]
-    long_edge = max(height, width)
-    if long_edge > DEFAULT_THUMB_LONG_EDGE:
-        scale = DEFAULT_THUMB_LONG_EDGE / long_edge
-        bgr_frame = cv2.resize(
-            bgr_frame,
-            (max(1, round(width * scale)), max(1, round(height * scale))),
-            interpolation=cv2.INTER_AREA,
-        )
-    ok, encoded = cv2.imencode(
-        ".jpg",
-        bgr_frame,
-        [cv2.IMWRITE_JPEG_QUALITY, PHOTO_JPEG_QUALITY],
-    )
-    return encoded.tobytes() if ok else None
 
 
 def _atomic_write_bytes(target: Path, payload: bytes) -> None:
@@ -356,19 +342,11 @@ class PhotoLibrary:
                 accepted=False,
                 message="拍照失败：图像解码失败",
             )
-        thumb_jpeg = _format_thumb_jpeg(bgr)
-        if thumb_jpeg is None:
-            return CaptureOutcome(
-                photo_id="",
-                accepted=False,
-                message="拍照失败：缩略图编码失败",
-            )
         height, width = bgr.shape[:2]
         sha256 = hashlib.sha256(jpeg_full).hexdigest()
         photo_id = uuid.uuid4().hex
         full_path = self._spool_dir / f"{photo_id}.full.jpg"
-        thumb_path = self._spool_dir / f"{photo_id}.thumb.jpg"
-        bytes_total = len(jpeg_full) + len(thumb_jpeg)
+        bytes_total = len(jpeg_full)
         with self._lock:
             pending = self._pending_bytes_locked()
             if pending + bytes_total > self._pending_max_bytes:
@@ -378,13 +356,12 @@ class PhotoLibrary:
                     message="暂存空间已满，请稍后重试或等待已有照片同步成功",
                 )
             _atomic_write_bytes(full_path, jpeg_full)
-            _atomic_write_bytes(thumb_path, thumb_jpeg)
             remote_rel = self._remote_rel(photo_id)
             with self._connect() as conn:
                 conn.execute(
                     "INSERT INTO photos ("
                     " photo_id, created_at, source, status, attempts, next_attempt_at,"
-                    " full_path, thumb_path, width, height, bytes_total, sha256, remote_rel"
+                    " full_path, width, height, bytes_total, sha256, remote_rel, has_thumbnail"
                     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         photo_id,
@@ -394,12 +371,12 @@ class PhotoLibrary:
                         0,
                         self._clock() + (0 if voice_invoked else self._retry_initial),
                         str(full_path),
-                        str(thumb_path),
                         width,
                         height,
                         bytes_total,
                         sha256,
                         remote_rel,
+                        0,
                     ),
                 )
             self._wake_event.set()
@@ -440,11 +417,9 @@ class PhotoLibrary:
         return None
 
     def _remote_rel(self, photo_id: str) -> str:
+        """Return a root-level, opaque stem for one newly captured JPEG."""
         now = _dt.datetime.fromtimestamp(self._wall_clock(), tz=_dt.UTC)
-        return (
-            f"{now.year:04d}/{now.month:02d}/{now.day:02d}/"
-            f"{now.strftime('%Y%m%dT%H%M%S')}_{photo_id[:12]}"
-        )
+        return f"{now.strftime('%Y%m%dT%H%M%S')}_{photo_id[:12]}"
 
     # ------------------------------------------------------------------ queue
 
@@ -519,13 +494,15 @@ class PhotoLibrary:
     def _upload_one(self, photo_id: str, attempts: int) -> None:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT full_path, thumb_path, remote_rel FROM photos WHERE photo_id = ?",
+                "SELECT full_path, thumb_path, has_thumbnail, remote_rel"
+                " FROM photos WHERE photo_id = ?",
                 (photo_id,),
             ).fetchone()
             if row is None:
                 return
             full_path = Path(row["full_path"])
-            thumb_path = Path(row["thumb_path"])
+            thumb_path = Path(row["thumb_path"]) if row["thumb_path"] else None
+            has_thumbnail = bool(row["has_thumbnail"])
             remote_rel = str(row["remote_rel"])
             conn.execute(
                 "UPDATE photos SET status = ?, attempts = attempts + 1,"
@@ -539,12 +516,15 @@ class PhotoLibrary:
                 local_path=full_path,
                 remote_rel=remote_rel,
             )
-            self.sftp_runner.upload(
-                photo_id=photo_id,
-                variant="thumb",
-                local_path=thumb_path,
-                remote_rel=remote_rel,
-            )
+            if has_thumbnail:
+                if thumb_path is None:
+                    raise RuntimeError("legacy photo thumbnail is missing")
+                self.sftp_runner.upload(
+                    photo_id=photo_id,
+                    variant="thumb",
+                    local_path=thumb_path,
+                    remote_rel=remote_rel,
+                )
         except Exception as exc:
             next_attempt = self._clock() + self._retry_delay(attempts + 1)
             message = str(exc)[:200] or exc.__class__.__name__
@@ -568,7 +548,8 @@ class PhotoLibrary:
                 (PhotoStatus.UPLOADED.value, self._wall_clock(), photo_id),
             )
         self._unlink(full_path)
-        self._unlink(thumb_path)
+        if thumb_path is not None:
+            self._unlink(thumb_path)
         logger.info("photo upload ok id=%s remote=%s", photo_id, remote_rel)
 
     @staticmethod
@@ -670,10 +651,13 @@ class PhotoLibrary:
         if state.status != PhotoStatus.UPLOADED or not state.remote_rel:
             return DeleteOutcome(ok=False, error="photo not uploaded")
         rel_full = f"{state.remote_rel}.full.jpg"
-        rel_thumb = f"{state.remote_rel}.thumb.jpg"
         try:
             self.sftp_runner.delete(photo_id=photo_id, remote_rel=rel_full)
-            self.sftp_runner.delete(photo_id=photo_id, remote_rel=rel_thumb)
+            if state.has_thumbnail:
+                self.sftp_runner.delete(
+                    photo_id=photo_id,
+                    remote_rel=f"{state.remote_rel}.thumb.jpg",
+                )
         except Exception as exc:  # noqa: BLE001
             message = str(exc)[:200] or exc.__class__.__name__
             return DeleteOutcome(ok=False, error=message)
@@ -694,6 +678,8 @@ class PhotoLibrary:
             return None
         state = self.get(photo_id)
         if state is None or state.status != PhotoStatus.UPLOADED or not state.remote_rel:
+            return None
+        if variant == "thumb" and not state.has_thumbnail:
             return None
         remote_rel = f"{state.remote_rel}.{variant}.jpg"
         with self._connect() as conn:
@@ -733,6 +719,7 @@ class PhotoLibrary:
             last_error=row["last_error"],
             full_path=full_path,
             thumb_path=thumb_path,
+            has_thumbnail=bool(row["has_thumbnail"]),
             width=int(row["width"]),
             height=int(row["height"]),
             bytes_total=int(row["bytes_total"]),

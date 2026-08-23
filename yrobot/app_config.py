@@ -1617,7 +1617,7 @@ def register_photo_routes(
         }
 
     @app.get("/api/photos/{photo_id}/image")
-    def get_photos_image(photo_id: str, variant: str = "thumb") -> Response:
+    def get_photos_image(photo_id: str, variant: str = "full") -> Response:
         lib = _require_library()
         if variant not in {"full", "thumb"}:
             raise HTTPException(status_code=422, detail="variant must be 'thumb' or 'full'")
