@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Protocol
 
 
@@ -14,3 +16,20 @@ class ClosableXiaozhiChannel(Protocol):
 async def close_channel_for_local_photo(channel: ClosableXiaozhiChannel) -> None:
     """Close the active cloud channel before its model tool call can run."""
     await channel.close()
+
+
+async def start_local_photo_flow(
+    channel: ClosableXiaozhiChannel,
+    *,
+    notify_intent: Callable[[], bool],
+    start_capture: Callable[[], None],
+) -> bool:
+    """Arm the stale-tool guard, start local work, then always stop cloud TTS.
+
+    The local capture runs in a detached thread supplied by ``start_capture``.
+    It must continue after this coroutine closes the current Xiaozhi session.
+    """
+    intent_notified = await asyncio.to_thread(notify_intent)
+    start_capture()
+    await close_channel_for_local_photo(channel)
+    return intent_notified

@@ -29,7 +29,7 @@ from yrobot.photos import (
     PhotoStatus,
     SftpResult,
 )
-from yrobot.xiaozhi_photo import close_channel_for_local_photo
+from yrobot.xiaozhi_photo import close_channel_for_local_photo, start_local_photo_flow
 
 _COMPLETE_UPLOAD_ENV = {
     "YROBOT_PHOTO_UPLOAD_ENABLED": "1",
@@ -429,6 +429,54 @@ def test_local_photo_command_closes_xiaozhi_channel_before_cloud_tool_can_run():
 
     asyncio.run(close_channel_for_local_photo(channel))
 
+    assert channel.closed is True
+
+
+def test_local_photo_flow_closes_cloud_even_when_intent_notification_fails():
+    class FakeChannel:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    started: list[str] = []
+    channel = FakeChannel()
+
+    intent_notified = asyncio.run(
+        start_local_photo_flow(
+            channel,
+            notify_intent=lambda: False,
+            start_capture=lambda: started.append("capture"),
+        )
+    )
+
+    assert intent_notified is False
+    assert started == ["capture"]
+    assert channel.closed is True
+
+
+def test_local_photo_flow_closes_cloud_after_a_successful_intent_notification():
+    class FakeChannel:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    started: list[str] = []
+    channel = FakeChannel()
+
+    intent_notified = asyncio.run(
+        start_local_photo_flow(
+            channel,
+            notify_intent=lambda: True,
+            start_capture=lambda: started.append("capture"),
+        )
+    )
+
+    assert intent_notified is True
+    assert started == ["capture"]
     assert channel.closed is True
 
 

@@ -45,6 +45,7 @@ from yrobot.audio_runtime import WAKE_TIMEOUT as _GATE_WAKE_TIMEOUT
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.hermes_photo_intent import HermesPhotoIntentNotifier
+from yrobot.photo_feedback import LocalPhotoFeedback, run_local_photo_flow
 from yrobot.photos import (
     PhotoCommandController,
     PhotoLibrary,
@@ -68,7 +69,7 @@ from yrobot.xiaozhi_mqtt import (
     hello_request,
     is_xiaozhi_conversation_response,
 )
-from yrobot.xiaozhi_photo import close_channel_for_local_photo
+from yrobot.xiaozhi_photo import start_local_photo_flow
 from yrobot.xiaozhi_ota import (
     OTAError,
     OtaCredentialCache,
@@ -677,39 +678,38 @@ class Yrobot(ReachyMiniApp):
             photo_settings.hermes_photo_intent_url,
             photo_settings.hermes_photo_intent_secret or "",
         )
+        self._photo_feedback = LocalPhotoFeedback()
         self._photo_library = self._build_photo_library(photo_settings)
         register_photo_routes(self.settings_app, self._photo_library)
 
-    def _schedule_xiaozhi_photo(self, transcript: str) -> None:
-        async def _capture_and_inject() -> None:
-            outcome = await asyncio.to_thread(
-                self._photo_library.capture_from_voice, source="voice-xz"
+    def _run_xiaozhi_photo_flow(self, transcript: str) -> None:
+        """Run the local-only capture sequence without a cloud model reply."""
+        outcome = run_local_photo_flow(
+            lambda: self._photo_library.capture_from_voice(source="voice-xz"),
+            self._photo_feedback,
+        )
+        if outcome.accepted:
+            logger.info(
+                "xz photo accepted id=%s transcript=%r",
+                outcome.photo_id,
+                transcript,
             )
-            if outcome.accepted:
-                logger.info(
-                    "xz photo accepted id=%s transcript=%r",
-                    outcome.photo_id,
-                    transcript,
-                )
-            else:
-                logger.info(
-                    "xz photo rejected reason=%s transcript=%r",
-                    outcome.message,
-                    transcript,
-                )
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            loop.create_task(_capture_and_inject())
         else:
-            threading.Thread(
-                target=lambda: self._photo_library.capture_from_voice(source="voice-xz"),
-                name="yrobot-xz-photo-capture",
-                daemon=True,
-            ).start()
+            logger.info(
+                "xz photo rejected reason=%s transcript=%r",
+                outcome.message,
+                transcript,
+            )
+
+    def _schedule_xiaozhi_photo(self, transcript: str) -> None:
+        # This thread must outlive the deliberately closed cloud session. An
+        # asyncio task would be cancelled when that session's event loop exits.
+        threading.Thread(
+            target=self._run_xiaozhi_photo_flow,
+            args=(transcript,),
+            name="yrobot-xz-photo-capture",
+            daemon=True,
+        ).start()
 
     def _build_photo_library(self, settings: Settings | None = None) -> PhotoLibrary:
         settings = settings or Settings.from_env()
@@ -2219,25 +2219,25 @@ class Yrobot(ReachyMiniApp):
                                             text,
                                         )
                                 if _waked and self._photo_voice_controller.observe(text):
-                                    intent_notified = await _a.to_thread(
-                                        self._photo_intent_notifier.notify
+                                    intent_notified = await start_local_photo_flow(
+                                        chan,
+                                        notify_intent=self._photo_intent_notifier.notify,
+                                        start_capture=lambda: self._schedule_xiaozhi_photo(text),
                                     )
-                                    self._schedule_xiaozhi_photo(text)
                                     if intent_notified:
                                         logger.info(
-                                            "xz local photo intent notified; retaining cloud turn"
+                                            "xz local photo intent notified; aborting cloud turn"
                                         )
                                     else:
                                         logger.warning(
                                             "xz local photo intent unavailable; aborting cloud turn"
                                         )
-                                        # Fail closed: if Hermes cannot consume a
-                                        # signed intent, do not permit a rewritten
-                                        # cloud visual tool call to reach Qwen-VL.
-                                        await close_channel_for_local_photo(chan)
-                                        raise _XiaozhiReconnect(
-                                            "local photo command handled on device"
-                                        )
+                                    # Fixed local audio clips provide both prompts; the
+                                    # closed cloud turn cannot add commentary or ask a
+                                    # follow-up question.
+                                    raise _XiaozhiReconnect(
+                                        "local photo command handled on device"
+                                    )
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:
