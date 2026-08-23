@@ -246,6 +246,8 @@ class Settings:
     photo_retry_initial_s: float = 5.0
     photo_retry_max_s: float = 300.0
     photo_command_cooldown_s: float = 4.0
+    hermes_photo_intent_url: str = ""
+    hermes_photo_intent_secret: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.conversation_backend not in SUPPORTED_CONVERSATION_BACKENDS:
@@ -297,6 +299,12 @@ class Settings:
             raise ValueError("YROBOT_PHOTO_PENDING_MAX_BYTES must be positive")
         if self.photo_command_cooldown_s < 0:
             raise ValueError("YROBOT_PHOTO_COMMAND_COOLDOWN_S must be non-negative")
+        if bool(self.hermes_photo_intent_url) != bool(self.hermes_photo_intent_secret):
+            raise ValueError("YROBOT_HERMES_PHOTO_INTENT URL and secret must be configured together")
+        if self.hermes_photo_intent_url and not self.hermes_photo_intent_url.startswith(
+            ("http://", "https://")
+        ):
+            raise ValueError("YROBOT_HERMES_PHOTO_INTENT_URL must be an HTTP URL")
         if not 0 < self.photo_retry_initial_s <= self.photo_retry_max_s:
             raise ValueError("YROBOT_PHOTO_RETRY values must be positive and ordered")
         if self.photo_upload_enabled:
@@ -441,4 +449,10 @@ class Settings:
             photo_retry_initial_s=_num("YROBOT_PHOTO_RETRY_INITIAL_S", 5.0, env),
             photo_retry_max_s=_num("YROBOT_PHOTO_RETRY_MAX_S", 300.0, env),
             photo_command_cooldown_s=_num("YROBOT_PHOTO_COMMAND_COOLDOWN_S", 4.0, env),
+            hermes_photo_intent_url=(
+                env.get("YROBOT_HERMES_PHOTO_INTENT_URL") or ""
+            ).strip(),
+            hermes_photo_intent_secret=(
+                env.get("YROBOT_HERMES_PHOTO_INTENT_SECRET") or None
+            ),
         )

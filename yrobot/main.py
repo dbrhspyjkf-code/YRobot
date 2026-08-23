@@ -44,6 +44,7 @@ from yrobot.audio import apply_audio_startup_config
 from yrobot.audio_runtime import WAKE_TIMEOUT as _GATE_WAKE_TIMEOUT
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
+from yrobot.hermes_photo_intent import HermesPhotoIntentNotifier
 from yrobot.photos import (
     PhotoCommandController,
     PhotoLibrary,
@@ -671,7 +672,12 @@ class Yrobot(ReachyMiniApp):
             self.settings_app, media_holder=self._media_holder
         )
         self._photo_voice_controller = PhotoCommandController()
-        self._photo_library = self._build_photo_library()
+        photo_settings = Settings.from_env()
+        self._photo_intent_notifier = HermesPhotoIntentNotifier(
+            photo_settings.hermes_photo_intent_url,
+            photo_settings.hermes_photo_intent_secret or "",
+        )
+        self._photo_library = self._build_photo_library(photo_settings)
         register_photo_routes(self.settings_app, self._photo_library)
 
     def _schedule_xiaozhi_photo(self, transcript: str) -> None:
@@ -705,8 +711,8 @@ class Yrobot(ReachyMiniApp):
                 daemon=True,
             ).start()
 
-    def _build_photo_library(self) -> PhotoLibrary:
-        settings = Settings.from_env()
+    def _build_photo_library(self, settings: Settings | None = None) -> PhotoLibrary:
+        settings = settings or Settings.from_env()
         runner = openssh_runner(settings) if settings.photo_upload_enabled else None
         return PhotoLibrary(
             settings=settings,
@@ -2213,17 +2219,25 @@ class Yrobot(ReachyMiniApp):
                                             text,
                                         )
                                 if _waked and self._photo_voice_controller.observe(text):
+                                    intent_notified = await _a.to_thread(
+                                        self._photo_intent_notifier.notify
+                                    )
                                     self._schedule_xiaozhi_photo(text)
-                                    logger.info(
-                                        "xz local photo command accepted; aborting cloud turn"
-                                    )
-                                    # Xiaozhi emits STT while its model response
-                                    # is still pending. Close now to stop a
-                                    # rewritten visual-tool call before it runs.
-                                    await close_channel_for_local_photo(chan)
-                                    raise _XiaozhiReconnect(
-                                        "local photo command handled on device"
-                                    )
+                                    if intent_notified:
+                                        logger.info(
+                                            "xz local photo intent notified; retaining cloud turn"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "xz local photo intent unavailable; aborting cloud turn"
+                                        )
+                                        # Fail closed: if Hermes cannot consume a
+                                        # signed intent, do not permit a rewritten
+                                        # cloud visual tool call to reach Qwen-VL.
+                                        await close_channel_for_local_photo(chan)
+                                        raise _XiaozhiReconnect(
+                                            "local photo command handled on device"
+                                        )
                                 choreo.set_mode(LISTEN)
                             elif t == "tts" and d.get("state") == "start":
                                 if not _waked:

@@ -1,6 +1,7 @@
 """Photo capture and OrangePi sync configuration tests."""
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -18,6 +19,10 @@ from yrobot.app_config import (
     register_settings_routes,
 )
 from yrobot.config import Settings
+from yrobot.hermes_photo_intent import (
+    HermesPhotoIntentNotifier,
+    sign_photo_intent,
+)
 from yrobot.photos import (
     PhotoCommandController,
     PhotoLibrary,
@@ -58,6 +63,80 @@ def test_photo_upload_accepts_complete_configuration():
     assert settings.photo_sftp_remote_dir == "/srv/reachy-photos"
     assert settings.photo_pending_max_bytes > 0
     assert "test-only-photo-password" not in repr(settings)
+
+
+def test_photo_intent_settings_require_url_and_secret_together():
+    with pytest.raises(ValueError, match="HERMES_PHOTO_INTENT"):
+        Settings.from_env({"YROBOT_HERMES_PHOTO_INTENT_URL": "http://example.test/intent"})
+    with pytest.raises(ValueError, match="HERMES_PHOTO_INTENT"):
+        Settings.from_env({"YROBOT_HERMES_PHOTO_INTENT_SECRET": "test-secret"})
+
+    settings = Settings.from_env(
+        {
+            "YROBOT_HERMES_PHOTO_INTENT_URL": "http://example.test/intent",
+            "YROBOT_HERMES_PHOTO_INTENT_SECRET": "test-secret",
+        }
+    )
+    assert "test-secret" not in repr(settings)
+
+
+def test_photo_intent_notifier_signs_a_one_shot_request_without_logging_payload():
+    captured = {}
+
+    class Response:
+        status = 202
+
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def opener(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = request.data
+        return Response()
+
+    notifier = HermesPhotoIntentNotifier(
+        "http://192.168.1.200:8766/api/reachy/local-photo-intent",
+        "test-shared-secret",
+        now=lambda: 1_000,
+        nonce_factory=lambda: "f" * 32,
+        opener=opener,
+    )
+
+    assert notifier.notify() is True
+    payload = json.loads(captured["payload"])
+    assert captured["url"].endswith("/api/reachy/local-photo-intent")
+    assert captured["timeout"] <= 1.5
+    assert payload["signature"] == (
+        "25c0a0b8c3dadfb190a594c6832b0bfde46ff6edd22a71b2e9a987bf0506925e"
+    )
+    assert payload == {
+        "timestamp": 1_000,
+        "nonce": "f" * 32,
+        "signature": sign_photo_intent("test-shared-secret", 1_000, "f" * 32),
+    }
+
+
+def test_photo_intent_notifier_fails_closed_on_request_construction_or_transport_error():
+    invalid_url = HermesPhotoIntentNotifier("not-an-http-url", "test-shared-secret")
+
+    def failing_opener(*_args, **_kwargs):
+        raise OSError("unreachable")
+
+    unreachable = HermesPhotoIntentNotifier(
+        "http://192.168.1.200:8766/api/reachy/local-photo-intent",
+        "test-shared-secret",
+        opener=failing_opener,
+    )
+
+    assert invalid_url.notify() is False
+    assert unreachable.notify() is False
 
 
 @pytest.mark.parametrize(
