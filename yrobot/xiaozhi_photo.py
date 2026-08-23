@@ -21,14 +21,16 @@ async def close_channel_for_local_photo(channel: ClosableXiaozhiChannel) -> None
 async def start_local_photo_flow(
     channel: ClosableXiaozhiChannel,
     *,
+    suppress_cloud_uplink: Callable[[], None],
     notify_intent: Callable[[], bool],
     start_capture: Callable[[], None],
 ) -> bool:
-    """Arm the stale-tool guard, start local work, then always stop cloud TTS.
+    """Fence cloud audio, arm the stale-tool guard, then run local work.
 
     The local capture runs in a detached thread supplied by ``start_capture``.
     It must continue after this coroutine closes the current Xiaozhi session.
     """
+    suppress_cloud_uplink()
     intent_notified = await asyncio.to_thread(notify_intent)
     start_capture()
     await close_channel_for_local_photo(channel)

@@ -8,11 +8,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
+from yrobot.audio_runtime import SHARED_APLAY_DEVICE
+
 logger = logging.getLogger(__name__)
 
 PHOTO_START_TEXT = "好的，现在拍"
 PHOTO_DONE_TEXT = "拍好啦"
-_AUDIO_DEVICE = "plug:reachymini_audio_sink"
 _ASSET_DIRECTORY = Path(__file__).with_name("assets")
 _ASSET_BY_CUE = {
     "start": "photo-start.wav",
@@ -68,17 +69,21 @@ class LocalPhotoFeedback:
             return False
         try:
             result = self._runner(
-                ("/usr/bin/aplay", "-q", "-D", _AUDIO_DEVICE, str(path)),
+                ("/usr/bin/aplay", "-q", "-D", SHARED_APLAY_DEVICE, str(path)),
                 check=False,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
                 timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             logger.warning("photo feedback audio failed: cue=%s error=%s", cue, exc)
             return False
         if getattr(result, "returncode", 1) != 0:
-            logger.warning("photo feedback audio exited nonzero: cue=%s", cue)
+            detail = str(getattr(result, "stderr", "")).strip().replace("\n", " ")[:200]
+            logger.warning(
+                "photo feedback audio exited nonzero: cue=%s detail=%s", cue, detail
+            )
             return False
         logger.info("photo feedback audio played: cue=%s", cue)
         return True

@@ -23,6 +23,7 @@ from yrobot.hermes_photo_intent import (
     HermesPhotoIntentNotifier,
     sign_photo_intent,
 )
+from yrobot.photo_cloud_guard import LocalPhotoCloudQuarantine
 from yrobot.photos import (
     PhotoCommandController,
     PhotoLibrary,
@@ -432,52 +433,73 @@ def test_local_photo_command_closes_xiaozhi_channel_before_cloud_tool_can_run():
     assert channel.closed is True
 
 
-def test_local_photo_flow_closes_cloud_even_when_intent_notification_fails():
+def test_local_photo_flow_fences_cloud_before_failed_intent_notification():
+    events: list[str] = []
+
     class FakeChannel:
-        def __init__(self):
-            self.closed = False
+        closed = False
 
         async def close(self):
+            events.append("closed")
             self.closed = True
 
-    started: list[str] = []
     channel = FakeChannel()
-
     intent_notified = asyncio.run(
         start_local_photo_flow(
             channel,
-            notify_intent=lambda: False,
-            start_capture=lambda: started.append("capture"),
+            suppress_cloud_uplink=lambda: events.append("fenced"),
+            notify_intent=lambda: events.append("notified") or False,
+            start_capture=lambda: events.append("capture"),
         )
     )
 
     assert intent_notified is False
-    assert started == ["capture"]
+    assert events == ["fenced", "notified", "capture", "closed"]
     assert channel.closed is True
 
 
-def test_local_photo_flow_closes_cloud_after_a_successful_intent_notification():
+def test_local_photo_flow_fences_cloud_before_successful_intent_notification():
+    events: list[str] = []
+
     class FakeChannel:
-        def __init__(self):
-            self.closed = False
+        closed = False
 
         async def close(self):
+            events.append("closed")
             self.closed = True
 
-    started: list[str] = []
     channel = FakeChannel()
-
     intent_notified = asyncio.run(
         start_local_photo_flow(
             channel,
-            notify_intent=lambda: True,
-            start_capture=lambda: started.append("capture"),
+            suppress_cloud_uplink=lambda: events.append("fenced"),
+            notify_intent=lambda: events.append("notified") or True,
+            start_capture=lambda: events.append("capture"),
         )
     )
 
     assert intent_notified is True
-    assert started == ["capture"]
+    assert events == ["fenced", "notified", "capture", "closed"]
     assert channel.closed is True
+
+
+def test_local_photo_cloud_quarantine_drops_residual_uplink_until_window_expires():
+    now = [100.0]
+    quarantine = LocalPhotoCloudQuarantine(now=lambda: now[0], duration_s=10.0)
+
+    assert quarantine.active() is False
+    quarantine.arm()
+    assert quarantine.active() is True
+    assert quarantine.remaining_s() == 10.0
+
+    now[0] = 109.9
+    quarantine.arm()
+    assert quarantine.remaining_s() == 10.0
+
+    now[0] = 119.8
+    assert quarantine.active() is True
+    now[0] = 119.9
+    assert quarantine.active() is False
 
 
 def test_photo_command_strips_extra_whitespace_and_normalises_unicode():

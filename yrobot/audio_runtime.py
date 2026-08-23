@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import subprocess
-import os
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +26,25 @@ WAKE_SUFFIX_BY_PREFIX = {
 # Configurable via YROBOT_WAKE_TIMEOUT_S (seconds, min 30).
 WAKE_TIMEOUT = max(30.0, float(os.environ.get("YROBOT_WAKE_TIMEOUT_S", "120")))
 WAKE_PREFIX_TIMEOUT = 8.0
+# All local playback paths must share this dmix-backed device.  Using ALSA's
+# default device opens the raw card exclusively and blocks the fixed photo cues.
+SHARED_APLAY_DEVICE = "plug:reachymini_audio_sink"
+
+
+def xiaozhi_aplay_command() -> tuple[str, ...]:
+    """Return the shared-mixer aplay command for Xiaozhi's PCM stream."""
+    return (
+        "/usr/bin/aplay",
+        "-D",
+        SHARED_APLAY_DEVICE,
+        "-r",
+        "16000",
+        "-f",
+        "S16_LE",
+        "-c",
+        "2",
+        "-q",
+    )
 
 
 def _compact_wake_text(text: str) -> str:
@@ -151,7 +170,7 @@ class PcmPlayback:
         command: tuple[str, ...] = (
             "/usr/bin/aplay",
             "-D",
-            "plug:reachymini_audio_sink",
+            SHARED_APLAY_DEVICE,
             "-r",
             "24000",
             "-f",

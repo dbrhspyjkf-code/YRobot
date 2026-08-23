@@ -45,6 +45,7 @@ from yrobot.audio_runtime import WAKE_TIMEOUT as _GATE_WAKE_TIMEOUT
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
 from yrobot.hermes_photo_intent import HermesPhotoIntentNotifier
+from yrobot.photo_cloud_guard import LocalPhotoCloudQuarantine
 from yrobot.photo_feedback import LocalPhotoFeedback, run_local_photo_flow
 from yrobot.photos import (
     PhotoCommandController,
@@ -678,6 +679,7 @@ class Yrobot(ReachyMiniApp):
             photo_settings.hermes_photo_intent_url,
             photo_settings.hermes_photo_intent_secret or "",
         )
+        self._local_photo_cloud_quarantine = LocalPhotoCloudQuarantine()
         self._photo_feedback = LocalPhotoFeedback()
         self._photo_library = self._build_photo_library(photo_settings)
         register_photo_routes(self.settings_app, self._photo_library)
@@ -1499,6 +1501,7 @@ class Yrobot(ReachyMiniApp):
             BoundedLatestQueue,
             TtsWatchdog,
             UplinkResponseWatchdog,
+            xiaozhi_aplay_command,
         )
         from yrobot.motion import IDLE, LISTEN, SPEAK, Choreographer
 
@@ -1649,7 +1652,7 @@ class Yrobot(ReachyMiniApp):
 
         def _open_aplay():
             return _sp.Popen(
-                ["/usr/bin/aplay", "-r", "16000", "-f", "S16_LE", "-c", "2", "-q"],
+                list(xiaozhi_aplay_command()),
                 stdin=_sp.PIPE,
                 stderr=_sp.DEVNULL,
             )
@@ -2221,6 +2224,7 @@ class Yrobot(ReachyMiniApp):
                                 if _waked and self._photo_voice_controller.observe(text):
                                     intent_notified = await start_local_photo_flow(
                                         chan,
+                                        suppress_cloud_uplink=self._local_photo_cloud_quarantine.arm,
                                         notify_intent=self._photo_intent_notifier.notify,
                                         start_capture=lambda: self._schedule_xiaozhi_photo(text),
                                     )
@@ -2395,6 +2399,7 @@ class Yrobot(ReachyMiniApp):
                         settings.utterance_hangover_s,
                         settings.utterance_max_s,
                     )
+                    _photo_quarantine_logged = False
                     while not stop_event.is_set():
                         if rt.done():
                             if rt.cancelled():
@@ -2407,6 +2412,22 @@ class Yrobot(ReachyMiniApp):
                                     raise _XiaozhiReconnect(str(recv_error)) from recv_error
                                 raise RuntimeError("xiaozhi receive task failed") from recv_error
                             raise RuntimeError("xiaozhi receive task ended unexpectedly")
+                        if self._local_photo_cloud_quarantine.active():
+                            dropped = 0
+                            while dropped < 64:
+                                try:
+                                    mic_q.get_nowait()
+                                except _q.Empty:
+                                    break
+                                dropped += 1
+                            if not _photo_quarantine_logged:
+                                logger.info(
+                                    "xz local-photo cloud uplink suppressed remaining=%.1fs",
+                                    self._local_photo_cloud_quarantine.remaining_s(),
+                                )
+                                _photo_quarantine_logged = True
+                            await _a.sleep(0.02)
+                            continue
                         # Dead-session watchdog: an uplink burst went out
                         # >12 s ago and nothing has arrived since — the
                         # session is a zombie (server dropped it silently).
@@ -2509,6 +2530,11 @@ class Yrobot(ReachyMiniApp):
                             # (frames that failed the gate are gone otherwise).
                             uplink_preroll.extend(frames)
                             continue
+                        if self._local_photo_cloud_quarantine.active():
+                            # The receive task may have recognised a local photo
+                            # command while this VAD collection window was open.
+                            # Never replay that residual window after reconnect.
+                            continue
                         # Refresh wake deadline on every speech burst.
                         if _waked:
                             _wake_deadline = time.time() + WAKE_TIMEOUT
@@ -2529,6 +2555,8 @@ class Yrobot(ReachyMiniApp):
                         uplink_vad.begin()
                         sent = 0
                         for f16 in uplink_frames:
+                            if self._local_photo_cloud_quarantine.active():
+                                break
                             try:
                                 await _a.wait_for(
                                     chan.send_audio(enc.encode(f16.tobytes(), 960)), timeout=3
@@ -2538,8 +2566,13 @@ class Yrobot(ReachyMiniApp):
                             except Exception as exc:
                                 logger.warning("xz uplink send failed: %s", exc)
                                 break
-                        while not stop_event.is_set():
+                        while (
+                            not stop_event.is_set()
+                            and not self._local_photo_cloud_quarantine.active()
+                        ):
                             buf = await _a.to_thread(mic_q.get, True, 5.0)
+                            if self._local_photo_cloud_quarantine.active():
+                                break
                             # Feed KWS during the uplink extension too — a
                             # wake word spanning the collect/extend boundary
                             # used to lose its tail (你好小白 -> 你好小f).
@@ -2585,11 +2618,12 @@ class Yrobot(ReachyMiniApp):
                             # inter-word pauses no longer cut speech.
                             if uplink_vad.feed(rms) == DECISION_END:
                                 break
-                        await chan.send_json(
-                            {"session_id": sid, "type": "listen", "state": "stop"}
-                        )
+                        if not self._local_photo_cloud_quarantine.active():
+                            await chan.send_json(
+                                {"session_id": sid, "type": "listen", "state": "stop"}
+                            )
                         _user_speaking[0] = False
-                        if sent:
+                        if sent and not self._local_photo_cloud_quarantine.active():
                             logger.info("xz sent %d frames (rms=%.0f)", sent, rms_max)
                             uplink_response_watchdog.uplink_sent()
                         # No post-burst cooldown: the old 4 s blind window ate
