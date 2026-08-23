@@ -2428,6 +2428,12 @@ class Yrobot(ReachyMiniApp):
                                 _photo_quarantine_logged = True
                             await _a.sleep(0.02)
                             continue
+                        if self._local_photo_cloud_quarantine.take_conversation_resume():
+                            _waked = True
+                            _wake_deadline = time.time() + WAKE_TIMEOUT
+                            logger.info(
+                                "xz local-photo conversation resumed after uplink quarantine"
+                            )
                         # Dead-session watchdog: an uplink burst went out
                         # >12 s ago and nothing has arrived since — the
                         # session is a zombie (server dropped it silently).

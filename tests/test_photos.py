@@ -498,8 +498,11 @@ def test_local_photo_cloud_quarantine_drops_residual_uplink_until_window_expires
 
     now[0] = 119.8
     assert quarantine.active() is True
+    assert quarantine.take_conversation_resume() is False
     now[0] = 119.9
     assert quarantine.active() is False
+    assert quarantine.take_conversation_resume() is True
+    assert quarantine.take_conversation_resume() is False
 
 
 def test_photo_command_strips_extra_whitespace_and_normalises_unicode():

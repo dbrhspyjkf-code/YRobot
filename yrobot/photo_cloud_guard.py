@@ -25,10 +25,23 @@ class LocalPhotoCloudQuarantine:
         self._now = now
         self._duration_s = duration_s
         self._until = 0.0
+        self._resume_conversation_pending = False
 
     def arm(self) -> None:
         """Fence residual cloud uplink; repeat calls can only extend it."""
         self._until = max(self._until, self._now() + self._duration_s)
+        # The photo command itself was spoken in an active conversation. The
+        # intentional reconnect must restore that conversation only *after*
+        # residual audio has been drained, otherwise cloud TTS packets are
+        # discarded forever by the normal not-waked safety gate.
+        self._resume_conversation_pending = True
+
+    def take_conversation_resume(self) -> bool:
+        """Consume the one-time post-quarantine conversation resume signal."""
+        if self.active() or not self._resume_conversation_pending:
+            return False
+        self._resume_conversation_pending = False
+        return True
 
     def active(self) -> bool:
         return self._now() < self._until
