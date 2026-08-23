@@ -44,6 +44,7 @@ from yrobot.audio import apply_audio_startup_config
 from yrobot.audio_runtime import WAKE_TIMEOUT as _GATE_WAKE_TIMEOUT
 from yrobot.command_recognizer import CommandRecognizer
 from yrobot.config import Settings
+from yrobot.conversation_resume import ConversationWakeLease
 from yrobot.hermes_photo_intent import HermesPhotoIntentNotifier
 from yrobot.photo_cloud_guard import LocalPhotoCloudQuarantine
 from yrobot.photo_feedback import LocalPhotoFeedback, run_local_photo_flow
@@ -680,6 +681,9 @@ class Yrobot(ReachyMiniApp):
             photo_settings.hermes_photo_intent_secret or "",
         )
         self._local_photo_cloud_quarantine = LocalPhotoCloudQuarantine()
+        self._xiaozhi_wake_lease = ConversationWakeLease(
+            timeout_s=_GATE_WAKE_TIMEOUT
+        )
         self._photo_feedback = LocalPhotoFeedback()
         self._photo_library = self._build_photo_library(photo_settings)
         register_photo_routes(self.settings_app, self._photo_library)
@@ -2083,8 +2087,20 @@ class Yrobot(ReachyMiniApp):
                 tts_active = False
                 tts_watchdog = TtsWatchdog()
                 # ── Wake word state ──────────────────────────────────
-                _waked = False
-                _wake_deadline = 0.0
+                # A short transport reconnect must not make a user repeat the
+                # wake word mid-conversation. A local-photo quarantine still
+                # wins: it defers this restore until residual audio is gone.
+                _waked = (
+                    not self._local_photo_cloud_quarantine.active()
+                    and self._xiaozhi_wake_lease.active()
+                )
+                _wake_deadline = (
+                    time.time() + self._xiaozhi_wake_lease.remaining_s()
+                    if _waked
+                    else 0.0
+                )
+                if _waked:
+                    logger.info("xz conversation restored after transport reconnect")
                 # Session liveness (monotonic): every uplink burst must earn
                 # at least one inbound message (the cloud answers each
                 # burst with stt within ~3 s). The tenclass broker can
@@ -2203,6 +2219,7 @@ class Yrobot(ReachyMiniApp):
                                     logger.info("xz stt: %s", text)
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
+                                    self._xiaozhi_wake_lease.activate()
                                     choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                     idle_show_last_activity[0] = time.monotonic()
@@ -2431,6 +2448,7 @@ class Yrobot(ReachyMiniApp):
                         if self._local_photo_cloud_quarantine.take_conversation_resume():
                             _waked = True
                             _wake_deadline = time.time() + WAKE_TIMEOUT
+                            self._xiaozhi_wake_lease.activate()
                             logger.info(
                                 "xz local-photo conversation resumed after uplink quarantine"
                             )
@@ -2447,8 +2465,10 @@ class Yrobot(ReachyMiniApp):
                         # cut off mid-sentence).
                         if _waked and tts_active:
                             _wake_deadline = time.time() + WAKE_TIMEOUT
+                            self._xiaozhi_wake_lease.activate()
                         if _waked and _wake_deadline > 0 and time.time() > _wake_deadline:
                             _waked = False
+                            self._xiaozhi_wake_lease.clear()
                             logger.info("wake expired (%.0fs timeout)", WAKE_TIMEOUT)
                         # Publish conversation state to the tracker: while a
                         # conversation is active, a locked face may steer the
@@ -2523,6 +2543,7 @@ class Yrobot(ReachyMiniApp):
                                     if _hit:
                                         _waked = True
                                         _wake_deadline = time.time() + WAKE_TIMEOUT
+                                        self._xiaozhi_wake_lease.activate()
                                         choreo.play_move("nod")
                                         logger.info(
                                             "wake word detected (local KWS): %s", _hit
@@ -2544,6 +2565,7 @@ class Yrobot(ReachyMiniApp):
                         # Refresh wake deadline on every speech burst.
                         if _waked:
                             _wake_deadline = time.time() + WAKE_TIMEOUT
+                            self._xiaozhi_wake_lease.activate()
                         _user_speaking[0] = True
                         await chan.send_json(
                             {
@@ -2588,6 +2610,7 @@ class Yrobot(ReachyMiniApp):
                                     if _hit:
                                         _waked = True
                                         _wake_deadline = time.time() + WAKE_TIMEOUT
+                                        self._xiaozhi_wake_lease.activate()
                                         choreo.play_move("nod")
                                         logger.info(
                                             "wake word detected (local KWS): %s", _hit

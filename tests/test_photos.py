@@ -19,6 +19,7 @@ from yrobot.app_config import (
     register_settings_routes,
 )
 from yrobot.config import Settings
+from yrobot.conversation_resume import ConversationWakeLease
 from yrobot.hermes_photo_intent import (
     HermesPhotoIntentNotifier,
     sign_photo_intent,
@@ -503,6 +504,25 @@ def test_local_photo_cloud_quarantine_drops_residual_uplink_until_window_expires
     assert quarantine.active() is False
     assert quarantine.take_conversation_resume() is True
     assert quarantine.take_conversation_resume() is False
+
+
+def test_active_conversation_wake_lease_survives_a_short_transport_reconnect():
+    now = [100.0]
+    lease = ConversationWakeLease(now=lambda: now[0], timeout_s=30.0)
+
+    assert lease.active() is False
+    lease.activate()
+    now[0] = 112.0
+    assert lease.active() is True
+    assert lease.remaining_s() == 18.0
+
+    # A later active turn renews the lease; an unrelated reconnect can restore
+    # the current conversation without treating ambient speech as a new wake.
+    lease.activate()
+    now[0] = 141.9
+    assert lease.active() is True
+    now[0] = 142.0
+    assert lease.active() is False
 
 
 def test_photo_command_strips_extra_whitespace_and_normalises_unicode():
