@@ -1209,7 +1209,6 @@ class Yrobot(ReachyMiniApp):
                     logger.info("QWEN wake word detected")
                     logger.info("qwen stt: %s", transcript[:120])
                     wake_greetings.begin_wake()
-                    choreo.play_move("nod")
                     tracker.set_conversation_active(True)
                     asyncio.create_task(activate_from_wake())
                 if gate.active:
@@ -1354,11 +1353,9 @@ class Yrobot(ReachyMiniApp):
                                 wake_greetings.begin_wake()
                                 RUNTIME_HEALTH.update(wake_active=True)
                                 # Mirror the transcript-wake path exactly:
-                                # feedback, head tracking, and the session
-                                # activation (manual turn mode + response
-                                # request) so the conversation actually
-                                # starts.
-                                choreo.play_move("nod")
+                                # head tracking and session activation (manual turn
+                                # mode + response request) so conversation starts
+                                # immediately, without a gesture clip.
                                 tracker.set_conversation_active(True)
                                 asyncio.create_task(activate_from_wake())
                                 logger.info("KWS wake detected: %r", hit)
@@ -2207,7 +2204,6 @@ class Yrobot(ReachyMiniApp):
                                     _waked = True
                                     _wake_deadline = time.time() + WAKE_TIMEOUT
                                     self._xiaozhi_wake_lease.activate()
-                                    choreo.play_move("nod")
                                     logger.info("wake word detected: %.60s", text)
                                     idle_show_last_activity[0] = time.monotonic()
                                 if not _waked:
@@ -2454,7 +2450,7 @@ class Yrobot(ReachyMiniApp):
                             frames.append(pcm16)
                             # Feed every mic frame to the local KWS while
                             # idle; on a hit mirror the transcript-wake
-                            # actions exactly (_waked + nod + deadline).
+                            # state transition (_waked + deadline), without a nod.
                             if _xz_kws is not None and not _waked:
                                 try:
                                     _hit = _xz_kws.feed(pcm16)
@@ -2462,7 +2458,6 @@ class Yrobot(ReachyMiniApp):
                                         _waked = True
                                         _wake_deadline = time.time() + WAKE_TIMEOUT
                                         self._xiaozhi_wake_lease.activate()
-                                        choreo.play_move("nod")
                                         logger.info(
                                             "wake word detected (local KWS): %s", _hit
                                         )
@@ -2529,7 +2524,6 @@ class Yrobot(ReachyMiniApp):
                                         _waked = True
                                         _wake_deadline = time.time() + WAKE_TIMEOUT
                                         self._xiaozhi_wake_lease.activate()
-                                        choreo.play_move("nod")
                                         logger.info(
                                             "wake word detected (local KWS): %s", _hit
                                         )

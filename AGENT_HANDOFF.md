@@ -262,13 +262,14 @@ cd ios/YRobotRemote
 Deployment specifics, service restart cautions, and health checks are in
 [`docs/runbooks/deploy-yrobot.md`](docs/runbooks/deploy-yrobot.md).
 
-## Pending deployment: quiet conversation motion (2026-08-24 Asia/Shanghai)
+## Deployed: quiet conversation motion (2026-08-24 Asia/Shanghai)
 
-- Feature worktree: `.worktrees/quiet-conversation-motion` on `fix/quiet-conversation-motion`; commit pending at this handoff update.
+- Source commit: `2e6a997` (`fix(conversation): disable autonomous emotion gestures`), on `fix/quiet-conversation-motion`; pushed to `origin` and deployed through `scripts/deploy.sh`.
 - Scope: QWEN no longer exposes or dispatches `express_emotion`; Xiaozhi gateway `llm` emotion metadata and per-sentence keyword/cloud-LLM emotion classification no longer actuate the Choreographer. SPEAK/LISTEN/IDLE posture, tracking, wake/backchannel nods, explicit user requests, idle show, and Dashboard manual motions remain outside this change.
-- Local verification passed: `python3 -m py_compile yrobot/main.py yrobot/qwen_realtime.py yrobot/qwen_tools.py`; `PYTHONPATH=. uvx --from pytest --with cryptography --with fastapi --with httpx --with opencv-python-headless --with websockets --with numpy --with python-dotenv --with reachy-mini pytest -q tests/test_xiaozhi_emotion.py tests/test_qwen_tools.py::test_qwen_never_exposes_or_executes_autonomous_emotion_tool tests/test_sentence_emotion_llm.py` (17 passed); `git diff --check` passed.
-- The full `tests/test_qwen_tools.py` has four pre-existing failed numeric-volume expectations; they are unrelated to this action-boundary change, so deployment runs only the new targeted regression from that module.
-- Before deploy, keep the live production CORS/media-start patch: it is already present in local `main` and must not be lost when the robot's current dirty `main.py` is reconciled by the standard deploy script.
+- Verification: local and robot `py_compile` passed; the standard deploy suite passed (102 tests) including `tests/test_xiaozhi_emotion.py` and `tests/test_qwen_tools.py::test_qwen_never_exposes_or_executes_autonomous_emotion_tool`. Robot backup with SHA-256 manifest: `/home/pollen/.local/state/yrobot/backups/deploy-20260824-230831`.
+- After the orphan-safe restart, `yrobot.service` and `reachy-mini-daemon.service` are active; Dashboard reports XIAOZHI connected, motors enabled, motion thread alive, and `runtime.last_error=null`; no recent startup traceback/ERROR was found.
+- The full `tests/test_qwen_tools.py` still has four pre-existing failed numeric-volume expectations unrelated to this change, so the deploy suite intentionally runs the new targeted regression from that module.
+- **Physical acceptance pending:** operator should hold a normal emotionally worded conversation and confirm there are no autonomous gesture clips; separately confirm a Dashboard manual motion still works.
 
 ## Handoff update rule
 

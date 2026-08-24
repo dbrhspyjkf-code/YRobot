@@ -1,5 +1,7 @@
 """Xiaozhi emotion wiring: recorded whitelist preference and idle show."""
 
+from pathlib import Path
+
 import yrobot.main as main_mod
 from yrobot import motion
 from yrobot.main import _handle_xiaozhi_emotion, _play_idle_show
@@ -17,6 +19,14 @@ class _FakeChoreo:
     def play_move(self, name):
         self.moves.append(name)
         return True
+
+
+def test_wake_paths_do_not_queue_a_nod():
+    source = Path(main_mod.__file__).read_text(encoding="utf-8")
+
+    # A single nod remains for a pure acknowledgement; waking must transition
+    # directly to conversation without adding a movement clip.
+    assert source.count('choreo.play_move("nod")') == 1
 
 
 def test_xiaozhi_emotion_prefers_recorded_when_library_available():
