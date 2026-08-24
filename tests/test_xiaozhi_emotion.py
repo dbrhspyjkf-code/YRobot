@@ -118,7 +118,7 @@ def test_sentence_happy_still_gestures():
     assert choreo.recorded == ["laughing2"]
 
 
-def test_informative_llm_emotion_still_gestures():
+def test_informative_llm_emotion_is_not_an_autonomous_gesture():
     motion._recent_recorded_choice.clear()
     choreo = _FakeChoreo()
 
@@ -126,7 +126,8 @@ def test_informative_llm_emotion_still_gestures():
         choreo, "surprised", {}, lambda: object(), prefer_recorded=True, source="llm"
     )
 
-    assert choreo.recorded
+    assert choreo.recorded == []
+    assert choreo.moves == []
 
 
 def test_global_cooldown_suppresses_back_to_back_moves():

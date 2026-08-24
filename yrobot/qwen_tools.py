@@ -157,13 +157,11 @@ class ToolExecutor:
         opener: Any = urllib.request.urlopen,
         timeout: float = 5.0,
         volume_controller: Any | None = None,
-        emotion_player: Any | None = None,
     ) -> None:
         self.settings = settings
         self._opener = opener
         self._timeout = timeout
         self._volume_controller = volume_controller
-        self._emotion_player = emotion_player
         self._actions: dict[tuple[str, str], AllowedAction] = {}
         self._devices: dict[str, AllowedAction] = {}
         self._phrases: dict[str, tuple[str, str]] = {}
@@ -357,27 +355,6 @@ class ToolExecutor:
                 }
                 for spec_name, spec_description, prompt_description, required in _HERMES_TOOL_SPECS
             )
-        if self._emotion_player is not None:
-            schemas.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "express_emotion",
-                        "description": "仅在回答明显带有情绪时，配合一次简短的机器人表情动作。普通回答不要调用；不要在设备控制、数字查询或严肃内容中调用。",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "emotion": {
-                                    "type": "string",
-                                    "enum": ["happy", "thinking", "surprised", "sad", "loving"],
-                                }
-                            },
-                            "required": ["emotion"],
-                            "additionalProperties": False,
-                        },
-                    },
-                }
-            )
         return schemas
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -393,7 +370,6 @@ class ToolExecutor:
             "remove_portfolio_stock": self._remove_portfolio_stock,
             "get_stock_advice": self._get_stock_advice,
             "control_sonos": self._control_sonos,
-            "express_emotion": self._express_emotion,
         }
         for registry_name, _desc, _prompt, _required in _HERMES_TOOL_SPECS:
             handlers[registry_name] = _make_hermes_prompt_handler(registry_name).__get__(
@@ -410,16 +386,6 @@ class ToolExecutor:
                 message = message.replace(self.settings.ha_token, "[redacted]")
             result = {"ok": False, "error": message or type(exc).__name__}
         return self._bounded(result)
-
-    def _express_emotion(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        emotion = str(arguments.get("emotion") or "").strip().lower()
-        if emotion not in {"happy", "thinking", "surprised", "sad", "loving"}:
-            return {"ok": False, "error": "unsupported emotion"}
-        if self._emotion_player is None:
-            return {"ok": False, "error": "emotion playback unavailable"}
-        if not self._emotion_player(emotion):
-            return {"ok": False, "error": "emotion playback skipped"}
-        return {"ok": True, "emotion": emotion}
 
     def execute_spoken_control(
         self, transcript: str, *, now: float | None = None

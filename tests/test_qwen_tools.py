@@ -145,17 +145,14 @@ def test_unknown_tool_is_rejected_before_network(tmp_path):
     assert opener.calls == []
 
 
-def test_qwen_emotion_tool_uses_only_safe_local_emotion(tmp_path):
-    played = []
-    executor = ToolExecutor(
-        make_settings(tmp_path),
-        emotion_player=lambda emotion: played.append(emotion) or True,
-    )
+def test_qwen_never_exposes_or_executes_autonomous_emotion_tool(tmp_path):
+    executor = ToolExecutor(make_settings(tmp_path))
 
-    result = executor.execute("express_emotion", {"emotion": "happy"})
-
-    assert result == {"ok": True, "emotion": "happy"}
-    assert played == ["happy"]
+    assert "express_emotion" not in [item["function"]["name"] for item in executor.schemas()]
+    assert executor.execute("express_emotion", {"emotion": "happy"}) == {
+        "ok": False,
+        "error": "unknown tool: express_emotion",
+    }
 
 
 def test_unknown_device_is_rejected_before_network(tmp_path):

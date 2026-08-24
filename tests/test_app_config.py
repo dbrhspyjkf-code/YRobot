@@ -128,6 +128,35 @@ def test_status_api_returns_status(tmp_path):
     assert response.json()["status"]["service"]["name"] == "YRobot"
 
 
+
+def test_dashboard_cors_preflight_allows_ubersicht_control_requests():
+    """The desktop Übersicht controller can preflight JSON PUT requests."""
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "PUT", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+    )
+    register_settings_routes(app)
+    client = TestClient(app)
+
+    response = client.options(
+        "/api/audio/input",
+        headers={
+            "Origin": "http://traces.uber",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    assert "PUT" in response.headers["access-control-allow-methods"]
+
 def test_audio_input_api_toggles_runtime_mic_upload(tmp_path):
     store = AppConfig(tmp_path / "settings.json")
     controller = AudioInputController()

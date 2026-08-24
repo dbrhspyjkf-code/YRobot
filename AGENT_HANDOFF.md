@@ -197,6 +197,50 @@ Observed results:
     photos. No physical test photo was taken during this deployment; any live
     capture/upload confirmation must be explicitly approved first.
 
+- 2026-08-23 12:03 Asia/Shanghai: deployed `9fe3b07`
+  (`fix(photos): clear stale missing remote records`); code backup:
+  `/home/pollen/.local/state/yrobot/backups/deploy-20260823-120317`.
+  - Dashboard deletion now treats only OpenSSH's explicit remote-photo
+    `No such file or directory` response as an idempotent success. It clears
+    the stale SQLite row, while host-key, permission, connectivity, and local
+    configuration errors still fail closed and retain the record.
+  - For legacy two-file records, deletion continues to the thumbnail even when
+    the full JPEG was already manually removed.
+  - After a fresh image probe, 7 records whose remote full JPEGs were absent
+    were cleared with the user’s explicit approval. Two readable records were
+    retained; the final Dashboard API probe was `total=2`, with both image
+    requests succeeding. No photo was captured and no readable remote photo
+    was deleted by this cleanup.
+
+- 2026-08-24 17:55 Asia/Shanghai: restored the photo integration that an
+  uncommitted production edit had stripped, while preserving that edit's
+  non-photo changes. Backup of the overwritten production file (SHA-256 in
+  manifest):
+  `/home/pollen/.local/state/yrobot/backups/restore-photo-20260824-175510`.
+  - Incident: `/home/pollen/YRobot/yrobot/main.py` was modified on
+    2026-08-23 16:21 (28 insertions / 220 deletions, never committed) removing
+    PhotoLibrary startup, `/api/photos*` registration, the Xiaozhi photo
+    interception, and the wake-lease/quarantine logic. After the 2026-08-24
+    17:16 service restart, spoken “拍照” fell through to the Xiaozhi cloud
+    (“我现在没法直接拍照”) and `/api/photos*` returned 404.
+  - Restoration: rebuilt `main.py` as verified deployed `ed9fd16` content plus
+    the two legitimate uncommitted additions — the Übersicht CORS middleware
+    block and the `run()` try-wrap around the media assignment. The merged
+    file KEEPS `xiaozhi_aplay_command()`; the production edit's hardcoded
+    `aplay` argv had dropped `-D SHARED_APLAY_DEVICE`, which would have
+    reintroduced the `Device or resource busy` dmix regression.
+  - Validation: local and robot py_compile plus the full focused suite
+    (93 tests: uplink_vad, stability_guards, xiaozhi_mqtt, photos,
+    photos_sftp, photo_feedback) all green; ruff diff versus the deployed
+    baseline is empty. After the orphan-safe restart, `yrobot.service` and
+    the daemon are active, `/api/photos` returns `total=3`, photo sync is
+    enabled with queue_depth 0, and there is no startup traceback. Spoken
+    "拍照" physical acceptance still needs an on-site confirmation.
+  - Robot git remains at `ed9fd16` with `main.py` modified (= deployed +
+    CORS + try-wrap). A future `scripts/deploy.sh` run would overwrite the
+    CORS addition; upstream the CORS middleware into the feature branch
+    before the next code deploy.
+
 ## Working commands
 
 Run local focused tests from the repository root:
@@ -217,6 +261,14 @@ cd ios/YRobotRemote
 
 Deployment specifics, service restart cautions, and health checks are in
 [`docs/runbooks/deploy-yrobot.md`](docs/runbooks/deploy-yrobot.md).
+
+## Pending deployment: quiet conversation motion (2026-08-24 Asia/Shanghai)
+
+- Feature worktree: `.worktrees/quiet-conversation-motion` on `fix/quiet-conversation-motion`; commit pending at this handoff update.
+- Scope: QWEN no longer exposes or dispatches `express_emotion`; Xiaozhi gateway `llm` emotion metadata and per-sentence keyword/cloud-LLM emotion classification no longer actuate the Choreographer. SPEAK/LISTEN/IDLE posture, tracking, wake/backchannel nods, explicit user requests, idle show, and Dashboard manual motions remain outside this change.
+- Local verification passed: `python3 -m py_compile yrobot/main.py yrobot/qwen_realtime.py yrobot/qwen_tools.py`; `PYTHONPATH=. uvx --from pytest --with cryptography --with fastapi --with httpx --with opencv-python-headless --with websockets --with numpy --with python-dotenv --with reachy-mini pytest -q tests/test_xiaozhi_emotion.py tests/test_qwen_tools.py::test_qwen_never_exposes_or_executes_autonomous_emotion_tool tests/test_sentence_emotion_llm.py` (17 passed); `git diff --check` passed.
+- The full `tests/test_qwen_tools.py` has four pre-existing failed numeric-volume expectations; they are unrelated to this action-boundary change, so deployment runs only the new targeted regression from that module.
+- Before deploy, keep the live production CORS/media-start patch: it is already present in local `main` and must not be lost when the robot's current dirty `main.py` is reconciled by the standard deploy script.
 
 ## Handoff update rule
 

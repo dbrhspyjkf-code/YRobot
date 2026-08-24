@@ -51,7 +51,8 @@ run_local_pytest() {
   elif command -v uvx >/dev/null 2>&1; then
     # test_photos needs fastapi/httpx/opencv/websockets; the others only need cryptography.
     uvx --from pytest --with cryptography --with fastapi --with httpx \
-      --with opencv-python-headless --with websockets --with numpy pytest "$@"
+      --with opencv-python-headless --with websockets --with numpy \
+      --with python-dotenv --with reachy-mini pytest "$@"
   else
     die "pytest+cryptography unavailable; install them or make uvx available"
   fi
@@ -99,13 +100,14 @@ say "drift check OK (robot @ ${ROBOT_SHA:0:9} is an ancestor-or-equal of local h
 if [ "$SKIP_TESTS" = 0 ]; then
   say "local: py_compile + focused tests"
   python3 -m py_compile \
-    yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
+    yrobot/main.py yrobot/config.py yrobot/qwen_realtime.py yrobot/qwen_tools.py yrobot/uplink_vad.py \
     yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py \
     yrobot/app_config.py yrobot/photos.py yrobot/photos_sftp.py yrobot/hermes_photo_intent.py \
     yrobot/conversation_resume.py yrobot/photo_cloud_guard.py yrobot/photo_feedback.py
   run_local_pytest tests/test_uplink_vad.py tests/test_stability_guards.py \
     tests/test_xiaozhi_mqtt.py tests/test_photos.py tests/test_photos_sftp.py \
-    tests/test_photo_feedback.py -q
+    tests/test_photo_feedback.py tests/test_xiaozhi_emotion.py \
+    tests/test_qwen_tools.py::test_qwen_never_exposes_or_executes_autonomous_emotion_tool -q
 else
   say "local: tests SKIPPED"
 fi
@@ -143,7 +145,7 @@ rsync "${RSYNC_OPTS[@]}" "$LOCAL_DIR"/ "$ROBOT_HOST:$ROBOT_DIR/"
 # ── 5. robot-side verification ───────────────────────────────────────────
 say "robot: py_compile"
 ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m py_compile \
-  yrobot/main.py yrobot/config.py yrobot/uplink_vad.py \
+  yrobot/main.py yrobot/config.py yrobot/qwen_realtime.py yrobot/qwen_tools.py yrobot/uplink_vad.py \
   yrobot/audio_runtime.py yrobot/xiaozhi_mqtt.py yrobot/xiaozhi_ota.py \
   yrobot/app_config.py yrobot/photos.py yrobot/photos_sftp.py yrobot/hermes_photo_intent.py \
   yrobot/conversation_resume.py yrobot/photo_cloud_guard.py yrobot/photo_feedback.py"
@@ -151,7 +153,9 @@ if [ "$SKIP_TESTS" = 0 ]; then
   say "robot: focused pytest"
   ssh "$ROBOT_HOST" "cd '$ROBOT_DIR' && .venv/bin/python -m pytest \
     tests/test_uplink_vad.py tests/test_stability_guards.py tests/test_xiaozhi_mqtt.py \
-    tests/test_photos.py tests/test_photos_sftp.py tests/test_photo_feedback.py -q"
+    tests/test_photos.py tests/test_photos_sftp.py tests/test_photo_feedback.py \
+    tests/test_xiaozhi_emotion.py \
+    tests/test_qwen_tools.py::test_qwen_never_exposes_or_executes_autonomous_emotion_tool -q"
 fi
 
 # ── 6. orphan-safe restart ───────────────────────────────────────────────

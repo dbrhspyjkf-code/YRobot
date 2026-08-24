@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from yrobot.audio_runtime import WakeGate
 import numpy as np
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 from reachy_mini.apps.app import ReachyMiniApp
 from reachy_mini.reachy_mini import ReachyMini
 
@@ -60,8 +61,6 @@ from yrobot.qwen_emotion import (
     requested_emotion,
 )
 from yrobot.faces import FaceDB
-from yrobot.speech_emotion import sentence_emotion
-from yrobot.sentence_emotion_llm import classify_sentence_llm
 from yrobot.state import ROBOT_STATE, RUNTIME_HEALTH
 from yrobot.uplink_vad import DECISION_END, EnergyHangoverVAD, PrerollBuffer
 from yrobot.xiaozhi_mqtt import (
@@ -584,8 +583,8 @@ def _play_emotion_move(
     """
     from yrobot.motion import EMOTION_FALLBACK_MOVE, recorded_move_for
 
-    if source == "llm" and emo in _LLM_EMOTION_NOISE:
-        logger.info("%s emotion %s (llm default, ignored)", tag, emo or "?")
+    if source == "llm":
+        logger.info("%s emotion %s ignored (autonomous gestures disabled)", tag, emo or "?")
         return False
 
     rec_name = recorded_move_for(emo) if prefer_recorded else None
@@ -671,6 +670,17 @@ class Yrobot(ReachyMiniApp):
         super().__init__(running_on_wireless=running_on_wireless)
         self._media_holder = _MediaHolder()
         assert self.settings_app is not None
+        # Übersicht widgets are rendered by a local WebKit origin and must
+        # preflight cross-origin JSON PUT/POST controls before reaching this
+        # Dashboard API. Keep browser dashboard behavior unchanged while
+        # permitting the desktop controller to use the existing safe routes.
+        self.settings_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["GET", "PUT", "POST", "OPTIONS"],
+            allow_headers=["Content-Type"],
+        )
         self._camera_streamer = register_settings_routes(
             self.settings_app, media_holder=self._media_holder
         )
@@ -733,9 +743,9 @@ class Yrobot(ReachyMiniApp):
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Run exactly one configured conversation backend."""
-        self._media_holder.media = reachy_mini.media
-        self._photo_library.start()
         try:
+            self._media_holder.media = reachy_mini.media
+            self._photo_library.start()
             settings = Settings.from_env()
             RUNTIME_HEALTH.update(
                 backend=settings.conversation_backend,
@@ -999,7 +1009,7 @@ class Yrobot(ReachyMiniApp):
                     choreo.release_still()
                     tracker.set_robot_speaking(True)  # echo guard
                     if pending_qwen_emotion[0] is not None:
-                        play_qwen_emotion(pending_qwen_emotion[0])
+                        play_qwen_requested_emotion(pending_qwen_emotion[0])
                         pending_qwen_emotion[0] = None
                     RUNTIME_HEALTH.update(tts_active=True)
                 playback.put(pcm)
@@ -1266,31 +1276,26 @@ class Yrobot(ReachyMiniApp):
             def on_error(message: str) -> None:
                 RUNTIME_HEALTH.update(last_error=message)
 
-            last_qwen_emotion: dict[str, float] = {}
+            last_qwen_requested_emotion: dict[str, float] = {}
 
-            def play_qwen_emotion(emotion: str) -> bool:
-                # Shared policy with the xiaozhi backend: recorded-move
-                # rotation from the official whitelist, programmatic
-                # fallback, 12 s global cooldown. QWEN emotions come from
-                # explicit transcript requests, so they are always
-                # content-corroborated (source="sentence").
+            def play_qwen_requested_emotion(emotion: str) -> bool:
+                """Play a bounded gesture only for an explicit user request."""
                 if choreo.current_move() is not None or choreo.current_recorded() is not None:
-                    logger.info("qwen emotion %s skipped: move in progress", emotion)
+                    logger.info("qwen requested emotion %s skipped: move in progress", emotion)
                     return False
                 return _play_emotion_move(
                     choreo,
                     emotion,
-                    last_qwen_emotion,
+                    last_qwen_requested_emotion,
                     _get_recorded,
                     prefer_recorded=True,
-                    source="sentence",
+                    source="explicit_request",
                     tag="qwen",
                 )
 
             tool_executor = ToolExecutor(
                 settings,
                 volume_controller=volume_controller_singleton(),
-                emotion_player=play_qwen_emotion,
             )
             command_recognizer = CommandRecognizer(settings)
             client = QwenRealtimeClient(
@@ -2181,29 +2186,11 @@ class Yrobot(ReachyMiniApp):
                                 else:
                                     logger.info("xz mcp notification ignored")
                             if t == "llm":
-                                # Xiaozhi sends the model's emotion/expression here
-                                # (e.g. {"type":"llm","emotion":"happy","text":"😀"}).
-                                # Recorded moves now come from the official
-                                # curated whitelist (rotated per emotion), with
-                                # the programmatic moves as fallback if the
-                                # library is unavailable or a move is rejected.
-                                # If a manual/MCP move is playing, emotions are
-                                # ignored so a tool-triggered dance is never
-                                # cut short.
+                                # Gateway emotion metadata is conversational analysis,
+                                # not a motion command. Keep it observable without
+                                # letting a model-driven label interrupt dialogue.
                                 emo = (d.get("emotion") or "").strip().lower()
-                                if (
-                                    choreo.current_move() is not None
-                                    or choreo.current_recorded() is not None
-                                ):
-                                    logger.info("xz emotion %s ignored (move in progress)", emo)
-                                else:
-                                    _handle_xiaozhi_emotion(
-                                        choreo,
-                                        emo,
-                                        tracker._last_emotion_move,
-                                        _get_recorded,
-                                        prefer_recorded=True,
-                                    )
+                                logger.info("xz emotion %s ignored (autonomous gestures disabled)", emo)
                             if t == "stt":
                                 text = d.get("text", "")
                                 # Wake word gate (skip if force-wake flag set).
@@ -2287,78 +2274,9 @@ class Yrobot(ReachyMiniApp):
                                 choreo.release_still()
                             elif t == "tts" and d.get("state") == "sentence_start":
                                 sentence_text = d.get("text", "")
+                                # Keep the transcript for the conversation panel, but
+                                # never classify reply semantics into body language.
                                 logger.info("xz tts text: %s", sentence_text[:80])
-                                # Sentence-level gestures (official app pattern):
-                                # classify each spoken sentence and gesture while
-                                # talking. Skipped when a move is already playing;
-                                # the per-move cooldown dedupes against the llm
-                                # emotion event that fires at reply start.
-                                sentence_emo = sentence_emotion(sentence_text)
-                                if sentence_emo and _waked:
-                                    if (
-                                        choreo.current_move() is not None
-                                        or choreo.current_recorded() is not None
-                                    ):
-                                        logger.info(
-                                            "xz sentence emotion %s skipped (move in progress)",
-                                            sentence_emo,
-                                        )
-                                    else:
-                                        _handle_xiaozhi_emotion(
-                                            choreo,
-                                            sentence_emo,
-                                            tracker._last_emotion_move,
-                                            _get_recorded,
-                                            prefer_recorded=True,
-                                            source="sentence",
-                                        )
-                                elif _waked and sentence_text.strip():
-                                    # Semantic fallback tier (2026-08-19): the
-                                    # keyword table misses most emotional
-                                    # sentences (2/76 over 3 days of logs) and
-                                    # every llm-event tag was the default
-                                    # happy. Classify out-of-band with
-                                    # qwen-flash: worker thread only, total,
-                                    # 2 s bounded; the 12 s global cooldown in
-                                    # _play_emotion_move still throttles.
-                                    text_snapshot = sentence_text
-
-                                    async def _llm_emotion_fallback(
-                                        snapshot: str = text_snapshot,
-                                    ) -> None:
-                                        emo = await _a.to_thread(
-                                            classify_sentence_llm, snapshot
-                                        )
-                                        # _waked / tts_active are read live on
-                                        # purpose: gesture only if the robot is
-                                        # still awake and still talking.
-                                        if (  # noqa: B023
-                                            not emo
-                                            or not _waked
-                                            or not tts_active
-                                        ):
-                                            return
-                                        if (
-                                            choreo.current_move() is not None
-                                            or choreo.current_recorded() is not None
-                                        ):
-                                            logger.info(
-                                                "xz llm emotion %s skipped "
-                                                "(move in progress)",
-                                                emo,
-                                            )
-                                            return
-                                        logger.info("xz llm emotion classified: %s", emo)
-                                        _handle_xiaozhi_emotion(
-                                            choreo,
-                                            emo,
-                                            tracker._last_emotion_move,
-                                            _get_recorded,
-                                            prefer_recorded=True,
-                                            source="sentence",
-                                        )
-
-                                    _a.create_task(_llm_emotion_fallback())
                             elif t == "tts" and d.get("state") == "sentence_end":
                                 logger.info(
                                     "xz tts sentence_end packets=%d audio(enqueued=%d written=%d pending=%d)",
