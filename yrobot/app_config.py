@@ -23,11 +23,15 @@ from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 
 from yrobot.audio import dashboard_mic_signal, get_vad_rms_min, set_vad_rms_min
 from yrobot.config import QWEN_VOICES, SUPPORTED_CONVERSATION_BACKENDS, Settings
 from yrobot.env_store import update_env_value
+from yrobot.hermes_workspace_notify import (
+    CompletionCuePlayer,
+    HermesWorkspaceNotificationReceiver,
+)
 from yrobot.qwen_realtime import _model_url
 from yrobot.state import RUNTIME_HEALTH
 
@@ -1131,7 +1135,29 @@ def register_settings_routes(
     motion = motion_controller_singleton()
     configured_backend = Settings.from_env(os.environ).conversation_backend
     configured_voice = Settings.from_env(os.environ).qwen_voice
+    notify_secret = os.environ.get("YROBOT_HERMES_WORKSPACE_NOTIFY_SECRET", "")
+    notify_receiver = (
+        HermesWorkspaceNotificationReceiver(
+            notify_secret,
+            CompletionCuePlayer(),
+            allowed_ip=os.environ.get(
+                "YROBOT_HERMES_WORKSPACE_NOTIFY_ALLOWED_IP", "192.168.1.200"
+            ),
+        )
+        if notify_secret
+        else None
+    )
 
+    @app.post("/api/hermes/workspace-notify", status_code=202)
+    def post_hermes_workspace_notify(request: Request, document: dict[str, Any]) -> dict[str, Any]:
+        """Queue a signed Hermes completion cue for local speaker playback."""
+        if notify_receiver is None:
+            raise HTTPException(status_code=503, detail="Hermes completion notify is not configured")
+        remote_ip = request.client.host if request.client else None
+        decision = notify_receiver.receive(remote_ip, document)
+        if decision.status != 202:
+            raise HTTPException(status_code=decision.status, detail=decision.body["error"])
+        return decision.body
 
     @app.get("/api/conversation/backend")
     def get_conversation_backend() -> dict[str, Any]:
